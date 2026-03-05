@@ -34,9 +34,6 @@ export default function ScheduledTaskManager() {
   // 立即执行相关
   const [runningTasks, setRunningTasks] = useState<Set<string>>(new Set())
 
-  // 立即执行相关
-  const [runningTasks, setRunningTasks] = useState<Set<string>>(new Set())
-
   // UI状态
   const [showToast, setShowToast] = useState(false)
   const [toastMessage, setToastMessage] = useState('')
