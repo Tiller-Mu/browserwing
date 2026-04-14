@@ -252,6 +252,7 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 		{
 			// 帮助和命令列表
 			executorAPI.GET("/help", handler.ExecutorHelp)                // 获取所有可用命令和使用说明
+			executorAPI.POST("/help", handler.ExecutorHelp)               // 支持POST调用
 			executorAPI.GET("/export/skill", handler.ExportExecutorSkill) // 导出 SKILL.md 文件
 
 			// 页面导航和操作
@@ -273,14 +274,21 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			executorAPI.POST("/get-value", handler.ExecutorGetValue)         // 获取元素值
 			executorAPI.POST("/extract", handler.ExecutorExtract)            // 提取数据
 			executorAPI.GET("/page-info", handler.ExecutorGetPageInfo)       // 获取页面信息
+			executorAPI.POST("/page-info", handler.ExecutorGetPageInfo)      // 支持POST调用
 			executorAPI.GET("/page-content", handler.ExecutorGetPageContent) // 获取页面内容
+			executorAPI.POST("/page-content", handler.ExecutorGetPageContent) // 支持POST调用
 			executorAPI.GET("/page-text", handler.ExecutorGetPageText)       // 获取页面文本
+			executorAPI.POST("/page-text", handler.ExecutorGetPageText)      // 支持POST调用
 
 			// 可访问性快照和元素查找
 			executorAPI.GET("/snapshot", handler.ExecutorGetAccessibilitySnapshot)       // 获取可访问性快照
+			executorAPI.POST("/snapshot", handler.ExecutorGetAccessibilitySnapshot)      // 支持POST调用（兼容AI Agent）
 			executorAPI.GET("/semantic-tree", handler.ExecutorGetAccessibilitySnapshot)  // 兼容旧路由
+			executorAPI.POST("/semantic-tree", handler.ExecutorGetAccessibilitySnapshot) // 兼容旧路由（支持POST）
 			executorAPI.GET("/clickable-elements", handler.ExecutorGetClickableElements) // 获取可点击元素
+			executorAPI.POST("/clickable-elements", handler.ExecutorGetClickableElements) // 支持POST调用
 			executorAPI.GET("/input-elements", handler.ExecutorGetInputElements)         // 获取输入元素
+			executorAPI.POST("/input-elements", handler.ExecutorGetInputElements)        // 支持POST调用
 
 			// 高级功能
 			executorAPI.POST("/screenshot", handler.ExecutorScreenshot) // 截图
@@ -293,7 +301,9 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 
 			// 调试和监控
 			executorAPI.GET("/console-messages", handler.ExecutorConsoleMessages)     // 获取控制台消息
+			executorAPI.POST("/console-messages", handler.ExecutorConsoleMessages)    // 支持POST调用
 			executorAPI.GET("/network-requests", handler.ExecutorNetworkRequests)     // 获取网络请求
+			executorAPI.POST("/network-requests", handler.ExecutorNetworkRequests)    // 支持POST调用
 			executorAPI.POST("/handle-dialog", handler.ExecutorHandleDialog)          // 处理JavaScript对话框
 			executorAPI.POST("/file-upload", handler.ExecutorFileUpload)              // 文件上传
 			executorAPI.POST("/drag", handler.ExecutorDrag)                           // 拖拽元素
