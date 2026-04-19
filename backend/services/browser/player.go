@@ -396,6 +396,7 @@ func getI18nText(key, lang string) string {
 			"action.switch_tab":        "切换标签页",
 			"action.switch_active_tab": "切换到活跃标签页",
 			"action.capture_xhr":       "捕获XHR请求",
+			"action.evaluate":          "求值取数",
 			"action.ai_control":        "AI控制",
 		},
 		"zh-TW": {
@@ -426,6 +427,7 @@ func getI18nText(key, lang string) string {
 			"action.switch_tab":        "切換標籤頁",
 			"action.switch_active_tab": "切換到活躍標籤頁",
 			"action.capture_xhr":       "捕獲XHR請求",
+			"action.evaluate":          "求值取數",
 			"action.ai_control":        "AI控制",
 		},
 		"en": {
@@ -456,6 +458,7 @@ func getI18nText(key, lang string) string {
 			"action.switch_tab":        "Switch Tab",
 			"action.switch_active_tab": "Switch to Active Tab",
 			"action.capture_xhr":       "Capture XHR Request",
+			"action.evaluate":          "Evaluate",
 			"action.ai_control":        "AI Control",
 		},
 	}
@@ -2108,6 +2111,7 @@ func (p *Player) executeEvaluate(ctx context.Context, page *rod.Page, action mod
 }
 
 // ensureReturn wraps code so the last expression is returned.
+// Handles multiline return statements (e.g. return JSON.stringify(\n  ...\n));)
 func ensureReturn(code string) string {
 	lines := strings.Split(strings.TrimSpace(code), "\n")
 	last := strings.TrimSpace(lines[len(lines)-1])
@@ -2115,6 +2119,15 @@ func ensureReturn(code string) string {
 	if strings.HasPrefix(last, "return ") {
 		return code
 	}
+
+	// Check if any line already has a top-level return (multiline return statement)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "return ") || trimmed == "return" {
+			return code
+		}
+	}
+
 	if strings.HasSuffix(last, ";") {
 		last = strings.TrimSuffix(last, ";")
 	}

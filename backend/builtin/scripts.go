@@ -101,17 +101,20 @@ func zhihuHot() models.Script {
 				Type:         "evaluate",
 				VariableName: "hot_list",
 				JSCode: `
-const items = document.querySelectorAll('.HotList-item');
-const list = [];
-items.forEach((el, i) => {
-  const titleEl = el.querySelector('.HotList-itemTitle');
-  const metricEl = el.querySelector('.HotList-itemMetrics');
+var items = document.querySelectorAll('[class*="HotItem"]');
+if (!items.length) items = document.querySelectorAll('.HotList-item');
+if (!items.length) items = document.querySelectorAll('section a[href*="/question/"]');
+var list = [];
+items.forEach(function(el, i) {
+  var titleEl = el.querySelector('[class*="HotItem-title"], .HotList-itemTitle, h2');
+  var metricEl = el.querySelector('[class*="HotItem-metrics"], .HotList-itemMetrics');
+  var linkEl = el.closest('a') || el.querySelector('a');
   if (titleEl) {
     list.push({
       rank: i + 1,
       title: titleEl.textContent.trim(),
       heat: metricEl ? metricEl.textContent.trim() : '',
-      url: titleEl.closest('a') ? titleEl.closest('a').href : '',
+      url: linkEl ? linkEl.href : '',
     });
   }
 });

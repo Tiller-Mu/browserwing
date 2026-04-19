@@ -47,6 +47,16 @@ func TestEnsureReturn(t *testing.T) {
 			code: "const r = await fetch('/api');\nawait r.json()",
 			want: "const r = await fetch('/api');\nreturn await r.json();",
 		},
+		{
+			name: "multiline return - last line is closing bracket",
+			code: "const list = data.items;\nreturn JSON.stringify(list.map(v => ({\n  name: v.name,\n  url: v.url,\n})));",
+			want: "const list = data.items;\nreturn JSON.stringify(list.map(v => ({\n  name: v.name,\n  url: v.url,\n})));",
+		},
+		{
+			name: "return in nested function should still add outer return",
+			code: "const fn = () => { return 1; };\nfn()",
+			want: "const fn = () => { return 1; };\nreturn fn();",
+		},
 	}
 
 	for _, tt := range tests {
