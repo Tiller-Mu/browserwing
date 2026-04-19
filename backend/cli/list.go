@@ -40,7 +40,33 @@ func handleList(args []string) bool {
 
 	switch format {
 	case "json":
-		out, _ := json.MarshalIndent(scripts, "", "  ")
+		compact := make([]map[string]interface{}, 0, len(scripts))
+		for _, s := range scripts {
+			item := map[string]interface{}{
+				"id":   s["id"],
+				"name": s["name"],
+			}
+			if d, ok := s["description"].(string); ok && d != "" {
+				item["description"] = d
+			}
+			if v, ok := s["requires_login"].(bool); ok && v {
+				item["requires_login"] = true
+			}
+			if v, ok := s["variables"].(map[string]interface{}); ok && len(v) > 0 {
+				item["variables"] = v
+			}
+			if v, ok := s["mcp_command_name"].(string); ok && v != "" {
+				item["mcp_command_name"] = v
+			}
+			if tags, ok := s["tags"].([]interface{}); ok && len(tags) > 0 {
+				item["tags"] = tags
+			}
+			if a, ok := s["actions"].([]interface{}); ok {
+				item["steps"] = len(a)
+			}
+			compact = append(compact, item)
+		}
+		out, _ := json.MarshalIndent(compact, "", "  ")
 		fmt.Println(string(out))
 	case "csv":
 		fmt.Println("id,name,description,actions")
