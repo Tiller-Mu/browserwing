@@ -1,0 +1,984 @@
+[
+  {
+    "id": "builtin-bilibili-hot",
+    "name": "bilibili-hot",
+    "description": "获取 B 站热门视频排行榜",
+    "url": "https://www.bilibili.com/v/popular/rank/all",
+    "tags": [
+      "builtin",
+      "bilibili",
+      "热门"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "bilibili_hot",
+    "mcp_command_description": "获取 B 站热门视频排行榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.bilibili.com/v/popular/rank/all"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.rank-item, .rank-list .item, li.rank-item');\nif (!items.length) items = document.querySelectorAll('[class*=\"rank-item\"], [class*=\"video-card\"]');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.title, .info a, [class*=\"title\"]');\n  var linkEl = el.querySelector('a[href*=\"/video/\"]') || (titleEl \u0026\u0026 titleEl.closest('a'));\n  var playEl = el.querySelector('[class*=\"play\"], [class*=\"view\"], .detail-state .data-box');\n  var authorEl = el.querySelector('[class*=\"author\"], [class*=\"up-name\"], .detail-state .data-box:nth-child(2)');\n  if (titleEl) {\n    var href = linkEl ? linkEl.href : '';\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      url: href,\n      play: playEl ? playEl.textContent.trim() : '',\n      author: authorEl ? authorEl.textContent.trim() : ''\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-zhihu-hot",
+    "name": "zhihu-hot",
+    "description": "获取知乎热榜 Top 50",
+    "url": "https://www.zhihu.com/hot",
+    "tags": [
+      "builtin",
+      "zhihu",
+      "热榜"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "zhihu_hot",
+    "mcp_command_description": "获取知乎热榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.zhihu.com/hot"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('[class*=\"HotItem\"]');\nif (!items.length) items = document.querySelectorAll('.HotList-item');\nif (!items.length) items = document.querySelectorAll('section a[href*=\"/question/\"]');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('[class*=\"HotItem-title\"], .HotList-itemTitle, h2');\n  var metricEl = el.querySelector('[class*=\"HotItem-metrics\"], .HotList-itemMetrics');\n  var linkEl = el.closest('a') || el.querySelector('a');\n  if (titleEl) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      heat: metricEl ? metricEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-weibo-hot",
+    "name": "weibo-hot",
+    "description": "获取微博热搜榜",
+    "url": "https://weibo.com",
+    "tags": [
+      "builtin",
+      "weibo",
+      "热搜"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "weibo_hot",
+    "mcp_command_description": "获取微博热搜榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://weibo.com"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar resp = await fetch('https://weibo.com/ajax/side/hotSearch');\nif (!resp.ok) {\n  return JSON.stringify([]);\n}\nvar json = await resp.json();\nvar realtime = (json.data \u0026\u0026 json.data.realtime) || [];\nreturn JSON.stringify(realtime.slice(0, 30).map(function(v, i) {\n  return {\n    rank: i + 1,\n    title: v.note || v.word,\n    heat: v.num,\n    category: v.category || '',\n    url: 'https://s.weibo.com/weibo?q=' + encodeURIComponent('#' + (v.note || v.word) + '#')\n  };\n}));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-douban-movie-hot",
+    "name": "douban-movie-hot",
+    "description": "获取豆瓣热门电影",
+    "url": "https://movie.douban.com/chart",
+    "tags": [
+      "builtin",
+      "douban",
+      "电影"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "douban_movie_hot",
+    "mcp_command_description": "获取豆瓣热门电影",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://movie.douban.com/chart"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst items = document.querySelectorAll('.item');\nconst list = [];\nitems.forEach((el, i) =\u003e {\n  const titleEl = el.querySelector('.title a, .pl2 a');\n  const ratingEl = el.querySelector('.rating_nums');\n  const imgEl = el.querySelector('img');\n  if (titleEl) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim().replace(/\\\\s+/g, ' '),\n      rating: ratingEl ? ratingEl.textContent.trim() : '',\n      url: titleEl.href || '',\n      cover: imgEl ? imgEl.src : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-hackernews-top",
+    "name": "hackernews-top",
+    "description": "获取 Hacker News 当前热门文章",
+    "url": "https://hacker-news.firebaseio.com/v0/topstories.json",
+    "tags": [
+      "builtin",
+      "hackernews",
+      "tech"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "hackernews_top",
+    "mcp_command_description": "Get top stories from Hacker News",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "about:blank"
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst idsResp = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');\nconst ids = await idsResp.json();\nconst top20 = ids.slice(0, 20);\nconst stories = await Promise.all(top20.map(async (id) =\u003e {\n  const r = await fetch('https://hacker-news.firebaseio.com/v0/item/' + id + '.json');\n  return r.json();\n}));\nreturn JSON.stringify(stories.map((s, i) =\u003e ({\n  rank: i + 1,\n  title: s.title,\n  score: s.score,\n  author: s.by,\n  comments: s.descendants || 0,\n  url: s.url || ('https://news.ycombinator.com/item?id=' + s.id),\n})));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-36kr-hot",
+    "name": "36kr-hot",
+    "description": "获取 36 氪热榜文章",
+    "url": "https://www.36kr.com/hot-list/catalog",
+    "tags": [
+      "builtin",
+      "36kr",
+      "科技",
+      "热榜"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "kr36_hot",
+    "mcp_command_description": "获取 36 氪热榜文章",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.36kr.com/hot-list/catalog"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar links = document.querySelectorAll('a[href*=\"/p/\"]');\nvar seen = {};\nvar list = [];\nlinks.forEach(function(a) {\n  var title = a.textContent.trim();\n  var href = a.getAttribute('href');\n  if (!title || !href || seen[href]) return;\n  seen[href] = true;\n  var url = href.startsWith('http') ? href : 'https://36kr.com' + href;\n  list.push({ rank: list.length + 1, title: title, url: url });\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-v2ex-hot",
+    "name": "v2ex-hot",
+    "description": "获取 V2EX 热门主题",
+    "url": "https://www.v2ex.com/api/topics/hot.json",
+    "tags": [
+      "builtin",
+      "v2ex",
+      "技术",
+      "热门"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "v2ex_hot",
+    "mcp_command_description": "获取 V2EX 热门主题",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "about:blank"
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst resp = await fetch('https://www.v2ex.com/api/topics/hot.json');\nconst data = await resp.json();\nreturn JSON.stringify(data.map((t, i) =\u003e ({\n  rank: i + 1,\n  title: t.title,\n  node: t.node ? t.node.title : '',\n  replies: t.replies,\n  url: t.url,\n})));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-github-trending",
+    "name": "github-trending",
+    "description": "获取 GitHub Trending 仓库",
+    "url": "https://github.com/trending",
+    "tags": [
+      "builtin",
+      "github",
+      "开源",
+      "trending"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "github_trending",
+    "mcp_command_description": "获取 GitHub Trending 仓库",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://github.com/trending"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar rows = document.querySelectorAll('article.Box-row, [class*=\"Box-row\"]');\nvar list = [];\nrows.forEach(function(row, i) {\n  var repoLink = row.querySelector('h2 a, h1 a');\n  var desc = row.querySelector('p');\n  var lang = row.querySelector('[itemprop=\"programmingLanguage\"], span[class*=\"repo-language-color\"] + span');\n  var stars = row.querySelector('a[href*=\"/stargazers\"], span.d-inline-block');\n  if (repoLink) {\n    var href = repoLink.getAttribute('href');\n    list.push({\n      rank: i + 1,\n      repo: href.replace(/^\\//, ''),\n      description: desc ? desc.textContent.trim() : '',\n      language: lang ? lang.textContent.trim() : '',\n      stars: stars ? stars.textContent.trim() : '',\n      url: 'https://github.com' + href,\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-tieba-hot",
+    "name": "tieba-hot",
+    "description": "获取百度贴吧热议话题",
+    "url": "https://tieba.baidu.com/hottopic/browse/topicList",
+    "tags": [
+      "builtin",
+      "tieba",
+      "贴吧",
+      "热议"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "tieba_hot",
+    "mcp_command_description": "获取百度贴吧热议话题",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://tieba.baidu.com/hottopic/browse/topicList?res_type=1"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('li.topic-top-item, [class*=\"topic-item\"], .topic-list li');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('a.topic-text, [class*=\"topic-text\"], a');\n  var numEl = el.querySelector('span.topic-num, [class*=\"topic-num\"]');\n  var descEl = el.querySelector('p.topic-top-item-desc, [class*=\"desc\"]');\n  if (titleEl \u0026\u0026 titleEl.textContent.trim()) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      discussions: numEl ? numEl.textContent.trim() : '',\n      description: descEl ? descEl.textContent.trim() : '',\n      url: titleEl.href || '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-douban-top250",
+    "name": "douban-top250",
+    "description": "获取豆瓣电影 Top 250",
+    "url": "https://movie.douban.com/top250",
+    "tags": [
+      "builtin",
+      "douban",
+      "电影",
+      "Top250"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "douban_top250",
+    "mcp_command_description": "获取豆瓣电影 Top 250（前25部）",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://movie.douban.com/top250"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.item, ol.grid_view li');\nvar list = [];\nitems.forEach(function(el) {\n  var rankEl = el.querySelector('.pic em, em');\n  var titleEl = el.querySelector('.title, .hd a span:first-child');\n  var ratingEl = el.querySelector('.rating_num, [class*=\"rating_num\"]');\n  var linkEl = el.querySelector('a[href*=\"subject\"]');\n  if (titleEl) {\n    list.push({\n      rank: rankEl ? parseInt(rankEl.textContent) : list.length + 1,\n      title: titleEl.textContent.trim(),\n      rating: ratingEl ? ratingEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-reddit-popular",
+    "name": "reddit-popular",
+    "description": "获取 Reddit 热门帖子",
+    "url": "https://www.reddit.com/r/popular/",
+    "tags": [
+      "builtin",
+      "reddit",
+      "热门"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "reddit_popular",
+    "mcp_command_description": "获取 Reddit 热门帖子",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.reddit.com"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst resp = await fetch('/r/popular.json?limit=25\u0026raw_json=1');\nconst data = await resp.json();\nconst posts = data.data.children;\nreturn JSON.stringify(posts.map((p, i) =\u003e ({\n  rank: i + 1,\n  title: p.data.title,\n  subreddit: p.data.subreddit,\n  score: p.data.score,\n  comments: p.data.num_comments,\n  url: 'https://www.reddit.com' + p.data.permalink,\n})));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-producthunt-hot",
+    "name": "producthunt-hot",
+    "description": "获取 Product Hunt 今日热门产品",
+    "url": "https://www.producthunt.com",
+    "tags": [
+      "builtin",
+      "producthunt",
+      "产品",
+      "热门"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "producthunt_hot",
+    "mcp_command_description": "获取 Product Hunt 今日热门产品",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.producthunt.com"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar links = document.querySelectorAll('a[href^=\"/posts/\"]');\nvar seen = {};\nvar list = [];\nlinks.forEach(function(a) {\n  var href = a.getAttribute('href');\n  if (!href || href.includes('/reviews') || seen[href]) return;\n  seen[href] = true;\n  var name = a.textContent.trim();\n  if (!name || name.length \u003e 100) return;\n  list.push({\n    rank: list.length + 1,\n    name: name,\n    url: 'https://www.producthunt.com' + href,\n  });\n});\nreturn JSON.stringify(list.slice(0, 20));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-stackoverflow-hot",
+    "name": "stackoverflow-hot",
+    "description": "获取 Stack Overflow 热门问题",
+    "url": "https://api.stackexchange.com/2.3/questions?order=desc\u0026sort=hot\u0026site=stackoverflow",
+    "tags": [
+      "builtin",
+      "stackoverflow",
+      "编程",
+      "热门"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "stackoverflow_hot",
+    "mcp_command_description": "获取 Stack Overflow 热门问题",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "about:blank"
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst resp = await fetch('https://api.stackexchange.com/2.3/questions?order=desc\u0026sort=hot\u0026site=stackoverflow\u0026pagesize=25');\nconst data = await resp.json();\nreturn JSON.stringify(data.items.map((q, i) =\u003e ({\n  rank: i + 1,\n  title: q.title,\n  score: q.score,\n  answers: q.answer_count,\n  tags: q.tags.slice(0, 3).join(', '),\n  url: q.link,\n})));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-hupu-hot",
+    "name": "hupu-hot",
+    "description": "获取虎扑热帖",
+    "url": "https://bbs.hupu.com",
+    "tags": [
+      "builtin",
+      "hupu",
+      "体育",
+      "热帖"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "hupu_hot",
+    "mcp_command_description": "获取虎扑热帖",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://bbs.hupu.com"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar html = document.documentElement.outerHTML;\nvar regex = /\u003ca[^\u003e]*href=\"\\/(\\d{7,})\\.html\"[^\u003e]*\u003e(?:\u003c[^\u003e]*\u003e)*([^\u003c]+)/g;\nvar list = [];\nvar match;\nvar seen = {};\nwhile ((match = regex.exec(html)) !== null) {\n  var tid = match[1];\n  var title = match[2].trim();\n  if (!title || seen[tid]) continue;\n  seen[tid] = true;\n  list.push({\n    rank: list.length + 1,\n    title: title,\n    url: 'https://bbs.hupu.com/' + tid + '.html',\n  });\n}\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-linux-do-hot",
+    "name": "linux-do-hot",
+    "description": "获取 Linux.do 热门话题",
+    "url": "https://linux.do",
+    "tags": [
+      "builtin",
+      "linux-do",
+      "技术",
+      "社区"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "linux_do_hot",
+    "mcp_command_description": "获取 Linux.do 热门话题",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://linux.do"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst resp = await fetch('/top.json?per_page=25\u0026period=weekly');\nconst data = await resp.json();\nconst topics = data.topic_list.topics;\nreturn JSON.stringify(topics.map((t, i) =\u003e ({\n  rank: i + 1,\n  title: t.title,\n  replies: t.posts_count - 1,\n  likes: t.like_count,\n  views: t.views,\n  url: 'https://linux.do/t/topic/' + t.id,\n})));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-eastmoney-hot",
+    "name": "eastmoney-hot",
+    "description": "获取东方财富人气股票排行",
+    "url": "https://guba.eastmoney.com/rank/",
+    "tags": [
+      "builtin",
+      "eastmoney",
+      "股票",
+      "热门"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "eastmoney_hot",
+    "mcp_command_description": "获取东方财富人气股票排行",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://guba.eastmoney.com/rank/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar rows = document.querySelectorAll('table.rank_table tbody tr, #rankCont tr, [class*=\"rank\"] table tr');\nvar list = [];\nrows.forEach(function(tr, i) {\n  var tds = tr.querySelectorAll('td');\n  if (tds.length \u003c 4) return;\n  var codeEl = tr.querySelector('a.stock_code, a[href*=\"list,\"]');\n  var nameEl = tr.querySelector('td.nametd a[title], td:nth-child(2) a');\n  var fansEl = tr.querySelector('td.fans, td:last-child');\n  if (nameEl) {\n    var code = codeEl ? codeEl.textContent.trim() : '';\n    list.push({\n      rank: list.length + 1,\n      symbol: code,\n      name: nameEl.getAttribute('title') || nameEl.textContent.trim(),\n      heat: fansEl ? fansEl.textContent.trim() : '',\n      url: 'https://guba.eastmoney.com/list,' + code + '.html',\n    });\n  }\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-imdb-trending",
+    "name": "imdb-trending",
+    "description": "获取 IMDB 热门电影",
+    "url": "https://www.imdb.com/chart/moviemeter/",
+    "tags": [
+      "builtin",
+      "imdb",
+      "电影",
+      "trending"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "imdb_trending",
+    "mcp_command_description": "获取 IMDB 热门电影",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.imdb.com/chart/moviemeter/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar scripts = document.querySelectorAll('script[type=\"application/ld+json\"]');\nfor (var s of scripts) {\n  try {\n    var json = JSON.parse(s.textContent);\n    if (json['@type'] === 'ItemList' \u0026\u0026 json.itemListElement) {\n      var list = json.itemListElement.slice(0, 25).map(function(el, i) {\n        var item = el.item || el;\n        return {\n          rank: el.position || i + 1,\n          title: item.name || '',\n          rating: item.aggregateRating ? item.aggregateRating.ratingValue : '',\n          genre: Array.isArray(item.genre) ? item.genre.join(', ') : (item.genre || ''),\n          url: item.url ? (item.url.startsWith('http') ? item.url : 'https://www.imdb.com' + item.url) : '',\n        };\n      });\n      return JSON.stringify(list);\n    }\n  } catch(e) {}\n}\nvar rows = document.querySelectorAll('.ipc-metadata-list-summary-item, li[class*=\"ipc-metadata-list\"]');\nvar fallback = [];\nrows.forEach(function(row, i) {\n  var titleEl = row.querySelector('h3, [class*=\"title\"]');\n  var ratingEl = row.querySelector('[class*=\"rating\"], [aria-label*=\"rating\"]');\n  if (titleEl \u0026\u0026 i \u003c 25) {\n    fallback.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim().replace(/^\\d+\\.\\s*/, ''),\n      rating: ratingEl ? ratingEl.textContent.trim() : '',\n      url: '',\n    });\n  }\n});\nreturn JSON.stringify(fallback);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-sinafinance-rank",
+    "name": "sinafinance-rank",
+    "description": "获取新浪财经涨幅排行榜",
+    "url": "https://finance.sina.com.cn/stock/",
+    "tags": [
+      "builtin",
+      "sinafinance",
+      "股票",
+      "涨幅榜"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "sinafinance_rank",
+    "mcp_command_description": "获取新浪财经股票涨幅榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "about:blank"
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst resp = await fetch('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=1\u0026num=20\u0026sort=changepercent\u0026asc=0\u0026node=hs_a\u0026symbol=\u0026_s_r_a=auto');\nconst data = await resp.json();\nreturn JSON.stringify(data.map((s, i) =\u003e ({\n  rank: i + 1,\n  symbol: s.symbol,\n  name: s.name,\n  price: s.trade,\n  change_percent: s.changepercent + '%',\n  volume: s.volume,\n})));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-douyin-hot",
+    "name": "douyin-hot",
+    "description": "获取抖音热搜榜（需要登录抖音）",
+    "url": "https://www.douyin.com/hot",
+    "tags": [
+      "builtin",
+      "douyin",
+      "热搜",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "douyin_hot",
+    "mcp_command_description": "获取抖音热搜榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.douyin.com/hot"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('[class*=\"hot-list\"] li, [class*=\"HotBoardList\"] li, .trending-item');\nif (!items.length) items = document.querySelectorAll('ul li a[href*=\"/hot/\"]');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('[class*=\"title\"], span, a');\n  var hotEl = el.querySelector('[class*=\"hot\"], [class*=\"count\"]');\n  if (titleEl \u0026\u0026 titleEl.textContent.trim()) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      heat: hotEl ? hotEl.textContent.trim() : ''\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-xueqiu-hot",
+    "name": "xueqiu-hot",
+    "description": "获取雪球热帖（需要登录雪球）",
+    "url": "https://xueqiu.com",
+    "tags": [
+      "builtin",
+      "xueqiu",
+      "金融",
+      "热帖",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "xueqiu_hot",
+    "mcp_command_description": "获取雪球热帖",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://xueqiu.com"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst resp = await fetch('/statuses/hot/listV3.json?source=hot\u0026page=1', {credentials: 'include'});\nconst data = await resp.json();\nconst items = data.items || [];\nreturn JSON.stringify(items.map((item, i) =\u003e {\n  var s = item.original_status || item;\n  return {\n    rank: i + 1,\n    author: s.user ? s.user.screen_name : '',\n    title: (s.description || s.text || '').replace(/\u003c[^\u003e]+\u003e/g, '').slice(0, 80),\n    likes: s.fav_count || 0,\n    url: 'https://xueqiu.com' + (s.target || ''),\n  };\n}));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-xiaohongshu-hot",
+    "name": "xiaohongshu-hot",
+    "description": "获取小红书热门笔记（需要登录）",
+    "url": "https://www.xiaohongshu.com/explore",
+    "tags": [
+      "builtin",
+      "xiaohongshu",
+      "热门",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "xiaohongshu_hot",
+    "mcp_command_description": "获取小红书热门笔记（需要登录）",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.xiaohongshu.com/explore"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('[class*=\"note-item\"], [class*=\"feeds-page\"] section, a[href*=\"/explore/\"]');\nif (!items.length) items = document.querySelectorAll('.note-item, section.note-item');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('[class*=\"title\"], .title, span');\n  var authorEl = el.querySelector('[class*=\"author\"], [class*=\"name\"]');\n  var likeEl = el.querySelector('[class*=\"like\"], [class*=\"count\"]');\n  var linkEl = el.querySelector('a[href*=\"/explore/\"], a[href*=\"/discovery/\"]');\n  if (titleEl \u0026\u0026 titleEl.textContent.trim()) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      author: authorEl ? authorEl.textContent.trim() : '',\n      likes: likeEl ? likeEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-boss-recommend",
+    "name": "boss-recommend",
+    "description": "获取 Boss 直聘推荐职位（需要登录）",
+    "url": "https://www.zhipin.com/web/geek/job-recommend",
+    "tags": [
+      "builtin",
+      "boss",
+      "招聘",
+      "推荐",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "boss_recommend",
+    "mcp_command_description": "获取 Boss 直聘推荐职位（需要登录）",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.zhipin.com/web/geek/job-recommend"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.job-card-wrap, [class*=\"job-card\"], li.job-card');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.job-name, [class*=\"job-name\"], [class*=\"title\"]');\n  var companyEl = el.querySelector('.company-name, [class*=\"company\"]');\n  var salaryEl = el.querySelector('.salary, [class*=\"salary\"]');\n  var areaEl = el.querySelector('.job-area, [class*=\"area\"]');\n  var linkEl = el.querySelector('a[href*=\"/job_detail/\"]');\n  if (titleEl) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      company: companyEl ? companyEl.textContent.trim() : '',\n      salary: salaryEl ? salaryEl.textContent.trim() : '',\n      area: areaEl ? areaEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-jd-search",
+    "name": "jd-search",
+    "description": "京东商品搜索（需要登录以查看价格）",
+    "url": "https://search.jd.com/Search",
+    "tags": [
+      "builtin",
+      "jd",
+      "京东",
+      "搜索",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "jd_search",
+    "mcp_command_description": "京东商品搜索（需要登录以查看价格）",
+    "mcp_input_schema": {
+      "properties": {
+        "keyword": {
+          "description": "搜索关键词",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyword"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "keyword": "手机"
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://search.jd.com/Search?keyword=${keyword}\u0026enc=utf-8"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.gl-item, li.gl-item, [class*=\"gl-item\"]');\nif (!items.length) items = document.querySelectorAll('#J_goodsList li');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.p-name a em, .p-name a, [class*=\"p-name\"]');\n  var priceEl = el.querySelector('.p-price i, .p-price strong, [class*=\"p-price\"]');\n  var shopEl = el.querySelector('.p-shop a, [class*=\"p-shop\"]');\n  var linkEl = el.querySelector('a[href*=\"item.jd.com\"]');\n  if (titleEl \u0026\u0026 i \u003c 20) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      price: priceEl ? priceEl.textContent.trim() : '',\n      shop: shopEl ? shopEl.textContent.trim() : '',\n      url: linkEl ? (linkEl.href.startsWith('//') ? 'https:' + linkEl.href : linkEl.href) : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "search_results"
+      }
+    ]
+  },
+  {
+    "id": "builtin-taobao-search",
+    "name": "taobao-search",
+    "description": "淘宝商品搜索（需要登录）",
+    "url": "https://s.taobao.com/search",
+    "tags": [
+      "builtin",
+      "taobao",
+      "淘宝",
+      "搜索",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "taobao_search",
+    "mcp_command_description": "淘宝商品搜索（需要登录）",
+    "mcp_input_schema": {
+      "properties": {
+        "keyword": {
+          "description": "搜索关键词",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyword"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "keyword": "手机壳"
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://s.taobao.com/search?q=${keyword}"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('[class*=\"Card--\"], [class*=\"item\"], .item');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('[class*=\"Title\"], .title, a span');\n  var priceEl = el.querySelector('[class*=\"price\"], .price, [class*=\"Price\"]');\n  var shopEl = el.querySelector('[class*=\"shop\"], [class*=\"Store\"]');\n  var linkEl = el.querySelector('a[href*=\"item.taobao\"], a[href*=\"detail.tmall\"]');\n  if (titleEl \u0026\u0026 titleEl.textContent.trim() \u0026\u0026 i \u003c 20) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      price: priceEl ? priceEl.textContent.trim() : '',\n      shop: shopEl ? shopEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "search_results"
+      }
+    ]
+  },
+  {
+    "id": "builtin-twitter-trending",
+    "name": "twitter-trending",
+    "description": "获取 Twitter/X 热门趋势（需要登录）",
+    "url": "https://x.com/explore/tabs/trending",
+    "tags": [
+      "builtin",
+      "twitter",
+      "trending",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "twitter_trending",
+    "mcp_command_description": "获取 Twitter/X 热门趋势（需要登录）",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://x.com/explore/tabs/trending"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('[data-testid=\"trend\"], [class*=\"trend\"]');\nvar list = [];\nitems.forEach(function(el, i) {\n  var spans = el.querySelectorAll('span');\n  var title = '';\n  var tweets = '';\n  spans.forEach(function(s) {\n    var txt = s.textContent.trim();\n    if (txt.startsWith('#') || (txt.length \u003e 2 \u0026\u0026 !txt.includes('Trending') \u0026\u0026 !txt.includes('posts'))) {\n      if (!title) title = txt;\n    }\n    if (txt.includes('posts') || txt.includes('K') || txt.includes('M')) {\n      tweets = txt;\n    }\n  });\n  if (title) {\n    list.push({ rank: i + 1, title: title, tweets: tweets });\n  }\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-linkedin-jobs",
+    "name": "linkedin-jobs",
+    "description": "获取 LinkedIn 推荐职位（需要登录）",
+    "url": "https://www.linkedin.com/jobs/",
+    "tags": [
+      "builtin",
+      "linkedin",
+      "招聘",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "linkedin_jobs",
+    "mcp_command_description": "获取 LinkedIn 推荐职位（需要登录）",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.linkedin.com/jobs/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.job-card-container, [class*=\"job-card\"], .jobs-search-results__list-item');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.job-card-list__title, [class*=\"job-title\"], a[class*=\"title\"]');\n  var companyEl = el.querySelector('.job-card-container__company-name, [class*=\"company\"]');\n  var locationEl = el.querySelector('.job-card-container__metadata-item, [class*=\"location\"]');\n  var linkEl = el.querySelector('a[href*=\"/jobs/view/\"]');\n  if (titleEl \u0026\u0026 i \u003c 20) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      company: companyEl ? companyEl.textContent.trim() : '',\n      location: locationEl ? locationEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-smzdm-hot",
+    "name": "smzdm-hot",
+    "description": "获取什么值得买热门好价",
+    "url": "https://www.smzdm.com/jingxuan/",
+    "tags": [
+      "builtin",
+      "smzdm",
+      "优惠",
+      "热门"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "smzdm_hot",
+    "mcp_command_description": "获取什么值得买热门好价",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.smzdm.com/jingxuan/"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.feed-block, [class*=\"feed-block\"], article');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.feed-block__title a, h5 a, [class*=\"title\"] a');\n  var priceEl = el.querySelector('.z-highlight, [class*=\"price\"]');\n  var mallEl = el.querySelector('.feed-block__mall, [class*=\"mall\"]');\n  if (titleEl \u0026\u0026 i \u003c 30) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      price: priceEl ? priceEl.textContent.trim() : '',\n      mall: mallEl ? mallEl.textContent.trim() : '',\n      url: titleEl.href || '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-weixin-hot",
+    "name": "weixin-hot",
+    "description": "获取微信公众号热门文章（需要登录微信读书）",
+    "url": "https://weread.qq.com/web/category/rising",
+    "tags": [
+      "builtin",
+      "weixin",
+      "公众号",
+      "热门",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "weixin_hot",
+    "mcp_command_description": "获取微信读书飙升榜（需要登录）",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://weread.qq.com/web/category/rising"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.ranking_bookList_item, [class*=\"ranking_book\"], [class*=\"bookList\"] li');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.ranking_bookList_title, [class*=\"title\"]');\n  var authorEl = el.querySelector('.ranking_bookList_author, [class*=\"author\"]');\n  var linkEl = el.querySelector('a');\n  if (titleEl \u0026\u0026 i \u003c 30) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      author: authorEl ? authorEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-juejin-hot",
+    "name": "juejin-hot",
+    "description": "获取掘金热门文章",
+    "url": "https://juejin.cn/hot/articles",
+    "tags": [
+      "builtin",
+      "juejin",
+      "技术",
+      "热门"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "juejin_hot",
+    "mcp_command_description": "获取掘金热门文章",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://juejin.cn/hot/articles"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.hot-list-item, [class*=\"HotList\"], [class*=\"hot-item\"]');\nif (!items.length) items = document.querySelectorAll('a[href*=\"/post/\"]');\nvar seen = {};\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.article-title, [class*=\"title\"], .hot-list-item-title');\n  var hotEl = el.querySelector('[class*=\"hot\"], [class*=\"count\"]');\n  var linkEl = el.querySelector('a[href*=\"/post/\"]') || (el.tagName === 'A' ? el : null);\n  var title = titleEl ? titleEl.textContent.trim() : (el.textContent || '').trim().slice(0, 60);\n  if (title \u0026\u0026 !seen[title]) {\n    seen[title] = true;\n    list.push({\n      rank: list.length + 1,\n      title: title,\n      hot: hotEl ? hotEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-toutiao-hot",
+    "name": "toutiao-hot",
+    "description": "获取今日头条热榜",
+    "url": "https://www.toutiao.com/hot-event/hot-board/",
+    "tags": [
+      "builtin",
+      "toutiao",
+      "头条",
+      "热榜"
+    ],
+    "group": "内置脚本",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "toutiao_hot",
+    "mcp_command_description": "获取今日头条热榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.toutiao.com/hot-event/hot-board/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('[class*=\"hot-board\"] a, [class*=\"hotBoard\"] a, [class*=\"HotBoard\"] a');\nif (!items.length) items = document.querySelectorAll('a[href*=\"/trending/\"]');\nvar seen = {};\nvar list = [];\nitems.forEach(function(el) {\n  var title = el.textContent.trim();\n  var href = el.href || '';\n  if (title \u0026\u0026 title.length \u003e 2 \u0026\u0026 title.length \u003c 50 \u0026\u0026 !seen[title]) {\n    seen[title] = true;\n    list.push({\n      rank: list.length + 1,\n      title: title,\n      url: href,\n    });\n  }\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  }
+]

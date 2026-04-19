@@ -1,13 +1,25 @@
 // Package builtin provides pre-packaged scripts for popular platforms.
 // These scripts are loaded into the database on first run and marked
 // with the "builtin" tag so users can discover them immediately.
+//
+// Script definitions are fetched from remote JSON (GitHub → Gitee fallback)
+// on startup. If remote fetch fails, hardcoded definitions are used as fallback.
 package builtin
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/browserwing/browserwing/models"
+)
+
+const (
+	githubScriptsURL = "https://raw.githubusercontent.com/browserwing/browserwing/main/builtin-scripts.json"
+	giteeScriptsURL  = "https://gitee.com/browserwing/browserwing/raw/main/builtin-scripts.json"
 )
 
 type ScriptStore interface {
@@ -15,11 +27,23 @@ type ScriptStore interface {
 	SaveScript(script *models.Script) error
 }
 
+// GetBuiltinScripts returns all hardcoded builtin script definitions.
+func GetBuiltinScripts() []models.Script {
+	return builtinScripts
+}
+
 func LoadBuiltinScripts(db ScriptStore) {
-	for _, s := range builtinScripts {
+	scripts := fetchRemoteScripts()
+	if scripts == nil {
+		log.Printf("Using local builtin scripts (remote fetch failed)")
+		scripts = builtinScripts
+	} else {
+		log.Printf("Loaded %d builtin scripts from remote", len(scripts))
+	}
+
+	for _, s := range scripts {
 		existing, err := db.GetScript(s.ID)
 		if err == nil && existing != nil {
-			// Always update builtin scripts so fixes take effect on restart
 			s.CreatedAt = existing.CreatedAt
 			s.UpdatedAt = time.Now()
 			if err := db.SaveScript(&s); err != nil {
@@ -35,6 +59,49 @@ func LoadBuiltinScripts(db ScriptStore) {
 			log.Printf("✓ Loaded builtin script: %s", s.Name)
 		}
 	}
+}
+
+func fetchRemoteScripts() []models.Script {
+	urls := []string{githubScriptsURL, giteeScriptsURL}
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	for _, url := range urls {
+		scripts, err := fetchFromURL(client, url)
+		if err != nil {
+			log.Printf("Failed to fetch builtin scripts from %s: %v", url, err)
+			continue
+		}
+		return scripts
+	}
+	return nil
+}
+
+func fetchFromURL(client *http.Client, url string) ([]models.Script, error) {
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var scripts []models.Script
+	if err := json.Unmarshal(body, &scripts); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	if len(scripts) == 0 {
+		return nil, fmt.Errorf("empty scripts list")
+	}
+
+	return scripts, nil
 }
 
 var builtinScripts = []models.Script{
