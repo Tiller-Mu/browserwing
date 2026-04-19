@@ -7,11 +7,13 @@
 package builtin
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/browserwing/browserwing/models"
@@ -34,31 +36,73 @@ func GetBuiltinScripts() []models.Script {
 
 func LoadBuiltinScripts(db ScriptStore) {
 	scripts := fetchRemoteScripts()
+	source := "remote"
 	if scripts == nil {
 		log.Printf("Using local builtin scripts (remote fetch failed)")
 		scripts = builtinScripts
+		source = "local"
 	} else {
-		log.Printf("Loaded %d builtin scripts from remote", len(scripts))
+		log.Printf("Fetched %d builtin scripts from remote", len(scripts))
 	}
 
+	var added, updated, skipped int
 	for _, s := range scripts {
+		if !strings.HasPrefix(s.ID, "builtin-") {
+			continue
+		}
+
 		existing, err := db.GetScript(s.ID)
-		if err == nil && existing != nil {
-			s.CreatedAt = existing.CreatedAt
+		if err != nil || existing == nil {
+			s.CreatedAt = time.Now()
 			s.UpdatedAt = time.Now()
 			if err := db.SaveScript(&s); err != nil {
-				log.Printf("Warning: failed to update builtin script %q: %v", s.Name, err)
+				log.Printf("Warning: failed to load builtin script %q: %v", s.Name, err)
+			} else {
+				added++
 			}
 			continue
 		}
-		s.CreatedAt = time.Now()
+
+		if scriptContentEqual(existing, &s) {
+			skipped++
+			continue
+		}
+
+		s.CreatedAt = existing.CreatedAt
 		s.UpdatedAt = time.Now()
 		if err := db.SaveScript(&s); err != nil {
-			log.Printf("Warning: failed to load builtin script %q: %v", s.Name, err)
+			log.Printf("Warning: failed to update builtin script %q: %v", s.Name, err)
 		} else {
-			log.Printf("✓ Loaded builtin script: %s", s.Name)
+			updated++
+			log.Printf("↑ Updated builtin script: %s", s.Name)
 		}
 	}
+
+	log.Printf("Builtin scripts sync complete (%s): %d added, %d updated, %d unchanged",
+		source, added, updated, skipped)
+}
+
+func scriptContentEqual(a, b *models.Script) bool {
+	hashA := scriptHash(a)
+	hashB := scriptHash(b)
+	return hashA == hashB
+}
+
+func scriptHash(s *models.Script) string {
+	h := sha256.New()
+	h.Write([]byte(s.Name))
+	h.Write([]byte(s.Description))
+	h.Write([]byte(s.URL))
+	actionsJSON, _ := json.Marshal(s.Actions)
+	h.Write(actionsJSON)
+	tagsJSON, _ := json.Marshal(s.Tags)
+	h.Write(tagsJSON)
+	if s.RequiresLogin {
+		h.Write([]byte("login"))
+	}
+	varsJSON, _ := json.Marshal(s.Variables)
+	h.Write(varsJSON)
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func fetchRemoteScripts() []models.Script {
