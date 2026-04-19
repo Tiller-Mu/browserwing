@@ -647,6 +647,23 @@ func (m *Manager) IsInstanceRunning(instanceID string) bool {
 	return exists && runtime != nil && runtime.browser != nil
 }
 
+// SetInstanceHeadless sets the headless mode for an instance before it starts.
+func (m *Manager) SetInstanceHeadless(instanceID string, headless bool) {
+	if instanceID == "" {
+		instanceID = "default"
+	}
+	instance, err := m.db.GetBrowserInstance(instanceID)
+	if err != nil || instance == nil {
+		instance = &models.BrowserInstance{
+			ID:   instanceID,
+			Name: instanceID,
+			Type: "local",
+		}
+	}
+	instance.Headless = &headless
+	_ = m.db.SaveBrowserInstance(instance)
+}
+
 // GetActivePage 获取当前活动页面
 func (m *Manager) GetActivePage() *rod.Page {
 	m.mu.Lock()

@@ -11,18 +11,31 @@ func handleRun(args []string) bool {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: script name or ID is required")
 		fmt.Fprintln(os.Stderr, "Usage: browserwing run <name|id> [--key=value...]")
+		fmt.Fprintln(os.Stderr, "\nExamples:")
+		fmt.Fprintln(os.Stderr, "  browserwing run bilibili-hot")
+		fmt.Fprintln(os.Stderr, "  browserwing run jd-search --keyword=\"手机\" --format=table")
+		fmt.Fprintln(os.Stderr, "  browserwing run zhihu-hot --no-headless")
 		os.Exit(1)
 	}
 
 	scriptRef := args[0]
 	params := make(map[string]string)
-	format := "table"
+	format := "json"
+	headless := true
 
 	for _, arg := range args[1:] {
 		if !strings.HasPrefix(arg, "--") {
 			continue
 		}
 		kv := strings.TrimPrefix(arg, "--")
+		if kv == "no-headless" || kv == "no-headless=true" {
+			headless = false
+			continue
+		}
+		if kv == "headless" || kv == "headless=true" {
+			headless = true
+			continue
+		}
 		parts := strings.SplitN(kv, "=", 2)
 		if len(parts) == 2 {
 			if parts[0] == "format" {
@@ -40,11 +53,15 @@ func handleRun(args []string) bool {
 		os.Exit(1)
 	}
 
-	// Execute the script
-	fmt.Fprintf(os.Stderr, "Running script: %s ...\n", scriptRef)
+	fmt.Fprintf(os.Stderr, "Running script: %s", scriptRef)
+	if headless {
+		fmt.Fprintf(os.Stderr, " (headless)")
+	}
+	fmt.Fprintf(os.Stderr, " ...\n")
 
 	payload := map[string]interface{}{
-		"params": params,
+		"params":   params,
+		"headless": headless,
 	}
 
 	body, err := apiPost(fmt.Sprintf("/api/v1/scripts/%s/play", scriptID), payload)
@@ -72,13 +89,12 @@ func handleRun(args []string) bool {
 	// Get extracted data
 	extractedData, _ := result["extracted_data"].(map[string]interface{})
 	if len(extractedData) == 0 {
-		fmt.Fprintf(os.Stderr, "✓ Script completed successfully (no data extracted)\n")
+		fmt.Fprintf(os.Stderr, "Done. (no data extracted)\n")
 		return true
 	}
 
-	// Find the main data to display
 	displayData := findDisplayData(extractedData)
-	fmt.Fprintf(os.Stderr, "✓ Script completed successfully\n\n")
+	fmt.Fprintf(os.Stderr, "Done.\n")
 	formatOutput(displayData, format)
 	return true
 }
@@ -94,14 +110,12 @@ func resolveScriptID(ref string) (string, error) {
 		return "", fmt.Errorf("failed to parse scripts list: %w", err)
 	}
 
-	// Try exact ID match first
 	for _, s := range scripts {
 		if id, _ := s["id"].(string); id == ref {
 			return id, nil
 		}
 	}
 
-	// Try name match (case-insensitive)
 	for _, s := range scripts {
 		name, _ := s["name"].(string)
 		if strings.EqualFold(name, ref) {
@@ -109,7 +123,14 @@ func resolveScriptID(ref string) (string, error) {
 		}
 	}
 
-	// Try partial name match
+	// Try MCP command name match
+	for _, s := range scripts {
+		mcpName, _ := s["mcp_command_name"].(string)
+		if strings.EqualFold(mcpName, ref) {
+			return s["id"].(string), nil
+		}
+	}
+
 	var candidates []map[string]interface{}
 	for _, s := range scripts {
 		name, _ := s["name"].(string)
@@ -132,8 +153,6 @@ func resolveScriptID(ref string) (string, error) {
 	return "", fmt.Errorf("script not found: %q\nUse 'browserwing list' to see available scripts", ref)
 }
 
-// findDisplayData extracts the primary data from extracted_data map.
-// If there's only one key, use its value. Otherwise return the whole map.
 func findDisplayData(data map[string]interface{}) interface{} {
 	if len(data) == 1 {
 		for _, v := range data {

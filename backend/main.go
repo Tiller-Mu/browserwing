@@ -38,6 +38,7 @@ var (
 
 func main() {
 	// CLI subcommands: run, list, help — handled before flag parsing
+	cli.Version = Version
 	if cli.Execute(os.Args) {
 		return
 	}

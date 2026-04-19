@@ -752,6 +752,7 @@ func (h *Handler) PlayScript(c *gin.Context) {
 	var req struct {
 		Params     map[string]string `json:"params"`
 		InstanceID string            `json:"instance_id"` // 指定实例ID，空字符串表示使用当前实例
+		Headless   *bool             `json:"headless"`    // CLI模式可指定 headless
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		// 如果没有请求体或解析失败,使用空参数
@@ -764,6 +765,10 @@ func (h *Handler) PlayScript(c *gin.Context) {
 	// 检查浏览器是否运行
 	if !h.browserManager.IsInstanceRunning(instanceID) {
 		logger.Info(c, "Browser not running, starting...")
+		// 如果请求指定了 headless 模式，先设置实例配置
+		if req.Headless != nil {
+			h.browserManager.SetInstanceHeadless(instanceID, *req.Headless)
+		}
 		if err := h.browserManager.StartInstance(c, instanceID); err != nil {
 			logger.Error(c.Request.Context(), "Failed to start browser: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "error.playScriptFailed"})

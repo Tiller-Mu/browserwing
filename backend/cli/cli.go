@@ -16,6 +16,8 @@ import (
 
 const defaultBaseURL = "http://localhost:18050"
 
+var Version = "dev"
+
 func getBaseURL() string {
 	if url := os.Getenv("BROWSERWING_URL"); url != "" {
 		return strings.TrimRight(url, "/")
@@ -67,36 +69,92 @@ func Execute(args []string) bool {
 		return handleRun(args[2:])
 	case "list", "ls":
 		return handleList(args[2:])
-	case "help":
+	case "help", "--help", "-h":
 		printHelp()
+		return true
+	case "version", "--version", "-v":
+		printVersion()
 		return true
 	default:
 		return false
 	}
 }
 
+const banner = `
+  ____                                __        ___             
+ | __ ) _ __ _____      _____  _ __ \ \      / (_)_ __   __ _ 
+ |  _ \| '__/ _ \ \ /\ / / __|/ _ \ \ \ /\ / /| | '_ \ / _' |
+ | |_) | | | (_) \ V  V /\__ \  __/  \ V  V / | | | | | (_| |
+ |____/|_|  \___/ \_/\_/ |___/\___|   \_/\_/  |_|_| |_|\__, |
+                                                         |___/ `
+
+func printVersion() {
+	fmt.Printf("BrowserWing %s\n", Version)
+}
+
 func printHelp() {
-	fmt.Println(`BrowserWing CLI
+	fmt.Print(banner)
+	fmt.Printf("\n  %s — Intelligent Browser Automation Platform\n\n", Version)
 
-Usage:
-  browserwing [command]
+	fmt.Print(`USAGE:
+  browserwing <command> [options]
 
-Commands:
-  run <name|id> [--key=value...]   Run a script by name or ID
-  list                             List all available scripts
-  help                             Show this help
+COMMANDS:
+  run <name|id> [options]    Execute a script and return extracted data
+  list | ls    [options]     List all available scripts
+  help                       Show this help message
+  version                    Show version info
 
-Run Options:
-  --format=<json|table|csv>        Output format (default: table)
-  --<key>=<value>                  Pass variables to the script
+RUN OPTIONS:
+  --format=<json|table|csv>  Output format (default: json)
+  --no-headless              Show browser window (default: headless)
+  --<key>=<value>            Pass variables to the script
 
-Environment:
-  BROWSERWING_URL                  Server URL (default: http://localhost:18050)
+LIST OPTIONS:
+  --format=<json|table|csv>  Output format (default: table)
 
-Examples:
-  browserwing run "bilibili-hot" --limit=10 --format=json
-  browserwing list
-  browserwing run my-script --keyword="test" --format=csv`)
+ENVIRONMENT:
+  BROWSERWING_URL            Server URL (default: http://localhost:18050)
+
+`)
+
+	fmt.Print(`EXAMPLES:
+
+  # Get Bilibili trending videos (outputs JSON for piping)
+  browserwing run bilibili-hot
+
+  # Get GitHub trending repos as a table
+  browserwing run github-trending --format=table
+
+  # Search JD.com with a keyword
+  browserwing run jd-search --keyword="机械键盘" --format=json
+
+  # Run with visible browser for debugging
+  browserwing run zhihu-hot --no-headless
+
+  # List all scripts in JSON (for AI agents)
+  browserwing ls --format=json
+
+  # Pipe output to other tools
+  browserwing run hackernews-top --format=json | jq '.[0:5]'
+  browserwing run sinafinance-rank --format=csv > stocks.csv
+
+`)
+
+	fmt.Print(`AI AGENT INTEGRATION:
+
+  BrowserWing CLI is designed for AI agent consumption.
+  Use --format=json for structured output that's easy to parse.
+
+  Typical workflow:
+    1. browserwing ls --format=json    # discover available scripts
+    2. browserwing run <name>          # execute and get data as JSON
+    3. Parse the JSON output for further processing
+
+  MCP (Model Context Protocol) is also supported via the web API.
+  See: http://localhost:18050/api/v1/mcp for the MCP endpoint.
+
+`)
 }
 
 // --- Output Formatting ---
