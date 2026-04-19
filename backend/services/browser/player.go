@@ -3029,7 +3029,121 @@ func (p *Player) injectXHRInterceptorForScript(ctx context.Context, page *rod.Pa
 		return fmt.Errorf("failed to marshal capture targets: %w", err)
 	}
 
-	// 注入拦截器脚本
+	// 使用 EvalOnNewDocument 使拦截器在页面导航后自动重新注入
+	// 这对 headless 模式和 SPA 导航至关重要
+	interceptorScript := fmt.Sprintf(`(function() {
+		var captureTargetsJSON = %s;
+		if (window.__xhrCaptureInstalled__) {
+			return;
+		}`, string(targetsJSON)) + `
+		window.__xhrCaptureInstalled__ = true;
+		window.__capturedXHRData__ = window.__capturedXHRData__ || {};
+		
+		var captureTargets = JSON.parse(captureTargetsJSON);
+		var targetKeys = new Set();
+		captureTargets.forEach(function(target) {
+			var key = target.method + '|' + target.url;
+			targetKeys.add(key);
+		});
+		
+		var extractDomainAndPath = function(url) {
+			try {
+				var fullUrl = url;
+				if (url.indexOf('//') === 0) {
+					fullUrl = window.location.protocol + url;
+				} else if (url.indexOf('http') !== 0 && url.indexOf('//') !== 0) {
+					if (url.startsWith('/')) {
+						fullUrl = window.location.origin + url;
+					} else {
+						fullUrl = window.location.origin + '/' + url;
+					}
+				}
+				var urlObj = new URL(fullUrl);
+				return urlObj.origin + urlObj.pathname;
+			} catch (e) {
+				return url.split('?')[0].split('#')[0];
+			}
+		};
+		
+		var originalXHROpen = XMLHttpRequest.prototype.open;
+		var originalXHRSend = XMLHttpRequest.prototype.send;
+		
+		XMLHttpRequest.prototype.open = function(method, url) {
+			this.__xhrInfo__ = { method: method, url: url, domainAndPath: extractDomainAndPath(url) };
+			return originalXHROpen.apply(this, arguments);
+		};
+		
+		XMLHttpRequest.prototype.send = function(body) {
+			var xhr = this;
+			var xhrInfo = xhr.__xhrInfo__;
+			if (xhrInfo) {
+				xhr.addEventListener('readystatechange', function() {
+					if (xhr.readyState === 4) {
+						var key = xhrInfo.method + '|' + xhrInfo.domainAndPath;
+						if (!targetKeys.has(key)) return;
+						var response = null;
+						try {
+							if (xhr.responseType === '' || xhr.responseType === 'text') {
+								response = xhr.responseText;
+							} else if (xhr.responseType === 'json') {
+								response = xhr.response;
+							} else {
+								response = '[Binary Data]';
+							}
+						} catch (e) { response = '[Error reading response]'; }
+						window.__capturedXHRData__[key] = {
+							method: xhrInfo.method, url: xhrInfo.domainAndPath,
+							status: xhr.status, statusText: xhr.statusText,
+							response: response, timestamp: Date.now()
+						};
+						console.log('[BrowserWing Player] Captured XHR:', key, 'Status:', xhr.status);
+					}
+				});
+			}
+			return originalXHRSend.apply(this, arguments);
+		};
+		
+		var originalFetch = window.fetch;
+		window.fetch = function(input, init) {
+			var url = typeof input === 'string' ? input : input.url;
+			var method = (init && init.method) || 'GET';
+			var domainAndPath = extractDomainAndPath(url);
+			var key = method.toUpperCase() + '|' + domainAndPath;
+			if (!targetKeys.has(key)) return originalFetch.apply(this, arguments);
+			return originalFetch.apply(this, arguments).then(function(response) {
+				var clonedResponse = response.clone();
+				var contentType = response.headers.get('content-type') || '';
+				if (contentType.indexOf('application/json') !== -1) {
+					clonedResponse.json().then(function(data) {
+						window.__capturedXHRData__[key] = {
+							method: method.toUpperCase(), url: domainAndPath,
+							status: response.status, statusText: response.statusText,
+							response: data, timestamp: Date.now()
+						};
+					}).catch(function(e) {});
+				} else if (contentType.indexOf('text/') !== -1) {
+					clonedResponse.text().then(function(text) {
+						window.__capturedXHRData__[key] = {
+							method: method.toUpperCase(), url: domainAndPath,
+							status: response.status, statusText: response.statusText,
+							response: text, timestamp: Date.now()
+						};
+					}).catch(function(e) {});
+				}
+				return response;
+			});
+		};
+		
+		console.log('[BrowserWing Player] XHR capture installed, monitoring', targetKeys.size, 'targets');
+	})();`
+
+	// 注入 EvalOnNewDocument — 确保导航后拦截器自动生效
+	_, err = page.EvalOnNewDocument(interceptorScript)
+	if err != nil {
+		logger.Warn(ctx, "Failed to set EvalOnNewDocument for XHR interceptor: %v", err)
+	}
+
+	// 同时立即注入到当前页面（因为 EvalOnNewDocument 只对后续文档生效）
 	_, err = page.Eval(`(captureTargetsJSON) => {
 		if (window.__xhrCaptureInstalled__) {
 			console.log('[BrowserWing Player] XHR interceptor already installed');

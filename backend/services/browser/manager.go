@@ -1530,6 +1530,25 @@ func (m *Manager) getDefaultBrowserConfig() *models.BrowserConfig {
 		"detected browser environment: OS=%s, DISPLAY=%s, WAYLAND_DISPLAY=%s, headless=%v, noSandbox=%v",
 		osType, display, waylandDisplay, headless, noSandbox)
 
+	launchArgs := []string{
+		"disable-blink-features=AutomationControlled",
+		"excludeSwitches=enable-automation",
+		"no-first-run",
+		"no-default-browser-check",
+		"window-size=1920,1080",
+		"start-maximized",
+	}
+
+	if headless {
+		launchArgs = append(launchArgs,
+			"disable-background-timer-throttling",
+			"disable-backgrounding-occluded-windows",
+			"disable-renderer-backgrounding",
+			"disable-ipc-flooding-protection",
+			"enable-features=NetworkService,NetworkServiceInProcess",
+		)
+	}
+
 	return &models.BrowserConfig{
 		ID:          "default",
 		Name:        "默认配置",
@@ -1539,17 +1558,10 @@ func (m *Manager) getDefaultBrowserConfig() *models.BrowserConfig {
 		UseStealth:  &useStealth,
 		Headless:    &headless,
 		NoSandbox:   &noSandbox,
-		LaunchArgs: []string{
-			"disable-blink-features=AutomationControlled",
-			"excludeSwitches=enable-automation",
-			"no-first-run",
-			"no-default-browser-check",
-			"window-size=1920,1080",
-			"start-maximized",
-		},
-		IsDefault: true,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		LaunchArgs:  launchArgs,
+		IsDefault:   true,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 }
 
@@ -2070,6 +2082,19 @@ func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) 
 				"window-size=1920,1080",
 				"start-maximized",
 			}
+		}
+
+		// headless 模式下追加防止后台节流的关键参数
+		if headless {
+			headlessArgs := []string{
+				"disable-background-timer-throttling",
+				"disable-backgrounding-occluded-windows",
+				"disable-renderer-backgrounding",
+				"disable-ipc-flooding-protection",
+				"enable-features=NetworkService,NetworkServiceInProcess",
+			}
+			launchArgs = append(launchArgs, headlessArgs...)
+			logger.Info(ctx, "Headless mode detected, added anti-throttling flags")
 		}
 
 		for _, arg := range launchArgs {
