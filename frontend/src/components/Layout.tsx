@@ -79,22 +79,20 @@ export default function Layout() {
       .catch(() => {})
   }, [])
 
-  // 检查版本更新
+  // 检查版本更新（用后端返回的真实版本号比对）
   useEffect(() => {
     const checkVersion = async () => {
       const versionInfo = await fetchLatestVersion()
-      if (versionInfo && hasNewVersion(CURRENT_VERSION, versionInfo.version)) {
-        // 检查用户是否已经关闭过这个版本的更新提示
+      if (versionInfo && hasNewVersion(appVersion, versionInfo.version)) {
         if (!isVersionDismissed(versionInfo.version)) {
           setLatestVersionInfo(versionInfo)
           setShowUpdateDialog(true)
         }
       }
     }
-    // 延迟2秒后检查，避免影响首次加载
-    const timer = setTimeout(checkVersion, 2000)
+    const timer = setTimeout(checkVersion, 3000)
     return () => clearTimeout(timer)
-  }, [])
+  }, [appVersion])
 
   const handleDismissUpdate = () => {
     if (latestVersionInfo) {

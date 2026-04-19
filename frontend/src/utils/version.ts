@@ -1,5 +1,5 @@
-// 当前版本号
-export const CURRENT_VERSION = '1.0.0'
+// 前端内置版本号（兜底值，实际应从后端 API 获取）
+export const CURRENT_VERSION = '1.0.1-beta.2'
 
 // 版本信息接口
 export interface VersionInfo {
