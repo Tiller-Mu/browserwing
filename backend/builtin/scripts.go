@@ -17,7 +17,14 @@ type ScriptStore interface {
 
 func LoadBuiltinScripts(db ScriptStore) {
 	for _, s := range builtinScripts {
-		if existing, err := db.GetScript(s.ID); err == nil && existing != nil {
+		existing, err := db.GetScript(s.ID)
+		if err == nil && existing != nil {
+			// Always update builtin scripts so fixes take effect on restart
+			s.CreatedAt = existing.CreatedAt
+			s.UpdatedAt = time.Now()
+			if err := db.SaveScript(&s); err != nil {
+				log.Printf("Warning: failed to update builtin script %q: %v", s.Name, err)
+			}
 			continue
 		}
 		s.CreatedAt = time.Now()
@@ -43,7 +50,7 @@ func bilibiliHot() models.Script {
 		ID:          "builtin-bilibili-hot",
 		Name:        "bilibili-hot",
 		Description: "获取 B 站热门视频排行榜",
-		URL:         "https://api.bilibili.com/x/web-interface/ranking/v2",
+		URL:         "https://www.bilibili.com",
 		Tags:        []string{"builtin", "bilibili", "热门"},
 		Group:       "内置脚本",
 		CanFetch:    true,
@@ -53,23 +60,29 @@ func bilibiliHot() models.Script {
 		Actions: []models.ScriptAction{
 			{
 				Type: "navigate",
-				URL:  "https://api.bilibili.com/x/web-interface/ranking/v2",
+				URL:  "https://www.bilibili.com",
+			},
+			{
+				Type:     "sleep",
+				Duration: 2000,
 			},
 			{
 				Type:         "evaluate",
 				VariableName: "hot_list",
 				JSCode: `
-const resp = await fetch('https://api.bilibili.com/x/web-interface/ranking/v2');
-const json = await resp.json();
-const list = (json.data && json.data.list) || [];
-return JSON.stringify(list.slice(0, 20).map((v, i) => ({
-  rank: i + 1,
-  title: v.title,
-  author: v.owner && v.owner.name,
-  play: v.stat && v.stat.view,
-  like: v.stat && v.stat.like,
-  url: 'https://www.bilibili.com/video/' + v.bvid,
-})));
+var resp = await fetch('https://api.bilibili.com/x/web-interface/ranking/v2?rid=0&type=all');
+var json = await resp.json();
+var list = (json.data && json.data.list) || [];
+return JSON.stringify(list.slice(0, 20).map(function(v, i) {
+  return {
+    rank: i + 1,
+    title: v.title,
+    author: v.owner && v.owner.name,
+    play: v.stat && v.stat.view,
+    like: v.stat && v.stat.like,
+    url: 'https://www.bilibili.com/video/' + v.bvid
+  };
+}));
 `,
 			},
 		},
@@ -130,7 +143,7 @@ func weiboHot() models.Script {
 		ID:          "builtin-weibo-hot",
 		Name:        "weibo-hot",
 		Description: "获取微博热搜榜",
-		URL:         "https://weibo.com/ajax/side/hotSearch",
+		URL:         "https://weibo.com",
 		Tags:        []string{"builtin", "weibo", "热搜"},
 		Group:       "内置脚本",
 		CanFetch:    true,
@@ -140,22 +153,31 @@ func weiboHot() models.Script {
 		Actions: []models.ScriptAction{
 			{
 				Type: "navigate",
-				URL:  "https://weibo.com/ajax/side/hotSearch",
+				URL:  "https://weibo.com",
+			},
+			{
+				Type:     "sleep",
+				Duration: 3000,
 			},
 			{
 				Type:         "evaluate",
 				VariableName: "hot_list",
 				JSCode: `
-const resp = await fetch('https://weibo.com/ajax/side/hotSearch');
-const json = await resp.json();
-const realtime = (json.data && json.data.realtime) || [];
-return JSON.stringify(realtime.slice(0, 30).map((v, i) => ({
-  rank: i + 1,
-  title: v.note || v.word,
-  heat: v.num,
-  category: v.category || '',
-  url: 'https://s.weibo.com/weibo?q=' + encodeURIComponent('#' + (v.note || v.word) + '#'),
-})));
+var resp = await fetch('https://weibo.com/ajax/side/hotSearch');
+if (!resp.ok) {
+  return JSON.stringify([]);
+}
+var json = await resp.json();
+var realtime = (json.data && json.data.realtime) || [];
+return JSON.stringify(realtime.slice(0, 30).map(function(v, i) {
+  return {
+    rank: i + 1,
+    title: v.note || v.word,
+    heat: v.num,
+    category: v.category || '',
+    url: 'https://s.weibo.com/weibo?q=' + encodeURIComponent('#' + (v.note || v.word) + '#')
+  };
+}));
 `,
 			},
 		},

@@ -43,20 +43,22 @@ func TestLoadBuiltinScripts_FirstRun(t *testing.T) {
 	}
 }
 
-func TestLoadBuiltinScripts_Idempotent(t *testing.T) {
+func TestLoadBuiltinScripts_UpdatesExisting(t *testing.T) {
 	store := newMockStore()
 	LoadBuiltinScripts(store)
 	firstCount := len(store.scripts)
-
-	// Modify a script to detect if it gets overwritten
-	store.scripts["builtin-bilibili-hot"].Name = "MODIFIED"
 
 	LoadBuiltinScripts(store)
 	if len(store.scripts) != firstCount {
 		t.Errorf("second load changed script count: %d -> %d", firstCount, len(store.scripts))
 	}
-	if store.scripts["builtin-bilibili-hot"].Name != "MODIFIED" {
-		t.Error("second load should not overwrite existing scripts")
+
+	// Builtin scripts should always be updated to latest version
+	for _, bs := range builtinScripts {
+		stored := store.scripts[bs.ID]
+		if stored.Description != bs.Description {
+			t.Errorf("script %s was not updated on second load", bs.ID)
+		}
 	}
 }
 
