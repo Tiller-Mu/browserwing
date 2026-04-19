@@ -55,6 +55,23 @@ func handleList(args []string) bool {
 			if v, ok := s["variables"].(map[string]interface{}); ok && len(v) > 0 {
 				item["variables"] = v
 			}
+			if schema, ok := s["mcp_input_schema"].(map[string]interface{}); ok && len(schema) > 0 {
+				if props, ok := schema["properties"].(map[string]interface{}); ok && len(props) > 0 {
+					params := make(map[string]string)
+					for k, v := range props {
+						if detail, ok := v.(map[string]interface{}); ok {
+							desc, _ := detail["description"].(string)
+							if desc == "" {
+								desc, _ = detail["type"].(string)
+							}
+							params[k] = desc
+						}
+					}
+					if len(params) > 0 {
+						item["params"] = params
+					}
+				}
+			}
 			if v, ok := s["mcp_command_name"].(string); ok && v != "" {
 				item["mcp_command_name"] = v
 			}
