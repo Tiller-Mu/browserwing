@@ -173,8 +173,9 @@ type Script struct {
 	Tags        []string       `json:"tags"`        // 标签
 	Group       string         `json:"group"`       // 分组
 	Duration    int64          `json:"duration"`    // 录制时长（毫秒）
-	CanPublish  bool           `json:"can_publish"` // 是否可作为发布器使用
-	CanFetch    bool           `json:"can_fetch"`   // 是否可作为抓取器使用
+	CanPublish    bool           `json:"can_publish"`    // 是否可作为发布器使用
+	CanFetch      bool           `json:"can_fetch"`      // 是否可作为抓取器使用
+	RequiresLogin bool           `json:"requires_login"` // 是否需要登录才能正常运行
 
 	// 下载文件信息
 	DownloadedFiles []DownloadedFile `json:"downloaded_files,omitempty"` // 录制过程中下载的文件列表
@@ -233,6 +234,7 @@ func (s *Script) Copy() *Script {
 		Duration:              s.Duration,
 		CanPublish:            s.CanPublish,
 		CanFetch:              s.CanFetch,
+		RequiresLogin:        s.RequiresLogin,
 		DownloadedFiles:       downloadedFiles,
 		IsMCPCommand:          s.IsMCPCommand,
 		MCPCommandName:        s.MCPCommandName,

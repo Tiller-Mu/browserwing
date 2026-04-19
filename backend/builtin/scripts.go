@@ -38,6 +38,7 @@ func LoadBuiltinScripts(db ScriptStore) {
 }
 
 var builtinScripts = []models.Script{
+	// 无需登录
 	bilibiliHot(),
 	zhihuHot(),
 	weiboHot(),
@@ -54,10 +55,21 @@ var builtinScripts = []models.Script{
 	hupuHot(),
 	linuxDoHot(),
 	eastmoneyHotRank(),
-	xueqiuHot(),
 	imdbTrending(),
-	douyinHot(),
 	sinaFinanceRank(),
+	// 需要登录
+	douyinHot(),
+	xueqiuHot(),
+	xiaohongshuHot(),
+	bossHot(),
+	jdSearch(),
+	taobaoSearch(),
+	twitterTrending(),
+	linkedinJobs(),
+	smzdmHot(),
+	weixinArticle(),
+	jueJinHot(),
+	toutiaoHot(),
 }
 
 func bilibiliHot() models.Script {
@@ -258,11 +270,12 @@ func douyinHot() models.Script {
 	return models.Script{
 		ID:          "builtin-douyin-hot",
 		Name:        "douyin-hot",
-		Description: "获取抖音热搜榜",
+		Description: "获取抖音热搜榜（需要登录抖音）",
 		URL:         "https://www.douyin.com/hot",
-		Tags:        []string{"builtin", "douyin", "热搜"},
+		Tags:        []string{"builtin", "douyin", "热搜", "需要登录"},
 		Group:       "内置脚本",
-		CanFetch:    true,
+		CanFetch:      true,
+		RequiresLogin: true,
 		IsMCPCommand:          true,
 		MCPCommandName:        "douyin_hot",
 		MCPCommandDescription: "获取抖音热搜榜",
@@ -761,11 +774,12 @@ func xueqiuHot() models.Script {
 	return models.Script{
 		ID:          "builtin-xueqiu-hot",
 		Name:        "xueqiu-hot",
-		Description: "获取雪球热帖",
+		Description: "获取雪球热帖（需要登录雪球）",
 		URL:         "https://xueqiu.com",
-		Tags:        []string{"builtin", "xueqiu", "金融", "热帖"},
+		Tags:        []string{"builtin", "xueqiu", "金融", "热帖", "需要登录"},
 		Group:       "内置脚本",
-		CanFetch:    true,
+		CanFetch:      true,
+		RequiresLogin: true,
 		IsMCPCommand:          true,
 		MCPCommandName:        "xueqiu_hot",
 		MCPCommandDescription: "获取雪球热帖",
@@ -879,6 +893,453 @@ return JSON.stringify(data.map((s, i) => ({
   change_percent: s.changepercent + '%',
   volume: s.volume,
 })));
+`,
+			},
+		},
+	}
+}
+
+func xiaohongshuHot() models.Script {
+	return models.Script{
+		ID:          "builtin-xiaohongshu-hot",
+		Name:        "xiaohongshu-hot",
+		Description: "获取小红书热门笔记（需要登录）",
+		URL:         "https://www.xiaohongshu.com/explore",
+		Tags:        []string{"builtin", "xiaohongshu", "热门", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:      true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "xiaohongshu_hot",
+		MCPCommandDescription: "获取小红书热门笔记（需要登录）",
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://www.xiaohongshu.com/explore"},
+			{Type: "sleep", Duration: 3000},
+			{
+				Type: "evaluate", VariableName: "hot_list",
+				JSCode: `
+var items = document.querySelectorAll('[class*="note-item"], [class*="feeds-page"] section, a[href*="/explore/"]');
+if (!items.length) items = document.querySelectorAll('.note-item, section.note-item');
+var list = [];
+items.forEach(function(el, i) {
+  var titleEl = el.querySelector('[class*="title"], .title, span');
+  var authorEl = el.querySelector('[class*="author"], [class*="name"]');
+  var likeEl = el.querySelector('[class*="like"], [class*="count"]');
+  var linkEl = el.querySelector('a[href*="/explore/"], a[href*="/discovery/"]');
+  if (titleEl && titleEl.textContent.trim()) {
+    list.push({
+      rank: i + 1,
+      title: titleEl.textContent.trim(),
+      author: authorEl ? authorEl.textContent.trim() : '',
+      likes: likeEl ? likeEl.textContent.trim() : '',
+      url: linkEl ? linkEl.href : '',
+    });
+  }
+});
+return JSON.stringify(list.slice(0, 30));
+`,
+			},
+		},
+	}
+}
+
+func bossHot() models.Script {
+	return models.Script{
+		ID:          "builtin-boss-recommend",
+		Name:        "boss-recommend",
+		Description: "获取 Boss 直聘推荐职位（需要登录）",
+		URL:         "https://www.zhipin.com/web/geek/job-recommend",
+		Tags:        []string{"builtin", "boss", "招聘", "推荐", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:      true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "boss_recommend",
+		MCPCommandDescription: "获取 Boss 直聘推荐职位（需要登录）",
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://www.zhipin.com/web/geek/job-recommend"},
+			{Type: "sleep", Duration: 3000},
+			{
+				Type: "evaluate", VariableName: "hot_list",
+				JSCode: `
+var items = document.querySelectorAll('.job-card-wrap, [class*="job-card"], li.job-card');
+var list = [];
+items.forEach(function(el, i) {
+  var titleEl = el.querySelector('.job-name, [class*="job-name"], [class*="title"]');
+  var companyEl = el.querySelector('.company-name, [class*="company"]');
+  var salaryEl = el.querySelector('.salary, [class*="salary"]');
+  var areaEl = el.querySelector('.job-area, [class*="area"]');
+  var linkEl = el.querySelector('a[href*="/job_detail/"]');
+  if (titleEl) {
+    list.push({
+      rank: i + 1,
+      title: titleEl.textContent.trim(),
+      company: companyEl ? companyEl.textContent.trim() : '',
+      salary: salaryEl ? salaryEl.textContent.trim() : '',
+      area: areaEl ? areaEl.textContent.trim() : '',
+      url: linkEl ? linkEl.href : '',
+    });
+  }
+});
+return JSON.stringify(list.slice(0, 30));
+`,
+			},
+		},
+	}
+}
+
+func jdSearch() models.Script {
+	return models.Script{
+		ID:          "builtin-jd-search",
+		Name:        "jd-search",
+		Description: "京东商品搜索（需要登录以查看价格）",
+		URL:         "https://search.jd.com/Search",
+		Tags:        []string{"builtin", "jd", "京东", "搜索", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:      true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "jd_search",
+		MCPCommandDescription: "京东商品搜索（需要登录以查看价格）",
+		MCPInputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"keyword": map[string]interface{}{"type": "string", "description": "搜索关键词"},
+			},
+			"required": []string{"keyword"},
+		},
+		Variables: map[string]string{"keyword": "手机"},
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://search.jd.com/Search?keyword=${keyword}&enc=utf-8"},
+			{Type: "sleep", Duration: 3000},
+			{
+				Type: "evaluate", VariableName: "search_results",
+				JSCode: `
+var items = document.querySelectorAll('.gl-item, li.gl-item, [class*="gl-item"]');
+if (!items.length) items = document.querySelectorAll('#J_goodsList li');
+var list = [];
+items.forEach(function(el, i) {
+  var titleEl = el.querySelector('.p-name a em, .p-name a, [class*="p-name"]');
+  var priceEl = el.querySelector('.p-price i, .p-price strong, [class*="p-price"]');
+  var shopEl = el.querySelector('.p-shop a, [class*="p-shop"]');
+  var linkEl = el.querySelector('a[href*="item.jd.com"]');
+  if (titleEl && i < 20) {
+    list.push({
+      rank: i + 1,
+      title: titleEl.textContent.trim(),
+      price: priceEl ? priceEl.textContent.trim() : '',
+      shop: shopEl ? shopEl.textContent.trim() : '',
+      url: linkEl ? (linkEl.href.startsWith('//') ? 'https:' + linkEl.href : linkEl.href) : '',
+    });
+  }
+});
+return JSON.stringify(list);
+`,
+			},
+		},
+	}
+}
+
+func taobaoSearch() models.Script {
+	return models.Script{
+		ID:          "builtin-taobao-search",
+		Name:        "taobao-search",
+		Description: "淘宝商品搜索（需要登录）",
+		URL:         "https://s.taobao.com/search",
+		Tags:        []string{"builtin", "taobao", "淘宝", "搜索", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:      true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "taobao_search",
+		MCPCommandDescription: "淘宝商品搜索（需要登录）",
+		MCPInputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"keyword": map[string]interface{}{"type": "string", "description": "搜索关键词"},
+			},
+			"required": []string{"keyword"},
+		},
+		Variables: map[string]string{"keyword": "手机壳"},
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://s.taobao.com/search?q=${keyword}"},
+			{Type: "sleep", Duration: 3000},
+			{
+				Type: "evaluate", VariableName: "search_results",
+				JSCode: `
+var items = document.querySelectorAll('[class*="Card--"], [class*="item"], .item');
+var list = [];
+items.forEach(function(el, i) {
+  var titleEl = el.querySelector('[class*="Title"], .title, a span');
+  var priceEl = el.querySelector('[class*="price"], .price, [class*="Price"]');
+  var shopEl = el.querySelector('[class*="shop"], [class*="Store"]');
+  var linkEl = el.querySelector('a[href*="item.taobao"], a[href*="detail.tmall"]');
+  if (titleEl && titleEl.textContent.trim() && i < 20) {
+    list.push({
+      rank: i + 1,
+      title: titleEl.textContent.trim(),
+      price: priceEl ? priceEl.textContent.trim() : '',
+      shop: shopEl ? shopEl.textContent.trim() : '',
+      url: linkEl ? linkEl.href : '',
+    });
+  }
+});
+return JSON.stringify(list);
+`,
+			},
+		},
+	}
+}
+
+func twitterTrending() models.Script {
+	return models.Script{
+		ID:          "builtin-twitter-trending",
+		Name:        "twitter-trending",
+		Description: "获取 Twitter/X 热门趋势（需要登录）",
+		URL:         "https://x.com/explore/tabs/trending",
+		Tags:        []string{"builtin", "twitter", "trending", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:      true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "twitter_trending",
+		MCPCommandDescription: "获取 Twitter/X 热门趋势（需要登录）",
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://x.com/explore/tabs/trending"},
+			{Type: "sleep", Duration: 3000},
+			{
+				Type: "evaluate", VariableName: "hot_list",
+				JSCode: `
+var items = document.querySelectorAll('[data-testid="trend"], [class*="trend"]');
+var list = [];
+items.forEach(function(el, i) {
+  var spans = el.querySelectorAll('span');
+  var title = '';
+  var tweets = '';
+  spans.forEach(function(s) {
+    var txt = s.textContent.trim();
+    if (txt.startsWith('#') || (txt.length > 2 && !txt.includes('Trending') && !txt.includes('posts'))) {
+      if (!title) title = txt;
+    }
+    if (txt.includes('posts') || txt.includes('K') || txt.includes('M')) {
+      tweets = txt;
+    }
+  });
+  if (title) {
+    list.push({ rank: i + 1, title: title, tweets: tweets });
+  }
+});
+return JSON.stringify(list.slice(0, 30));
+`,
+			},
+		},
+	}
+}
+
+func linkedinJobs() models.Script {
+	return models.Script{
+		ID:          "builtin-linkedin-jobs",
+		Name:        "linkedin-jobs",
+		Description: "获取 LinkedIn 推荐职位（需要登录）",
+		URL:         "https://www.linkedin.com/jobs/",
+		Tags:        []string{"builtin", "linkedin", "招聘", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:      true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "linkedin_jobs",
+		MCPCommandDescription: "获取 LinkedIn 推荐职位（需要登录）",
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://www.linkedin.com/jobs/"},
+			{Type: "sleep", Duration: 3000},
+			{
+				Type: "evaluate", VariableName: "hot_list",
+				JSCode: `
+var items = document.querySelectorAll('.job-card-container, [class*="job-card"], .jobs-search-results__list-item');
+var list = [];
+items.forEach(function(el, i) {
+  var titleEl = el.querySelector('.job-card-list__title, [class*="job-title"], a[class*="title"]');
+  var companyEl = el.querySelector('.job-card-container__company-name, [class*="company"]');
+  var locationEl = el.querySelector('.job-card-container__metadata-item, [class*="location"]');
+  var linkEl = el.querySelector('a[href*="/jobs/view/"]');
+  if (titleEl && i < 20) {
+    list.push({
+      rank: i + 1,
+      title: titleEl.textContent.trim(),
+      company: companyEl ? companyEl.textContent.trim() : '',
+      location: locationEl ? locationEl.textContent.trim() : '',
+      url: linkEl ? linkEl.href : '',
+    });
+  }
+});
+return JSON.stringify(list);
+`,
+			},
+		},
+	}
+}
+
+func smzdmHot() models.Script {
+	return models.Script{
+		ID:          "builtin-smzdm-hot",
+		Name:        "smzdm-hot",
+		Description: "获取什么值得买热门好价",
+		URL:         "https://www.smzdm.com/jingxuan/",
+		Tags:        []string{"builtin", "smzdm", "优惠", "热门"},
+		Group:       "内置脚本",
+		CanFetch:    true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "smzdm_hot",
+		MCPCommandDescription: "获取什么值得买热门好价",
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://www.smzdm.com/jingxuan/"},
+			{Type: "sleep", Duration: 2000},
+			{
+				Type: "evaluate", VariableName: "hot_list",
+				JSCode: `
+var items = document.querySelectorAll('.feed-block, [class*="feed-block"], article');
+var list = [];
+items.forEach(function(el, i) {
+  var titleEl = el.querySelector('.feed-block__title a, h5 a, [class*="title"] a');
+  var priceEl = el.querySelector('.z-highlight, [class*="price"]');
+  var mallEl = el.querySelector('.feed-block__mall, [class*="mall"]');
+  if (titleEl && i < 30) {
+    list.push({
+      rank: i + 1,
+      title: titleEl.textContent.trim(),
+      price: priceEl ? priceEl.textContent.trim() : '',
+      mall: mallEl ? mallEl.textContent.trim() : '',
+      url: titleEl.href || '',
+    });
+  }
+});
+return JSON.stringify(list);
+`,
+			},
+		},
+	}
+}
+
+func weixinArticle() models.Script {
+	return models.Script{
+		ID:          "builtin-weixin-hot",
+		Name:        "weixin-hot",
+		Description: "获取微信公众号热门文章（需要登录微信读书）",
+		URL:         "https://weread.qq.com/web/category/rising",
+		Tags:        []string{"builtin", "weixin", "公众号", "热门", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:      true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "weixin_hot",
+		MCPCommandDescription: "获取微信读书飙升榜（需要登录）",
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://weread.qq.com/web/category/rising"},
+			{Type: "sleep", Duration: 3000},
+			{
+				Type: "evaluate", VariableName: "hot_list",
+				JSCode: `
+var items = document.querySelectorAll('.ranking_bookList_item, [class*="ranking_book"], [class*="bookList"] li');
+var list = [];
+items.forEach(function(el, i) {
+  var titleEl = el.querySelector('.ranking_bookList_title, [class*="title"]');
+  var authorEl = el.querySelector('.ranking_bookList_author, [class*="author"]');
+  var linkEl = el.querySelector('a');
+  if (titleEl && i < 30) {
+    list.push({
+      rank: i + 1,
+      title: titleEl.textContent.trim(),
+      author: authorEl ? authorEl.textContent.trim() : '',
+      url: linkEl ? linkEl.href : '',
+    });
+  }
+});
+return JSON.stringify(list);
+`,
+			},
+		},
+	}
+}
+
+func jueJinHot() models.Script {
+	return models.Script{
+		ID:          "builtin-juejin-hot",
+		Name:        "juejin-hot",
+		Description: "获取掘金热门文章",
+		URL:         "https://juejin.cn/hot/articles",
+		Tags:        []string{"builtin", "juejin", "技术", "热门"},
+		Group:       "内置脚本",
+		CanFetch:    true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "juejin_hot",
+		MCPCommandDescription: "获取掘金热门文章",
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://juejin.cn/hot/articles"},
+			{Type: "sleep", Duration: 2000},
+			{
+				Type: "evaluate", VariableName: "hot_list",
+				JSCode: `
+var items = document.querySelectorAll('.hot-list-item, [class*="HotList"], [class*="hot-item"]');
+if (!items.length) items = document.querySelectorAll('a[href*="/post/"]');
+var seen = {};
+var list = [];
+items.forEach(function(el, i) {
+  var titleEl = el.querySelector('.article-title, [class*="title"], .hot-list-item-title');
+  var hotEl = el.querySelector('[class*="hot"], [class*="count"]');
+  var linkEl = el.querySelector('a[href*="/post/"]') || (el.tagName === 'A' ? el : null);
+  var title = titleEl ? titleEl.textContent.trim() : (el.textContent || '').trim().slice(0, 60);
+  if (title && !seen[title]) {
+    seen[title] = true;
+    list.push({
+      rank: list.length + 1,
+      title: title,
+      hot: hotEl ? hotEl.textContent.trim() : '',
+      url: linkEl ? linkEl.href : '',
+    });
+  }
+});
+return JSON.stringify(list.slice(0, 30));
+`,
+			},
+		},
+	}
+}
+
+func toutiaoHot() models.Script {
+	return models.Script{
+		ID:          "builtin-toutiao-hot",
+		Name:        "toutiao-hot",
+		Description: "获取今日头条热榜",
+		URL:         "https://www.toutiao.com/hot-event/hot-board/",
+		Tags:        []string{"builtin", "toutiao", "头条", "热榜"},
+		Group:       "内置脚本",
+		CanFetch:    true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "toutiao_hot",
+		MCPCommandDescription: "获取今日头条热榜",
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://www.toutiao.com/hot-event/hot-board/"},
+			{Type: "sleep", Duration: 3000},
+			{
+				Type: "evaluate", VariableName: "hot_list",
+				JSCode: `
+var items = document.querySelectorAll('[class*="hot-board"] a, [class*="hotBoard"] a, [class*="HotBoard"] a');
+if (!items.length) items = document.querySelectorAll('a[href*="/trending/"]');
+var seen = {};
+var list = [];
+items.forEach(function(el) {
+  var title = el.textContent.trim();
+  var href = el.href || '';
+  if (title && title.length > 2 && title.length < 50 && !seen[title]) {
+    seen[title] = true;
+    list.push({
+      rank: list.length + 1,
+      title: title,
+      url: href,
+    });
+  }
+});
+return JSON.stringify(list.slice(0, 30));
 `,
 			},
 		},

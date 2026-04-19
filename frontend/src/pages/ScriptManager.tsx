@@ -2219,10 +2219,15 @@ export default function ScriptManager() {
                                   </span>
                                 )}
                               </div>
-                              {script.tags && script.tags.length > 0 && (
-                                <div className="flex items-center space-x-2 mt-2">
+                              {(script.requires_login || (script.tags && script.tags.length > 0)) && (
+                                <div className="flex items-center flex-wrap gap-1.5 mt-2">
                                   <Tag className="w-3 h-3 text-gray-400 dark:text-gray-500" />
-                                  {script.tags.map((tag) => (
+                                  {script.requires_login && (
+                                    <span className="px-2 py-0.5 bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 text-xs rounded border border-amber-200 dark:border-amber-700 font-medium">
+                                      🔐 {t('script.card.requiresLogin')}
+                                    </span>
+                                  )}
+                                  {script.tags && script.tags.filter(tag => tag !== '需要登录').map((tag) => (
                                     <span
                                       key={tag}
                                       className="px-2 py-0.5 bg-gray-50 text-gray-700 dark:bg-gray-700 dark:text-gray-300 text-xs rounded border border-gray-200 dark:border-gray-600"

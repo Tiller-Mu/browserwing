@@ -319,6 +319,7 @@ export interface Script {
   duration: number
   can_publish?: boolean
   can_fetch?: boolean
+  requires_login?: boolean
   is_mcp_command?: boolean
   mcp_command_name?: string
   mcp_command_description?: string
