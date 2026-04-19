@@ -70,23 +70,32 @@ func handleRun(args []string) bool {
 		os.Exit(1)
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing response: %v\n", err)
 		os.Exit(1)
 	}
 
+	// API returns {"message": ..., "result": {"success": bool, "extracted_data": {...}}}
+	result, _ := resp["result"].(map[string]interface{})
+	if result == nil {
+		// fallback: maybe response is the result itself
+		result = resp
+	}
+
 	success, _ := result["success"].(bool)
 	if !success {
-		msg, _ := result["error"].(string)
+		msg, _ := result["message"].(string)
 		if msg == "" {
-			msg, _ = result["message"].(string)
+			msg, _ = resp["error"].(string)
+		}
+		if msg == "" {
+			msg = "unknown error"
 		}
 		fmt.Fprintf(os.Stderr, "Script execution failed: %s\n", msg)
 		os.Exit(1)
 	}
 
-	// Get extracted data
 	extractedData, _ := result["extracted_data"].(map[string]interface{})
 	if len(extractedData) == 0 {
 		fmt.Fprintf(os.Stderr, "Done. (no data extracted)\n")
@@ -100,15 +109,18 @@ func handleRun(args []string) bool {
 }
 
 func resolveScriptID(ref string) (string, error) {
-	body, err := apiGet("/api/v1/scripts")
+	body, err := apiGet("/api/v1/scripts?page_size=100")
 	if err != nil {
 		return "", err
 	}
 
-	var scripts []map[string]interface{}
-	if err := json.Unmarshal(body, &scripts); err != nil {
+	var resp struct {
+		Scripts []map[string]interface{} `json:"scripts"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
 		return "", fmt.Errorf("failed to parse scripts list: %w", err)
 	}
+	scripts := resp.Scripts
 
 	for _, s := range scripts {
 		if id, _ := s["id"].(string); id == ref {

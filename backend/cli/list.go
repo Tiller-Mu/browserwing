@@ -16,17 +16,22 @@ func handleList(args []string) bool {
 		}
 	}
 
-	body, err := apiGet("/api/v1/scripts")
+	body, err := apiGet("/api/v1/scripts?page_size=100")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	var scripts []map[string]interface{}
-	if err := json.Unmarshal(body, &scripts); err != nil {
+	// API returns {"scripts": [...], "total": N, ...}
+	var resp struct {
+		Scripts []map[string]interface{} `json:"scripts"`
+		Total   int                      `json:"total"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing response: %v\n", err)
 		os.Exit(1)
 	}
+	scripts := resp.Scripts
 
 	if len(scripts) == 0 {
 		fmt.Println("No scripts found. Create scripts via the web UI first.")
