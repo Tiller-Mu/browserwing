@@ -15,6 +15,8 @@ import (
 
 	"github.com/browserwing/browserwing/agent"
 	"github.com/browserwing/browserwing/api"
+	"github.com/browserwing/browserwing/builtin"
+	"github.com/browserwing/browserwing/cli"
 	"github.com/browserwing/browserwing/config"
 	"github.com/browserwing/browserwing/llm"
 	"github.com/browserwing/browserwing/mcp"
@@ -35,7 +37,12 @@ var (
 )
 
 func main() {
-	// 命令行参数
+	// CLI subcommands: run, list, help — handled before flag parsing
+	if cli.Execute(os.Args) {
+		return
+	}
+
+	// 命令行参数（serve 模式）
 	port := flag.String("port", "", "Server port (default: 8080)")
 	host := flag.String("host", "", "Server host (default: 0.0.0.0)")
 	configPath := flag.String("config", "config.toml", "Path to config file (default: config.toml)")
@@ -97,6 +104,9 @@ func main() {
 	} else {
 		log.Println("✓ System prompts checked and updated")
 	}
+
+	// 加载内置脚本（首次运行时自动导入）
+	builtin.LoadBuiltinScripts(db)
 
 	// 初始化默认浏览器实例
 	err = initDefaultBrowserInstance(db, cfg)

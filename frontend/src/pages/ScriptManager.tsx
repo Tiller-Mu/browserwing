@@ -773,6 +773,12 @@ export default function ScriptManager() {
       newAction.js_code = 'return document.title;'
     }
 
+    // 为 evaluate 类型设置默认值（支持 async/await，自动 JSON 解析）
+    if (type === 'evaluate') {
+      newAction.variable_name = `data_${editingActions.length}`
+      newAction.js_code = `const resp = await fetch('/api/endpoint');\nconst json = await resp.json();\nreturn JSON.stringify(json);`
+    }
+
     // 为文件上传类型设置默认值
     if (type === 'upload_file') {
       newAction.file_paths = []
@@ -1494,6 +1500,7 @@ export default function ScriptManager() {
                         <div className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">{t('script.action.category.advanced')}</div>
                         <div className="grid grid-cols-2 gap-1.5">
                           <button onClick={() => { handleAddAction('execute_js'); setShowFloatingAddActionMenu(false); }} className="px-3 py-2 text-xs text-left bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors">{t('execute_js')}</button>
+                          <button onClick={() => { handleAddAction('evaluate'); setShowFloatingAddActionMenu(false); }} className="px-3 py-2 text-xs text-left bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors">{t('evaluate')}</button>
                           <button onClick={() => { handleAddAction('upload_file'); setShowFloatingAddActionMenu(false); }} className="px-3 py-2 text-xs text-left bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors">{t('upload_file')}</button>
                           <button onClick={() => { handleAddAction('keyboard'); setShowFloatingAddActionMenu(false); }} className="px-3 py-2 text-xs text-left bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors">{t('keyboard')}</button>
                           <button onClick={() => { handleAddAction('screenshot'); setShowFloatingAddActionMenu(false); }} className="px-3 py-2 text-xs text-left bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors">{t('screenshot')}</button>
@@ -2588,6 +2595,15 @@ export default function ScriptManager() {
                                                 className="px-3 py-2 text-xs text-left bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
                                               >
                                                 {t('execute_js')}
+                                              </button>
+                                              <button
+                                                onClick={() => {
+                                                  handleAddAction('evaluate')
+                                                  setShowAddActionMenu(false)
+                                                }}
+                                                className="px-3 py-2 text-xs text-left bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                                              >
+                                                {t('evaluate')}
                                               </button>
                                               <button
                                                 onClick={() => {
@@ -3842,6 +3858,7 @@ function SortableActionItem({ id, action, index, onUpdate, onDelete, onDuplicate
             {action.type !== 'sleep' &&
               action.type !== 'wait' &&
               action.type !== 'execute_js' &&
+              action.type !== 'evaluate' &&
               action.type !== 'upload_file' &&
               action.type !== 'scroll' &&
               action.type !== 'keyboard' &&
@@ -4059,7 +4076,7 @@ function SortableActionItem({ id, action, index, onUpdate, onDelete, onDuplicate
                 )}
               </>
             )}
-            {action.type === 'execute_js' && (
+            {(action.type === 'execute_js' || action.type === 'evaluate') && (
               <>
                 <div>
                   <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 block">{t('script.action.jsCode')}</label>
@@ -4623,7 +4640,7 @@ function ActionItemView({ action, index, llmConfigs }: ActionItemViewProps) {
             )}
           </>
         )}
-        {action.type === 'execute_js' && (
+        {(action.type === 'execute_js' || action.type === 'evaluate') && (
           <>
             {action.js_code && (
               <div className="text-sm text-gray-600 dark:text-gray-400">

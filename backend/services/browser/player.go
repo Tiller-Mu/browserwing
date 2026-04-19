@@ -1281,6 +1281,8 @@ func (p *Player) executeAction(ctx context.Context, page *rod.Page, action model
 		return p.executeCaptureXHR(ctx, activePage, action)
 	case "ai_control":
 		return p.executeAIControl(ctx, activePage, action)
+	case "evaluate":
+		return p.executeEvaluate(ctx, activePage, action)
 	default:
 		logger.Warn(ctx, "Unknown action type: %s", action.Type)
 		return nil
@@ -2047,6 +2049,77 @@ func (p *Player) executeJS(ctx context.Context, page *rod.Page, action models.Sc
 
 	logger.Info(ctx, "✓ JavaScript execution successful: %s", varName)
 	return nil
+}
+
+// executeEvaluate 在页面上下文中执行 JS 并将结果存为变量（支持 async/await）。
+// 与 execute_js 的区别：evaluate 总是捕获返回值，自动解析 JSON，
+// 专为"从页面提取结构化数据"或"调用内部 API"设计。
+func (p *Player) executeEvaluate(ctx context.Context, page *rod.Page, action models.ScriptAction) error {
+	if action.JSCode == "" {
+		return fmt.Errorf("evaluate: js_code is required")
+	}
+
+	jsCode := strings.TrimSpace(action.JSCode)
+	logger.Info(ctx, "Evaluate JS (%d chars)", len(jsCode))
+
+	// 判断是否包含 await，决定是否包装为 async
+	isAsync := strings.Contains(jsCode, "await ")
+
+	var wrapper string
+	if isAsync {
+		wrapper = fmt.Sprintf(`async () => { %s }`, ensureReturn(jsCode))
+	} else {
+		wrapper = fmt.Sprintf(`() => { %s }`, ensureReturn(jsCode))
+	}
+
+	var result *proto.RuntimeRemoteObject
+	var err error
+
+	if isAsync {
+		result, err = page.Eval(wrapper)
+		if err != nil {
+			return fmt.Errorf("evaluate async JS failed: %w", err)
+		}
+	} else {
+		result, err = page.Eval(wrapper)
+		if err != nil {
+			return fmt.Errorf("evaluate JS failed: %w", err)
+		}
+	}
+
+	varName := action.VariableName
+	if varName == "" {
+		varName = fmt.Sprintf("eval_%d", len(p.extractedData))
+	}
+
+	raw := result.Value
+	p.extractedData[varName] = raw
+
+	// 如果返回的是 string，尝试解析为 JSON（方便后续 --format 使用）
+	if str, ok := raw.Val().(string); ok {
+		var parsed interface{}
+		if json.Unmarshal([]byte(str), &parsed) == nil {
+			p.extractedData[varName] = parsed
+		}
+	}
+
+	logger.Info(ctx, "✓ Evaluate complete: %s", varName)
+	return nil
+}
+
+// ensureReturn wraps code so the last expression is returned.
+func ensureReturn(code string) string {
+	lines := strings.Split(strings.TrimSpace(code), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+
+	if strings.HasPrefix(last, "return ") {
+		return code
+	}
+	if strings.HasSuffix(last, ";") {
+		last = strings.TrimSuffix(last, ";")
+	}
+	lines[len(lines)-1] = "return " + last + ";"
+	return strings.Join(lines, "\n")
 }
 
 // executeScroll 执行滚动操作
