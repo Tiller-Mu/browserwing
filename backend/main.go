@@ -31,7 +31,7 @@ import (
 
 // 构建信息变量，通过Makefile的LDFLAGS注入
 var (
-	Version   = "v0.1.0"
+	Version   = "v1.1.0-beta.1"
 	BuildTime = ""
 	GoVersion = ""
 )
