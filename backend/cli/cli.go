@@ -9,20 +9,55 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
-const defaultBaseURL = "http://localhost:18050"
-
 var Version = "dev"
+
+// cliPort can be set by --port flag before subcommand dispatch
+var cliPort string
 
 func getBaseURL() string {
 	if url := os.Getenv("BROWSERWING_URL"); url != "" {
 		return strings.TrimRight(url, "/")
 	}
-	return defaultBaseURL
+	if cliPort != "" {
+		return "http://localhost:" + cliPort
+	}
+	if port := detectPortFromConfig(); port != "" {
+		return "http://localhost:" + port
+	}
+	return "http://localhost:18050"
+}
+
+func detectPortFromConfig() string {
+	candidates := []string{
+		"config.toml",
+		filepath.Join(".", "config.toml"),
+	}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "config.toml"))
+	}
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var cfg struct {
+			Server struct {
+				Port string `toml:"port"`
+			} `toml:"server"`
+		}
+		if err := toml.Unmarshal(data, &cfg); err == nil && cfg.Server.Port != "" {
+			return cfg.Server.Port
+		}
+	}
+	return ""
 }
 
 func apiGet(path string) ([]byte, error) {
@@ -63,12 +98,28 @@ func Execute(args []string) bool {
 		return false
 	}
 
-	subcmd := args[1]
+	// Extract global flags (--port, --url) before subcommand
+	var filteredArgs []string
+	for _, arg := range args[1:] {
+		if strings.HasPrefix(arg, "--port=") {
+			cliPort = strings.TrimPrefix(arg, "--port=")
+		} else if strings.HasPrefix(arg, "--url=") {
+			os.Setenv("BROWSERWING_URL", strings.TrimPrefix(arg, "--url="))
+		} else {
+			filteredArgs = append(filteredArgs, arg)
+		}
+	}
+
+	if len(filteredArgs) == 0 {
+		return false
+	}
+
+	subcmd := filteredArgs[0]
 	switch subcmd {
 	case "run":
-		return handleRun(args[2:])
+		return handleRun(filteredArgs[1:])
 	case "list", "ls":
-		return handleList(args[2:])
+		return handleList(filteredArgs[1:])
 	case "help", "--help", "-h":
 		printHelp()
 		return true
@@ -105,6 +156,10 @@ COMMANDS:
   help                       Show this help message
   version                    Show version info
 
+GLOBAL OPTIONS:
+  --port=<port>              Server port (auto-detected from config.toml)
+  --url=<url>               Full server URL (overrides port)
+
 RUN OPTIONS:
   --format=<json|table|csv>  Output format (default: json)
   --no-headless              Show browser window (default: headless)
@@ -114,7 +169,7 @@ LIST OPTIONS:
   --format=<json|table|csv>  Output format (default: table)
 
 ENVIRONMENT:
-  BROWSERWING_URL            Server URL (default: http://localhost:18050)
+  BROWSERWING_URL            Server URL (overrides all other settings)
 
 `)
 

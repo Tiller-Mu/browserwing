@@ -27,8 +27,10 @@ func TestExecute_Help(t *testing.T) {
 
 func TestGetBaseURL_Default(t *testing.T) {
 	os.Unsetenv("BROWSERWING_URL")
-	if got := getBaseURL(); got != defaultBaseURL {
-		t.Errorf("getBaseURL() = %q, want %q", got, defaultBaseURL)
+	cliPort = ""
+	got := getBaseURL()
+	if !strings.HasPrefix(got, "http://localhost:") {
+		t.Errorf("getBaseURL() = %q, want http://localhost:<port>", got)
 	}
 }
 
