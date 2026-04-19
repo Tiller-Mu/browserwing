@@ -1026,6 +1026,11 @@ func (p *Player) PlayScript(ctx context.Context, page *rod.Page, script *models.
 		p.currentStepIndex = i
 		logger.Info(ctx, "[%d/%d] Execute action: %s", i+1, len(script.Actions), action.Type)
 
+		// 运行时变量替换：将前面步骤提取的数据替换到当前 action 的字段中
+		if len(variables) > 0 {
+			action = p.substituteActionVariables(action, variables)
+		}
+
 		// 更新 AI 控制状态显示（标记为执行中）
 		p.updateAIControlStatus(ctx, page, i+1, len(script.Actions), action.Type)
 
@@ -1082,6 +1087,37 @@ func (p *Player) PlayScript(ctx context.Context, page *rod.Page, script *models.
 	}
 
 	return nil
+}
+
+// substituteActionVariables 替换 action 字段中的 ${variable} 占位符
+// 使用运行时 variables map（包含前面步骤提取的数据）进行替换
+func (p *Player) substituteActionVariables(action models.ScriptAction, variables map[string]string) models.ScriptAction {
+	replace := func(s string) string {
+		if s == "" {
+			return s
+		}
+		for k, v := range variables {
+			s = strings.ReplaceAll(s, fmt.Sprintf("${%s}", k), v)
+		}
+		return s
+	}
+
+	action.Value = replace(action.Value)
+	action.URL = replace(action.URL)
+	action.Selector = replace(action.Selector)
+	action.XPath = replace(action.XPath)
+	action.JSCode = replace(action.JSCode)
+	action.AIControlPrompt = replace(action.AIControlPrompt)
+
+	if len(action.FilePaths) > 0 {
+		newPaths := make([]string, len(action.FilePaths))
+		for i, path := range action.FilePaths {
+			newPaths[i] = replace(path)
+		}
+		action.FilePaths = newPaths
+	}
+
+	return action
 }
 
 // evaluateCondition 评估操作执行条件
