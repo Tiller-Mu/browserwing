@@ -173,7 +173,16 @@ ENVIRONMENT:
 
 `)
 
-	fmt.Print(`EXAMPLES:
+	fmt.Print("PASSING PARAMETERS:\n\n")
+	fmt.Print("  Some scripts accept parameters (shown in \"params\" field of ls --format=json).\n")
+	fmt.Print("  Pass them as --key=value flags after the script name:\n\n")
+	fmt.Print("    browserwing run jd-search --keyword=\"机械键盘\"\n")
+	fmt.Print("    browserwing run taobao-search --keyword=\"蓝牙耳机\"\n\n")
+	fmt.Print("  Parameters replace ${key} placeholders in the script's URL/actions.\n")
+	fmt.Print("  Use \"browserwing ls --format=json\" to see which scripts have params.\n")
+	fmt.Print(`
+
+EXAMPLES:
 
   # Get Bilibili trending videos (outputs JSON for piping)
   browserwing run bilibili-hot
@@ -181,17 +190,18 @@ ENVIRONMENT:
   # Get GitHub trending repos as a table
   browserwing run github-trending --format=table
 
-  # Search JD.com with a keyword
-  browserwing run jd-search --keyword="机械键盘" --format=json
+  # Search with parameters
+  browserwing run jd-search --keyword="机械键盘"
+  browserwing run taobao-search --keyword="蓝牙耳机" --format=table
 
   # Run with visible browser for debugging
   browserwing run zhihu-hot --no-headless
 
-  # List all scripts in JSON (for AI agents)
+  # List all scripts (discover params)
   browserwing ls --format=json
 
   # Pipe output to other tools
-  browserwing run hackernews-top --format=json | jq '.[0:5]'
+  browserwing run hackernews-top | jq '.[0:5]'
   browserwing run sinafinance-rank --format=csv > stocks.csv
 
 `)

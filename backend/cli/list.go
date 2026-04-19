@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 )
+
+var placeholderRe = regexp.MustCompile(`\$\{(\w+)\}`)
 
 func handleList(args []string) bool {
 	format := "table"
@@ -52,25 +55,9 @@ func handleList(args []string) bool {
 			if v, ok := s["requires_login"].(bool); ok && v {
 				item["requires_login"] = true
 			}
-			if v, ok := s["variables"].(map[string]interface{}); ok && len(v) > 0 {
-				item["variables"] = v
-			}
-			if schema, ok := s["mcp_input_schema"].(map[string]interface{}); ok && len(schema) > 0 {
-				if props, ok := schema["properties"].(map[string]interface{}); ok && len(props) > 0 {
-					params := make(map[string]string)
-					for k, v := range props {
-						if detail, ok := v.(map[string]interface{}); ok {
-							desc, _ := detail["description"].(string)
-							if desc == "" {
-								desc, _ = detail["type"].(string)
-							}
-							params[k] = desc
-						}
-					}
-					if len(params) > 0 {
-						item["params"] = params
-					}
-				}
+			params := extractParams(s)
+			if len(params) > 0 {
+				item["params"] = params
 			}
 			if v, ok := s["mcp_command_name"].(string); ok && v != "" {
 				item["mcp_command_name"] = v
@@ -119,4 +106,56 @@ func handleList(args []string) bool {
 	}
 
 	return true
+}
+
+// extractParams collects parameter info from mcp_input_schema, variables, and action placeholders.
+func extractParams(s map[string]interface{}) map[string]string {
+	params := make(map[string]string)
+
+	// 1. From mcp_input_schema (has descriptions)
+	if schema, ok := s["mcp_input_schema"].(map[string]interface{}); ok {
+		if props, ok := schema["properties"].(map[string]interface{}); ok {
+			for k, v := range props {
+				if detail, ok := v.(map[string]interface{}); ok {
+					desc, _ := detail["description"].(string)
+					if desc == "" {
+						desc, _ = detail["type"].(string)
+					}
+					params[k] = desc
+				}
+			}
+		}
+	}
+
+	// 2. From variables (default values)
+	if vars, ok := s["variables"].(map[string]interface{}); ok {
+		for k, v := range vars {
+			if _, exists := params[k]; !exists {
+				params[k] = fmt.Sprintf("default: %v", v)
+			}
+		}
+	}
+
+	// 3. Scan actions for ${placeholder} patterns
+	if actions, ok := s["actions"].([]interface{}); ok {
+		for _, a := range actions {
+			action, ok := a.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			for _, field := range []string{"url", "value", "selector", "xpath", "js_code"} {
+				if str, ok := action[field].(string); ok {
+					matches := placeholderRe.FindAllStringSubmatch(str, -1)
+					for _, m := range matches {
+						name := m[1]
+						if _, exists := params[name]; !exists {
+							params[name] = ""
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return params
 }
