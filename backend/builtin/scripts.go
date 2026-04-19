@@ -50,7 +50,7 @@ func bilibiliHot() models.Script {
 		ID:          "builtin-bilibili-hot",
 		Name:        "bilibili-hot",
 		Description: "获取 B 站热门视频排行榜",
-		URL:         "https://www.bilibili.com",
+		URL:         "https://www.bilibili.com/v/popular/rank/all",
 		Tags:        []string{"builtin", "bilibili", "热门"},
 		Group:       "内置脚本",
 		CanFetch:    true,
@@ -60,29 +60,36 @@ func bilibiliHot() models.Script {
 		Actions: []models.ScriptAction{
 			{
 				Type: "navigate",
-				URL:  "https://www.bilibili.com",
+				URL:  "https://www.bilibili.com/v/popular/rank/all",
 			},
 			{
 				Type:     "sleep",
-				Duration: 2000,
+				Duration: 3000,
 			},
 			{
 				Type:         "evaluate",
 				VariableName: "hot_list",
 				JSCode: `
-var resp = await fetch('https://api.bilibili.com/x/web-interface/ranking/v2?rid=0&type=all');
-var json = await resp.json();
-var list = (json.data && json.data.list) || [];
-return JSON.stringify(list.slice(0, 20).map(function(v, i) {
-  return {
-    rank: i + 1,
-    title: v.title,
-    author: v.owner && v.owner.name,
-    play: v.stat && v.stat.view,
-    like: v.stat && v.stat.like,
-    url: 'https://www.bilibili.com/video/' + v.bvid
-  };
-}));
+var items = document.querySelectorAll('.rank-item, .rank-list .item, li.rank-item');
+if (!items.length) items = document.querySelectorAll('[class*="rank-item"], [class*="video-card"]');
+var list = [];
+items.forEach(function(el, i) {
+  var titleEl = el.querySelector('.title, .info a, [class*="title"]');
+  var linkEl = el.querySelector('a[href*="/video/"]') || (titleEl && titleEl.closest('a'));
+  var playEl = el.querySelector('[class*="play"], [class*="view"], .detail-state .data-box');
+  var authorEl = el.querySelector('[class*="author"], [class*="up-name"], .detail-state .data-box:nth-child(2)');
+  if (titleEl) {
+    var href = linkEl ? linkEl.href : '';
+    list.push({
+      rank: i + 1,
+      title: titleEl.textContent.trim(),
+      url: href,
+      play: playEl ? playEl.textContent.trim() : '',
+      author: authorEl ? authorEl.textContent.trim() : ''
+    });
+  }
+});
+return JSON.stringify(list);
 `,
 			},
 		},
