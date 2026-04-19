@@ -378,6 +378,14 @@ func (m *Manager) Start(ctx context.Context) error {
 						logger.Warn(ctx, "Failed to cleanup singleton lock: %v", err)
 					}
 
+					// 检查锁文件是否仍然存在（说明有进程正在持有它们）
+					if m.lockFilesStillExist(userDataDir) {
+						logger.Warn(ctx, "Lock files still exist after cleanup, killing orphaned Chrome processes...")
+						m.killChromeByUserDataDir(ctx, userDataDir)
+						time.Sleep(1 * time.Second)
+						m.cleanupSingletonLock(ctx, userDataDir)
+					}
+
 					l = l.UserDataDir(userDataDir)
 					logger.Info(ctx, fmt.Sprintf("✓ Using user data directory: %s", userDataDir))
 				}
@@ -387,41 +395,31 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 
 		logger.Info(ctx, "Starting browser process...")
-		// 启动浏览器
+		// 启动浏览器（失败后自动重试一次）
 		var err error
 		url, err = l.Launch()
 		if err != nil {
-			errMsg := err.Error()
-			logger.Error(ctx, "Failed to start browser, detailed error: %v", err)
+			logger.Error(ctx, "Failed to start browser: %v, attempting to kill orphaned processes and retry...", err)
 
-			// 如果是 SingletonLock 错误，尝试清理并给出提示
-			if m.config.Browser != nil && m.config.Browser.UserDataDir != "" && strings.Contains(errMsg, "SingletonLock") {
-				logger.Error(ctx, "Browser launch failed due to SingletonLock, attempting cleanup...")
+			// 杀死残留的 Chrome 进程并清理锁文件
+			if m.config.Browser != nil && m.config.Browser.UserDataDir != "" {
+				m.killChromeByUserDataDir(ctx, m.config.Browser.UserDataDir)
+			} else {
+				m.KillOrphanedChromeProcesses(ctx)
+			}
+			time.Sleep(2 * time.Second)
+			if m.config.Browser != nil && m.config.Browser.UserDataDir != "" {
 				m.cleanupSingletonLock(ctx, m.config.Browser.UserDataDir)
-				return fmt.Errorf("failed to launch browser (SingletonLock issue): %w\nTip: The lock files have been cleaned up. Please try starting the browser again", err)
 			}
 
-			// 检查是否是因为 Chrome 已经在运行
-			if strings.Contains(errMsg, "会话") || strings.Contains(errMsg, "session") || strings.Contains(errMsg, "already") {
-				logger.Error(ctx, "")
-				logger.Error(ctx, "❌ Error reason: Chrome browser is already running with the same user data directory")
-				logger.Error(ctx, "")
-				logger.Error(ctx, "Solution:")
-				logger.Error(ctx, "  1. Close all Chrome browser windows")
-				logger.Error(ctx, "  2. Open Task Manager and end all chrome.exe processes")
-				logger.Error(ctx, "  3. Then click the 'Start Browser' button again")
-				logger.Error(ctx, "")
-				logger.Error(ctx, "Or modify user_data_dir in config.toml to another directory")
-				logger.Error(ctx, "")
-				return fmt.Errorf("Chrome is already running with the same user data directory, please close all Chrome windows and try again")
+			// 重试启动
+			logger.Info(ctx, "Retrying browser launch...")
+			url, err = l.Launch()
+			if err != nil {
+				logger.Error(ctx, "Browser launch failed on retry: %v", err)
+				return fmt.Errorf("failed to start browser (tried killing orphaned processes): %w", err)
 			}
-
-			logger.Error(ctx, "Possible reasons:")
-			logger.Error(ctx, "  1. Incorrect Chrome path")
-			logger.Error(ctx, "  2. Insufficient permissions or invalid path for user data directory")
-			logger.Error(ctx, "  3. Chrome is being used by another process")
-			logger.Error(ctx, "  4. Blocked by system firewall or security software")
-			return fmt.Errorf("failed to start browser: %w", err)
+			logger.Info(ctx, "✓ Browser launched successfully on retry")
 		}
 
 		logger.Info(ctx, fmt.Sprintf("Browser control URL: %s", url))
@@ -1666,6 +1664,35 @@ func (m *Manager) cleanupSingletonLock(ctx context.Context, userDataDir string) 
 	return nil
 }
 
+// lockFilesStillExist checks if Chrome lock files exist in the user data directory.
+// Returns true if any lock file is present (indicating a Chrome process may be holding them).
+func (m *Manager) lockFilesStillExist(userDataDir string) bool {
+	for _, name := range []string{"SingletonLock", "SingletonSocket", "lockfile"} {
+		if _, err := os.Stat(filepath.Join(userDataDir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// killChromeByUserDataDir kills Chrome processes associated with the given user data directory.
+// It works on both Windows and Unix systems. Unlike KillOrphanedChromeProcesses which uses
+// m.config.Browser.UserDataDir, this method accepts an explicit directory parameter.
+func (m *Manager) killChromeByUserDataDir(ctx context.Context, userDataDir string) {
+	if userDataDir == "" {
+		return
+	}
+
+	dirName := filepath.Base(userDataDir)
+	logger.Info(ctx, "[killChromeByUserDataDir] Killing Chrome processes using data dir: %s", dirName)
+
+	if runtime.GOOS == "windows" {
+		_ = m.killOrphanedChromeWindows(ctx, userDataDir, dirName)
+	} else {
+		_ = m.killOrphanedChromeUnix(ctx, userDataDir, dirName)
+	}
+}
+
 // KillOrphanedChromeProcesses finds and kills Chrome processes that are using
 // the configured user data directory. This is used as a last resort when lock
 // files cannot be removed because a Chrome process from a previous session is
@@ -2108,43 +2135,44 @@ func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) 
 					logger.Warn(ctx, "Failed to cleanup singleton lock: %v", err)
 				}
 
+				// 检查锁文件是否仍然存在（说明有进程正在持有它们）
+				if m.lockFilesStillExist(instance.UserDataDir) {
+					logger.Warn(ctx, "Lock files still exist after cleanup, killing orphaned Chrome processes...")
+					m.killChromeByUserDataDir(ctx, instance.UserDataDir)
+					time.Sleep(1 * time.Second)
+					m.cleanupSingletonLock(ctx, instance.UserDataDir)
+				}
+
 				l = l.UserDataDir(instance.UserDataDir)
 				logger.Info(ctx, "Using user data directory: %s", instance.UserDataDir)
 			}
 		}
 
-		// 启动浏览器
+		// 启动浏览器（失败后自动重试一次）
 		logger.Info(ctx, "[startInstanceInternal] Launching Chrome...")
 		url, err = l.Launch()
 		if err != nil {
-			errMsg := err.Error()
-			logger.Error(ctx, "[startInstanceInternal] Chrome launch failed: %v", err)
+			logger.Error(ctx, "[startInstanceInternal] Chrome launch failed: %v, attempting to kill orphaned processes and retry...", err)
 
-			// Log additional diagnostics for debug URL failures
-			if strings.Contains(errMsg, "Failed to get the debug url") {
-				logger.Error(ctx, "[startInstanceInternal] Chrome failed to provide debug URL. Possible causes:")
-				logger.Error(ctx, "  1. Another Chrome process is using the same user data directory")
-				logger.Error(ctx, "  2. Chrome crashed immediately on startup")
-				logger.Error(ctx, "  3. Lock files (lockfile/SingletonLock) are held by a zombie process")
-
-				// Check if lock files still exist
-				if instance.UserDataDir != "" {
-					for _, name := range []string{"lockfile", "SingletonLock", "DevToolsActivePort"} {
-						p := filepath.Join(instance.UserDataDir, name)
-						if info, statErr := os.Stat(p); statErr == nil {
-							logger.Error(ctx, "  → %s EXISTS (size: %d, modified: %s)", name, info.Size(), info.ModTime().Format("15:04:05"))
-						}
-					}
-				}
+			// 杀死残留的 Chrome 进程并清理锁文件
+			if instance.UserDataDir != "" {
+				m.killChromeByUserDataDir(ctx, instance.UserDataDir)
+			} else {
+				m.KillOrphanedChromeProcesses(ctx)
 			}
-
-			// 如果启动失败，尝试再次清理锁文件并给出提示
-			if instance.UserDataDir != "" && strings.Contains(errMsg, "SingletonLock") {
-				logger.Error(ctx, "Browser launch failed due to SingletonLock, attempting cleanup...")
+			time.Sleep(2 * time.Second)
+			if instance.UserDataDir != "" {
 				m.cleanupSingletonLock(ctx, instance.UserDataDir)
-				return fmt.Errorf("failed to launch browser (SingletonLock issue): %w\nTip: The lock files have been cleaned up. Please try starting the instance again", err)
 			}
-			return fmt.Errorf("failed to launch browser: %w", err)
+
+			// 重试启动
+			logger.Info(ctx, "[startInstanceInternal] Retrying Chrome launch...")
+			url, err = l.Launch()
+			if err != nil {
+				logger.Error(ctx, "[startInstanceInternal] Chrome launch failed on retry: %v", err)
+				return fmt.Errorf("failed to launch browser (tried killing orphaned processes): %w", err)
+			}
+			logger.Info(ctx, "[startInstanceInternal] ✓ Chrome launched successfully on retry")
 		}
 
 		browser = rod.New().ControlURL(url)
