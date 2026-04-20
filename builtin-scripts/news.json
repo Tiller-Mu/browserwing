@@ -1,0 +1,135 @@
+[
+  {
+    "id": "builtin-36kr-hot",
+    "name": "36kr-hot",
+    "description": "获取 36 氪热榜文章",
+    "url": "https://www.36kr.com/hot-list/catalog",
+    "tags": [
+      "builtin",
+      "36kr",
+      "科技",
+      "热榜"
+    ],
+    "group": "内置脚本",
+    "category": "news",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "kr36_hot",
+    "mcp_command_description": "获取 36 氪热榜文章",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.36kr.com/hot-list/catalog"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar links = document.querySelectorAll('a[href*=\"/p/\"]');\nvar seen = {};\nvar list = [];\nlinks.forEach(function(a) {\n  var title = a.textContent.trim();\n  var href = a.getAttribute('href');\n  if (!title || !href || seen[href]) return;\n  seen[href] = true;\n  var url = href.startsWith('http') ? href : 'https://36kr.com' + href;\n  list.push({ rank: list.length + 1, title: title, url: url });\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-weixin-hot",
+    "name": "weixin-hot",
+    "description": "获取微信公众号热门文章（需要登录微信读书）",
+    "url": "https://weread.qq.com/web/category/rising",
+    "tags": [
+      "builtin",
+      "weixin",
+      "公众号",
+      "热门",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "category": "news",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "weixin_hot",
+    "mcp_command_description": "获取微信读书飙升榜（需要登录）",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://weread.qq.com/web/category/rising"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.ranking_bookList_item, [class*=\"ranking_book\"], [class*=\"bookList\"] li');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.ranking_bookList_title, [class*=\"title\"]');\n  var authorEl = el.querySelector('.ranking_bookList_author, [class*=\"author\"]');\n  var linkEl = el.querySelector('a');\n  if (titleEl \u0026\u0026 i \u003c 30) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      author: authorEl ? authorEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-toutiao-hot",
+    "name": "toutiao-hot",
+    "description": "获取今日头条热榜",
+    "url": "https://www.toutiao.com/hot-event/hot-board/",
+    "tags": [
+      "builtin",
+      "toutiao",
+      "头条",
+      "热榜"
+    ],
+    "group": "内置脚本",
+    "category": "news",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "toutiao_hot",
+    "mcp_command_description": "获取今日头条热榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.toutiao.com/hot-event/hot-board/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('[class*=\"hot-board\"] a, [class*=\"hotBoard\"] a, [class*=\"HotBoard\"] a');\nif (!items.length) items = document.querySelectorAll('a[href*=\"/trending/\"]');\nvar seen = {};\nvar list = [];\nitems.forEach(function(el) {\n  var title = el.textContent.trim();\n  var href = el.href || '';\n  if (title \u0026\u0026 title.length \u003e 2 \u0026\u0026 title.length \u003c 50 \u0026\u0026 !seen[title]) {\n    seen[title] = true;\n    list.push({\n      rank: list.length + 1,\n      title: title,\n      url: href,\n    });\n  }\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-bbc-news",
+    "name": "bbc-news",
+    "description": "Get BBC News top stories",
+    "url": "https://www.bbc.com/news",
+    "tags": [
+      "builtin",
+      "bbc",
+      "news"
+    ],
+    "group": "内置脚本",
+    "category": "news",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "bbc-news",
+    "mcp_command_description": "Get BBC News top stories",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.bbc.com/news"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('[data-testid=\"edinburgh-card\"], .gs-c-promo, article');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('h2, h3, [data-testid=\"card-headline\"]');\n  var a = el.querySelector('a');\n  if (t \u0026\u0026 list.length \u003c 20) list.push({rank: list.length+1, title: t.textContent.trim(), url: a ? a.href : ''});\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  }
+]

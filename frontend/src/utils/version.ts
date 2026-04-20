@@ -1,5 +1,5 @@
 // 前端内置版本号（兜底值，实际应从后端 API 获取）
-export const CURRENT_VERSION = '1.0.1-beta.2'
+export const CURRENT_VERSION = '1.1.0'
 
 // 版本信息接口
 export interface VersionInfo {
@@ -14,7 +14,8 @@ export interface VersionInfo {
 // 例如: "1.2.3-beta.1" -> { core: [1, 2, 3], preRelease: ["beta", "1"] }
 //       "1.2.3"         -> { core: [1, 2, 3], preRelease: null }
 function parseSemver(version: string): { core: number[]; preRelease: string[] | null } {
-  const [coreStr, ...preParts] = version.split('-')
+  const cleaned = version.replace(/^v/i, '')
+  const [coreStr, ...preParts] = cleaned.split('-')
   const core = coreStr.split('.').map(Number)
   const preRelease = preParts.length > 0
     ? preParts.join('-').split('.')

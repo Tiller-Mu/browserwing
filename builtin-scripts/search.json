@@ -1,0 +1,66 @@
+[
+  {
+    "id": "builtin-google-news",
+    "name": "google-news",
+    "description": "Get Google News top stories",
+    "url": "https://news.google.com/",
+    "tags": [
+      "builtin",
+      "google",
+      "news"
+    ],
+    "group": "内置脚本",
+    "category": "search",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "google-news",
+    "mcp_command_description": "Get Google News top stories",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://news.google.com/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('article, c-wiz article');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('a[class*=\"gPFEn\"], h3 a, h4 a, a');\n  if (t \u0026\u0026 t.textContent.trim().length \u003e 5 \u0026\u0026 list.length \u003c 20) {\n    list.push({rank: list.length+1, title: t.textContent.trim(), url: t.href});\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-wikipedia-trending",
+    "name": "wikipedia-trending",
+    "description": "Get Wikipedia most viewed articles today",
+    "url": "https://en.wikipedia.org/wiki/Wikipedia:Top_25_Report",
+    "tags": [
+      "builtin",
+      "wikipedia",
+      "trending"
+    ],
+    "group": "内置脚本",
+    "category": "search",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "wikipedia-trending",
+    "mcp_command_description": "Get Wikipedia most viewed articles today",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://en.wikipedia.org/wiki/Wikipedia:Top_25_Report"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.wikitable tr');\nvar list = [];\nitems.forEach(function(el, i) {\n  if (i === 0) return;\n  var cells = el.querySelectorAll('td');\n  if (cells.length \u003e= 3) {\n    var link = cells[1] ? cells[1].querySelector('a') : null;\n    var views = cells[2] ? cells[2].textContent.trim() : '';\n    if (link \u0026\u0026 list.length \u003c 25) list.push({rank: list.length+1, title: link.textContent.trim(), url: 'https://en.wikipedia.org' + link.getAttribute('href'), views: views});\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  }
+]

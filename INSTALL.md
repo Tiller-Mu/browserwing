@@ -175,6 +175,15 @@ file = "./logs/browserwing.log"
 ```
 
 ### Verify the Service is Running
+
+**Option A: Built-in Doctor Command (Recommended)**
+```bash
+browserwing doctor
+```
+
+This checks server connectivity, Chrome detection, script loading, system info, and config — all in one command.
+
+**Option B: Manual Health Check**
 ```bash
 curl http://localhost:8080/health
 ```
@@ -192,7 +201,129 @@ The Web UI provides a visual interface for managing scripts, browser instances, 
 
 ---
 
-## 5. Set Up LLM (Required for AI Features)
+## 5. CLI Mode — Run Scripts from Terminal
+
+BrowserWing includes a built-in CLI for running automation scripts directly from the terminal. This is designed for **AI agents** and **shell pipelines** — no browser window appears (headless by default).
+
+### Basic Usage
+
+```bash
+# Show help
+browserwing help
+
+# List all available scripts (compact JSON for agents)
+browserwing ls --format=json
+
+# Run a built-in script (outputs JSON to stdout)
+browserwing run bilibili-hot
+browserwing run github-trending
+browserwing run hackernews-top
+```
+
+### Passing Parameters
+
+Some scripts accept parameters. Use `browserwing ls --format=json` to discover which scripts have a `params` field, then pass them as `--key=value`:
+
+```bash
+# Search JD.com for a product
+browserwing run jd-search --keyword="机械键盘"
+
+# Search Taobao
+browserwing run taobao-search --keyword="蓝牙耳机"
+```
+
+### Output Formats
+
+```bash
+# JSON (default, best for AI agents and piping)
+browserwing run bilibili-hot --format=json
+
+# Table (human-readable)
+browserwing run github-trending --format=table
+
+# CSV (for spreadsheets)
+browserwing run sinafinance-rank --format=csv > stocks.csv
+```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `--format=json\|table\|csv` | Output format (default: json) |
+| `--no-headless` | Show the browser window (for debugging) |
+| `--port=<port>` | Server port (auto-detected from config.toml) |
+| `--url=<url>` | Full server URL |
+| `--<key>=<value>` | Pass parameters to the script |
+
+### Built-in Scripts (30+)
+
+BrowserWing ships with 30+ ready-to-use scripts covering popular platforms:
+
+| Category | Scripts |
+|----------|---------|
+| **Tech** | github-trending, hackernews-top, v2ex-hot, stackoverflow-hot, linux-do-hot, juejin-hot |
+| **Chinese Social** | bilibili-hot, zhihu-hot, weibo-hot, douyin-hot, tieba-hot, xiaohongshu-hot |
+| **News** | 36kr-hot, toutiao-hot |
+| **Finance** | sinafinance-rank, eastmoney-hot, xueqiu-hot |
+| **Entertainment** | douban-movie-hot, douban-top250, imdb-trending, hupu-hot |
+| **Shopping** | jd-search, taobao-search, smzdm-hot |
+| **International** | reddit-popular, producthunt-hot, twitter-trending |
+| **Jobs** | boss-recommend, linkedin-jobs |
+
+Scripts marked with 🔐 require login — use the Web UI to log in first, and the CLI will reuse the session.
+
+### Diagnostics
+
+```bash
+# Check everything is working
+browserwing doctor
+```
+
+Output:
+```
+  [OK] Server running at http://localhost:8080
+  [OK] Google Chrome 136.0.6935.0 (/usr/bin/google-chrome)
+  [OK] 32 scripts loaded
+  [OK] linux/amd64, Go go1.23.0
+  [OK] config.toml found (port=8080)
+
+  All checks passed. BrowserWing is ready.
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error |
+| 2 | Server connection error |
+| 3 | Script not found |
+| 4 | Script execution failed |
+| 64 | Bad arguments |
+
+Set `BROWSERWING_JSON_ERRORS=1` for machine-readable JSON error output on stderr.
+
+### AI Agent Integration Example
+
+For AI agents that can invoke shell commands, the typical workflow is:
+
+```bash
+# Step 1: Discover available scripts
+browserwing ls --format=json
+# Returns: [{"id":"...","name":"bilibili-hot","description":"...","params":{...}}, ...]
+
+# Step 2: Run a script
+browserwing run bilibili-hot
+# Returns: [{"rank":1,"title":"...","url":"...","play":"..."}, ...]
+
+# Step 3: Parse and present the structured data to the user
+```
+
+The CLI auto-detects the server port from `config.toml`, so no manual configuration is needed.
+
+---
+
+## 6. Set Up LLM (Required for AI Features)
 
 AI-powered features (AI Explorer, Agent chat, smart extraction) need an LLM configuration.
 
@@ -221,7 +352,7 @@ curl -X POST 'http://localhost:8080/api/v1/llm-configs/test' \
 
 ---
 
-## 6. Install Skills for AI Agent Integration
+## 7. Install Skills for AI Agent Integration
 
 BrowserWing provides two types of Skills that can be installed into AI agents (e.g., Claude, Cursor, or any agent that supports SKILL.md files):
 
@@ -285,7 +416,7 @@ Place the downloaded `.md` files into your AI agent's skill/knowledge directory:
 
 ---
 
-## 7. Quick Verification Checklist
+## 8. Quick Verification Checklist
 
 After installation and setup, verify everything works:
 

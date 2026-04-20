@@ -659,8 +659,8 @@ export const api = {
     client.post<{ success: boolean }>('/browser/record/clear-state'),
 
   // 脚本相关
-  getScripts: (params?: { page?: number; page_size?: number; group?: string; tag?: string }) =>
-    client.get<{ scripts: Script[]; total: number; page: number; page_size: number }>('/scripts', { params }),
+  getScripts: (params?: { page?: number; page_size?: number; group?: string; tag?: string; is_builtin?: string }) =>
+    client.get<{ scripts: Script[]; total: number; page: number; page_size: number; builtin_count: number; user_count: number }>('/scripts', { params }),
 
   getScript: (id: string) =>
     client.get<Script>(`/scripts/${id}`),

@@ -117,14 +117,21 @@ func Execute(args []string) bool {
 	subcmd := filteredArgs[0]
 	switch subcmd {
 	case "run":
-		return handleRun(filteredArgs[1:])
+		result := handleRun(filteredArgs[1:])
+		checkForUpdate()
+		return result
 	case "list", "ls":
-		return handleList(filteredArgs[1:])
+		result := handleList(filteredArgs[1:])
+		checkForUpdate()
+		return result
+	case "doctor":
+		return handleDoctor()
 	case "help", "--help", "-h":
 		printHelp()
 		return true
 	case "version", "--version", "-v":
 		printVersion()
+		checkForUpdate()
 		return true
 	default:
 		return false
@@ -153,6 +160,7 @@ func printHelp() {
 COMMANDS:
   run <name|id> [options]    Execute a script and return extracted data
   list | ls    [options]     List all available scripts
+  doctor                     Check server, Chrome, and system health
   help                       Show this help message
   version                    Show version info
 

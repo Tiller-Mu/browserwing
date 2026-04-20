@@ -1,10 +1,13 @@
 {
-  "version": "1.0.1-beta.2",
-  "releaseDate": "2026-03-06",
+  "version": "1.1.0",
+  "releaseDate": "2026-04-19",
   "features": [
-    "NoSandbox configuration for Linux browser launch",
-    "Batch delete for scheduled task execution records",
-    "Beta channel version update detection"
+    "CLI mode with 30+ built-in scripts — one command to get structured data",
+    "browserwing doctor: one-command health check for server, Chrome, and scripts",
+    "Structured exit codes and JSON error output for AI agent integration",
+    "TTY-aware spinner animation during script execution",
+    "Background version update check with upgrade notification",
+    "Smart builtin script sync with content-hash comparison"
   ],
   "downloadUrl": "https://github.com/browserwing/browserwing/releases"
 }

@@ -19,6 +19,7 @@ export default function Layout() {
   const [authEnabled, setAuthEnabled] = useState(false)
   const [username, setUsername] = useState<string>('')
   const [appVersion, setAppVersion] = useState<string>(CURRENT_VERSION)
+  const [backendVersionLoaded, setBackendVersionLoaded] = useState(false)
   const langMenuRef = useRef<HTMLDivElement>(null)
   const userMenuRef = useRef<HTMLDivElement>(null)
 
@@ -75,15 +76,27 @@ export default function Layout() {
         if (info.version) {
           setAppVersion(info.version)
         }
+        setBackendVersionLoaded(true)
       })
-      .catch(() => {})
+      .catch(() => {
+        setBackendVersionLoaded(true)
+      })
   }, [])
 
-  // 检查版本更新（用后端返回的真实版本号比对）
+  // 检查版本更新（只在后端真实版本加载完成后才比对）
   useEffect(() => {
+    if (!backendVersionLoaded) return
+
     const checkVersion = async () => {
       const versionInfo = await fetchLatestVersion()
-      if (versionInfo && hasNewVersion(appVersion, versionInfo.version)) {
+      if (!versionInfo) return
+
+      const localClean = appVersion.replace(/^v/i, '')
+      const remoteClean = versionInfo.version.replace(/^v/i, '')
+
+      if (localClean === remoteClean) return
+
+      if (hasNewVersion(localClean, remoteClean)) {
         if (!isVersionDismissed(versionInfo.version)) {
           setLatestVersionInfo(versionInfo)
           setShowUpdateDialog(true)
@@ -92,7 +105,7 @@ export default function Layout() {
     }
     const timer = setTimeout(checkVersion, 3000)
     return () => clearTimeout(timer)
-  }, [appVersion])
+  }, [backendVersionLoaded, appVersion])
 
   const handleDismissUpdate = () => {
     if (latestVersionInfo) {
@@ -254,7 +267,7 @@ export default function Layout() {
             <div className="flex items-center space-x-4">
               <p>{t('layout.copyright')}</p>
               <span className="text-gray-400 dark:text-gray-600">•</span>
-              <p className="text-sm">{t('layout.version')} {appVersion}</p>
+              <p className="text-sm">{t('layout.version')} {appVersion.replace(/^v/i, '')}</p>
             </div>
             <div className="flex items-center space-x-6">
               <a href="https://github.com/browserwing/browserwing" target="_blank" rel="noopener noreferrer" className="hover:text-gray-900 dark:hover:text-gray-100 transition-colors">{t('layout.github')}</a>

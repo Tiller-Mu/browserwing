@@ -9,6 +9,9 @@
   <img alt="Vite" src="https://img.shields.io/badge/Vite-5-646CFF?logo=vite&logoColor=white" />
   <img alt="pnpm" src="https://img.shields.io/badge/pnpm-9-F69220?logo=pnpm&logoColor=white" />
   <img alt="MCP" src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-7B61FF" />
+  <img alt="npm" src="https://img.shields.io/npm/v/browserwing?color=CB3837&logo=npm" />
+  <img alt="License" src="https://img.shields.io/github/license/browserwing/browserwing" />
+  <img alt="Scripts" src="https://img.shields.io/badge/Built--in%20Scripts-57-brightgreen" />
 </p>
 
 <p align="center">
@@ -17,9 +20,19 @@
 
 <p align="center"><a href="https://browserwing.com">browserwing.com</a></p>
 
+> **Turn any website into structured data with one command.** Browser automation platform with 57 built-in scripts, CLI for AI agents, MCP & Skills protocol support, and a visual recorder.
 
 https://github.com/user-attachments/assets/e5377892-4b88-433a-8620-43b38a2fb28f
 
+```bash
+# Install and try it in 30 seconds
+npm install -g browserwing && browserwing --port 8080
+
+# Get data from any supported site
+browserwing run github-trending
+browserwing run bilibili-hot
+browserwing run hackernews-top | jq '.[0:5]'
+```
 
 ## Highlights
 
@@ -177,7 +190,38 @@ Download and import the Skills file into any AI tool that supports the Skills pr
 "Navigate to example.com, search for 'AI tools', and extract the top 5 results"
 ```
 
-### 3. Direct AI Agent Interface
+### 3. CLI Mode (Agent-Friendly)
+
+BrowserWing includes a CLI designed for AI agents and shell pipelines. Run scripts and get structured data directly from the terminal — no browser window needed (headless by default).
+
+```bash
+# List all available scripts
+browserwing ls --format=json
+
+# Run a script and get JSON output
+browserwing run bilibili-hot
+browserwing run github-trending
+browserwing run hackernews-top
+
+# Pass parameters to scripts
+browserwing run jd-search --keyword="机械键盘"
+
+# Pipe to other tools
+browserwing run sinafinance-rank --format=csv > stocks.csv
+browserwing run hackernews-top | jq '.[0:5]'
+
+# Show browser window for debugging
+browserwing run zhihu-hot --no-headless
+```
+
+**57 built-in scripts** across 10 categories (Bilibili, GitHub, Reddit, Hacker News, YouTube, Steam, BBC, Binance, Amazon, Weibo, Zhihu, etc.) — ready to use out of the box.
+
+**AI Agent Workflow:**
+1. `browserwing ls --format=json` — discover available scripts and their parameters
+2. `browserwing run <name> --key=value` — execute and get structured JSON data
+3. Parse the output for further processing
+
+### 4. Direct AI Agent Interface
 
 Use BrowserWing's built-in AI Agent for immediate browser automation:
 
@@ -274,6 +318,25 @@ BrowserWing exposes 26+ RESTful endpoints for programmatic browser control:
 - Wait conditions and element visibility
 
 **Complete Documentation**: See `docs/EXECUTOR_HTTP_API.md` for detailed endpoint specifications
+
+### CLI Exit Codes
+
+For AI agent integration, the CLI uses structured exit codes:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error |
+| 2 | Server connection error |
+| 3 | Script not found |
+| 4 | Script execution failed |
+| 64 | Bad arguments |
+
+Set `BROWSERWING_JSON_ERRORS=1` for machine-readable JSON error output on stderr.
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=browserwing/browserwing&type=Date)](https://star-history.com/#browserwing/browserwing&Date)
 
 ## Contributing
 

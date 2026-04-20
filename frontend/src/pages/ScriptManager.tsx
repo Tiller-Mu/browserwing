@@ -30,7 +30,11 @@ export default function ScriptManager() {
   const navigate = useNavigate()
 
   // 标签页状态
-  const [activeTab, setActiveTab] = useState<'scripts' | 'executions'>('scripts')
+  const [activeTab, setActiveTab] = useState<'scripts' | 'builtin' | 'executions'>('scripts')
+  const [builtinScripts, setBuiltinScripts] = useState<Script[]>([])
+  const [builtinTotal, setBuiltinTotal] = useState(0)
+  const [builtinCategory, setBuiltinCategory] = useState('all')
+  const [builtinSearch, setBuiltinSearch] = useState('')
 
   const [scripts, setScripts] = useState<Script[]>([])
   const [loading, setLoading] = useState(false)
@@ -160,10 +164,12 @@ export default function ScriptManager() {
       loadRecordingConfig()
       loadBrowserInstances()
       loadLLMConfigs()
+    } else if (activeTab === 'builtin') {
+      loadBuiltinScripts()
     } else if (activeTab === 'executions') {
       loadExecutions()
     }
-  }, [activeTab, currentPage, filterGroup, filterTag, searchQuery, successFilter, executionSearchQuery])
+  }, [activeTab, currentPage, filterGroup, filterTag, searchQuery, successFilter, executionSearchQuery, builtinCategory, builtinSearch])
 
   // 点击外部区域关闭导入下拉菜单
   useEffect(() => {
@@ -249,6 +255,7 @@ export default function ScriptManager() {
       const params: any = {
         page: currentPage,
         page_size: pageSize,
+        is_builtin: 'false',
       }
       if (filterGroup) params.group = filterGroup
       if (filterTag) params.tag = filterTag
@@ -256,7 +263,6 @@ export default function ScriptManager() {
       const response = await api.getScripts(params)
       let allScripts = response.data.scripts || []
 
-      // 前端搜索过滤
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase()
         allScripts = allScripts.filter(script =>
@@ -267,12 +273,12 @@ export default function ScriptManager() {
       }
 
       setScripts(allScripts)
-      setTotalScripts(searchQuery.trim() ? allScripts.length : response.data.total || 0)
+      setTotalScripts(searchQuery.trim() ? allScripts.length : response.data.user_count || response.data.total || 0)
+      setBuiltinTotal(response.data.builtin_count || 0)
 
       const execresponse = await api.listScriptExecutions(params)
       setTotalExecutions(execresponse.data.total || 0)
 
-      // 收集所有分组和标签
       const groups = new Set<string>()
       const tags = new Set<string>()
 
@@ -287,6 +293,38 @@ export default function ScriptManager() {
       setAvailableTags(Array.from(tags).sort())
     } catch (err) {
       console.error('加载脚本列表失败:', err)
+    }
+  }
+
+  const loadBuiltinScripts = async () => {
+    try {
+      const params: any = {
+        page: 1,
+        page_size: 100,
+        is_builtin: 'true',
+      }
+      const response = await api.getScripts(params)
+      let scripts = response.data.scripts || []
+
+      if (builtinSearch.trim()) {
+        const q = builtinSearch.toLowerCase()
+        scripts = scripts.filter((s: Script) =>
+          s.name.toLowerCase().includes(q) ||
+          s.description?.toLowerCase().includes(q)
+        )
+      }
+
+      if (builtinCategory !== 'all') {
+        scripts = scripts.filter((s: Script) =>
+          s.tags?.some(t => t === builtinCategory) ||
+          s.name.toLowerCase().includes(builtinCategory)
+        )
+      }
+
+      setBuiltinScripts(scripts)
+      setBuiltinTotal(response.data.builtin_count || scripts.length)
+    } catch (err) {
+      console.error('加载内置脚本失败:', err)
     }
   }
 
@@ -1551,6 +1589,8 @@ export default function ScriptManager() {
             <p className="text-[15px] text-gray-600 dark:text-gray-400 mt-2">
               {activeTab === 'scripts'
                 ? `${t('script.subtitle')} (${t('script.total', { count: totalScripts })})`
+                : activeTab === 'builtin'
+                ? `${t('script.builtin.subtitle')} (${t('script.total', { count: builtinTotal })})`
                 : t('execution.subtitle')
               }
             </p>
@@ -1664,9 +1704,24 @@ export default function ScriptManager() {
             >
               <div className="flex items-center space-x-2">
                 <FileCode className="w-4 h-4" />
-                <span>{t('script.title')}</span>
+                <span>{t('script.tab.myScripts')}</span>
                 <span className="ml-2 py-0.5 px-2 rounded-full text-xs bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">
                   {totalScripts}
+                </span>
+              </div>
+            </button>
+            <button
+              onClick={() => { setActiveTab('builtin'); setCurrentPage(1); }}
+              className={`py-3 px-1 border-b-2 font-medium text-sm transition-colors ${activeTab === 'builtin'
+                ? 'border-gray-900 text-gray-900 dark:text-gray-100 dark:border-gray-100'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:hover:text-gray-300 dark:hover:border-gray-700'
+                }`}
+            >
+              <div className="flex items-center space-x-2">
+                <Compass className="w-4 h-4" />
+                <span>{t('script.tab.builtin')}</span>
+                <span className="ml-2 py-0.5 px-2 rounded-full text-xs bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">
+                  {builtinTotal}
                 </span>
               </div>
             </button>
@@ -2780,6 +2835,89 @@ export default function ScriptManager() {
             </div>
           )}
         </>
+      )}
+
+      {/* Built-in Scripts List */}
+      {activeTab === 'builtin' && (
+        <div className="space-y-4">
+          {/* Category filter + search */}
+          <div className="flex items-center justify-between bg-gray-50 dark:bg-gray-900 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+            <div className="flex items-center space-x-2 flex-wrap gap-y-2">
+              {['all', 'tech', 'social', 'news', 'finance', 'entertainment', 'shopping', 'jobs', 'reading', 'search', 'other'].map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setBuiltinCategory(cat)}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                    builtinCategory === cat
+                      ? 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900'
+                      : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-600'
+                  }`}
+                >
+                  {t(`script.builtin.category.${cat}`)}
+                </button>
+              ))}
+            </div>
+            <input
+              type="text"
+              placeholder="Search..."
+              value={builtinSearch}
+              onChange={(e) => setBuiltinSearch(e.target.value)}
+              className="ml-4 w-48 px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-gray-400 focus:border-transparent"
+            />
+          </div>
+
+          {/* Script grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {builtinScripts.map(script => (
+              <div
+                key={script.id}
+                className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:border-gray-400 dark:hover:border-gray-500 transition-colors"
+              >
+                <div className="flex items-start justify-between mb-2">
+                  <h3 className="font-medium text-gray-900 dark:text-gray-100 text-sm">{script.name}</h3>
+                  {script.requires_login && (
+                    <span className="flex-shrink-0 ml-2 px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 rounded">
+                      {t('script.card.requiresLogin')}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-3 line-clamp-2">{script.description}</p>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-1 flex-wrap gap-y-1">
+                    {script.tags?.filter(t => t !== 'builtin' && t !== '需要登录').slice(0, 3).map(tag => (
+                      <span key={tag} className="px-1.5 py-0.5 text-[10px] bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 rounded">{tag}</span>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => {
+                      const params = extractScriptParameters(script)
+                      if (params.length > 0) {
+                        setParamsDialogScript(script)
+                        setScriptParameters(params)
+                        setShowParamsDialog(true)
+                      } else {
+                        setInstanceSelectorScript(script)
+                        setInstanceSelectorParams(undefined)
+                        setShowInstanceSelector(true)
+                      }
+                    }}
+                    className="flex items-center space-x-1 px-2.5 py-1 text-xs font-medium rounded-md bg-gray-900 text-white hover:bg-gray-700 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300 transition-colors"
+                  >
+                    <Play className="w-3 h-3" />
+                    <span>Run</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {builtinScripts.length === 0 && (
+            <div className="text-center py-12 text-gray-500 dark:text-gray-400">
+              <Compass className="w-16 h-16 mx-auto mb-4 opacity-30" />
+              <p className="text-lg font-medium">{t('script.noScripts')}</p>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Execution History List */}

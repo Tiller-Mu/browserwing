@@ -1,0 +1,104 @@
+[
+  {
+    "id": "builtin-boss-recommend",
+    "name": "boss-recommend",
+    "description": "获取 Boss 直聘推荐职位（需要登录）",
+    "url": "https://www.zhipin.com/web/geek/job-recommend",
+    "tags": [
+      "builtin",
+      "boss",
+      "招聘",
+      "推荐",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "category": "jobs",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "boss_recommend",
+    "mcp_command_description": "获取 Boss 直聘推荐职位（需要登录）",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.zhipin.com/web/geek/job-recommend"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.job-card-wrap, [class*=\"job-card\"], li.job-card');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.job-name, [class*=\"job-name\"], [class*=\"title\"]');\n  var companyEl = el.querySelector('.company-name, [class*=\"company\"]');\n  var salaryEl = el.querySelector('.salary, [class*=\"salary\"]');\n  var areaEl = el.querySelector('.job-area, [class*=\"area\"]');\n  var linkEl = el.querySelector('a[href*=\"/job_detail/\"]');\n  if (titleEl) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      company: companyEl ? companyEl.textContent.trim() : '',\n      salary: salaryEl ? salaryEl.textContent.trim() : '',\n      area: areaEl ? areaEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-linkedin-jobs",
+    "name": "linkedin-jobs",
+    "description": "获取 LinkedIn 推荐职位（需要登录）",
+    "url": "https://www.linkedin.com/jobs/",
+    "tags": [
+      "builtin",
+      "linkedin",
+      "招聘",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "category": "jobs",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "linkedin_jobs",
+    "mcp_command_description": "获取 LinkedIn 推荐职位（需要登录）",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.linkedin.com/jobs/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.job-card-container, [class*=\"job-card\"], .jobs-search-results__list-item');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.job-card-list__title, [class*=\"job-title\"], a[class*=\"title\"]');\n  var companyEl = el.querySelector('.job-card-container__company-name, [class*=\"company\"]');\n  var locationEl = el.querySelector('.job-card-container__metadata-item, [class*=\"location\"]');\n  var linkEl = el.querySelector('a[href*=\"/jobs/view/\"]');\n  if (titleEl \u0026\u0026 i \u003c 20) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      company: companyEl ? companyEl.textContent.trim() : '',\n      location: locationEl ? locationEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-maimai-hot",
+    "name": "maimai-hot",
+    "description": "获取脉脉热门话题",
+    "url": "https://maimai.cn/web/gossip_list",
+    "tags": [
+      "builtin",
+      "maimai",
+      "职场"
+    ],
+    "group": "内置脚本",
+    "category": "jobs",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "maimai-hot",
+    "mcp_command_description": "获取脉脉热门话题",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://maimai.cn/web/gossip_list"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('[class*=\"gossip-item\"], [class*=\"feed-card\"]');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('[class*=\"title\"], h3');\n  var v = el.querySelector('[class*=\"view\"], [class*=\"count\"]');\n  var link = el.querySelector('a');\n  if (t \u0026\u0026 list.length \u003c 20) list.push({rank: list.length+1, title: t.textContent.trim(), views: v ? v.textContent.trim() : '', url: link ? link.href : ''});\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  }
+]

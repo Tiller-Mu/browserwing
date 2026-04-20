@@ -3,19 +3,14 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 )
 
 func handleRun(args []string) bool {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Error: script name or ID is required")
-		fmt.Fprintln(os.Stderr, "Usage: browserwing run <name|id> [--key=value...]")
-		fmt.Fprintln(os.Stderr, "\nExamples:")
-		fmt.Fprintln(os.Stderr, "  browserwing run bilibili-hot")
-		fmt.Fprintln(os.Stderr, "  browserwing run jd-search --keyword=\"手机\" --format=table")
-		fmt.Fprintln(os.Stderr, "  browserwing run zhihu-hot --no-headless")
-		os.Exit(1)
+		exitWithError(ExitBadArgs,
+			"script name or ID is required",
+			"Usage: browserwing run <name|id> [--key=value...]\n  Examples: browserwing run bilibili-hot")
 	}
 
 	scriptRef := args[0]
@@ -49,15 +44,18 @@ func handleRun(args []string) bool {
 	// Resolve script ID by name if needed
 	scriptID, err := resolveScriptID(scriptRef)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		if strings.Contains(err.Error(), "cannot connect") {
+			exitWithError(ExitConnectError, err.Error(), "Make sure the server is running")
+		}
+		exitWithError(ExitScriptNotFound, err.Error(), "Use 'browserwing ls' to see available scripts")
 	}
 
-	fmt.Fprintf(os.Stderr, "Running script: %s", scriptRef)
+	spinMsg := fmt.Sprintf("Running script: %s", scriptRef)
 	if headless {
-		fmt.Fprintf(os.Stderr, " (headless)")
+		spinMsg += " (headless)"
 	}
-	fmt.Fprintf(os.Stderr, " ...\n")
+	sp := newSpinner(spinMsg)
+	sp.Start()
 
 	payload := map[string]interface{}{
 		"params":   params,
@@ -66,14 +64,13 @@ func handleRun(args []string) bool {
 
 	body, err := apiPost(fmt.Sprintf("/api/v1/scripts/%s/play", scriptID), payload)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		sp.Stop("[FAIL]")
+		exitWithError(ExitConnectError, err.Error(), "")
 	}
 
 	var resp map[string]interface{}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing response: %v\n", err)
-		os.Exit(1)
+		exitWithError(ExitGeneralError, fmt.Sprintf("failed to parse response: %v", err), "")
 	}
 
 	// API returns {"message": ..., "result": {"success": bool, "extracted_data": {...}}}
@@ -85,6 +82,7 @@ func handleRun(args []string) bool {
 
 	success, _ := result["success"].(bool)
 	if !success {
+		sp.Stop("[FAIL]")
 		msg, _ := result["message"].(string)
 		if msg == "" {
 			msg, _ = resp["error"].(string)
@@ -92,18 +90,17 @@ func handleRun(args []string) bool {
 		if msg == "" {
 			msg = "unknown error"
 		}
-		fmt.Fprintf(os.Stderr, "Script execution failed: %s\n", msg)
-		os.Exit(1)
+		exitWithError(ExitScriptFailed, fmt.Sprintf("script execution failed: %s", msg), "")
 	}
 
 	extractedData, _ := result["extracted_data"].(map[string]interface{})
 	if len(extractedData) == 0 {
-		fmt.Fprintf(os.Stderr, "Done. (no data extracted)\n")
+		sp.Stop("[OK] No data extracted")
 		return true
 	}
 
 	displayData := findDisplayData(extractedData)
-	fmt.Fprintf(os.Stderr, "Done.\n")
+	sp.Stop("[OK] Done")
 	formatOutput(displayData, format)
 	return true
 }

@@ -20,8 +20,12 @@ import (
 )
 
 const (
-	githubScriptsURL = "https://raw.githubusercontent.com/browserwing/browserwing/main/builtin-scripts.json"
-	giteeScriptsURL  = "https://gitee.com/browserwing/browserwing/raw/main/builtin-scripts.json"
+	githubBaseURL = "https://raw.githubusercontent.com/browserwing/browserwing/main/builtin-scripts"
+	giteeBaseURL  = "https://gitee.com/browserwing/browserwing/raw/main/builtin-scripts"
+
+	// Legacy single-file fallback
+	githubLegacyURL = "https://raw.githubusercontent.com/browserwing/browserwing/main/builtin-scripts.json"
+	giteeLegacyURL  = "https://gitee.com/browserwing/browserwing/raw/main/builtin-scripts.json"
 )
 
 type ScriptStore interface {
@@ -105,19 +109,89 @@ func scriptHash(s *models.Script) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+type scriptIndex struct {
+	Files []string `json:"files"`
+}
+
 func fetchRemoteScripts() []models.Script {
-	urls := []string{githubScriptsURL, giteeScriptsURL}
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	for _, url := range urls {
+	// Try index-based loading (split files, concurrent)
+	for _, base := range []string{githubBaseURL, giteeBaseURL} {
+		scripts, err := fetchFromIndex(client, base)
+		if err != nil {
+			log.Printf("Index fetch from %s failed: %v, trying next...", base, err)
+			continue
+		}
+		return scripts
+	}
+
+	// Fallback to legacy single-file
+	for _, url := range []string{githubLegacyURL, giteeLegacyURL} {
 		scripts, err := fetchFromURL(client, url)
 		if err != nil {
-			log.Printf("Failed to fetch builtin scripts from %s: %v", url, err)
+			log.Printf("Legacy fetch from %s failed: %v", url, err)
 			continue
 		}
 		return scripts
 	}
 	return nil
+}
+
+func fetchFromIndex(client *http.Client, baseURL string) ([]models.Script, error) {
+	indexURL := baseURL + "/index.json"
+	resp, err := client.Get(indexURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d for index", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var idx scriptIndex
+	if err := json.Unmarshal(body, &idx); err != nil {
+		return nil, fmt.Errorf("invalid index JSON: %w", err)
+	}
+	if len(idx.Files) == 0 {
+		return nil, fmt.Errorf("empty index")
+	}
+
+	type fetchResult struct {
+		scripts []models.Script
+		err     error
+		file    string
+	}
+
+	ch := make(chan fetchResult, len(idx.Files))
+	for _, file := range idx.Files {
+		go func(f string) {
+			fileURL := baseURL + "/" + f
+			scripts, err := fetchFromURL(client, fileURL)
+			ch <- fetchResult{scripts: scripts, err: err, file: f}
+		}(file)
+	}
+
+	var all []models.Script
+	for range idx.Files {
+		result := <-ch
+		if result.err != nil {
+			log.Printf("Warning: failed to fetch %s: %v", result.file, result.err)
+			continue
+		}
+		all = append(all, result.scripts...)
+	}
+
+	if len(all) == 0 {
+		return nil, fmt.Errorf("no scripts loaded from index files")
+	}
+
+	log.Printf("Loaded %d scripts from %d category files", len(all), len(idx.Files))
+	return all, nil
 }
 
 func fetchFromURL(client *http.Client, url string) ([]models.Script, error) {
@@ -181,6 +255,44 @@ var builtinScripts = []models.Script{
 	weixinArticle(),
 	jueJinHot(),
 	toutiaoHot(),
+	// --- Extra: Tech ---
+	devtoTop(),
+	lobstersHot(),
+	hfTop(),
+	arxivNew(),
+	giteeHot(),
+	nowcoderHot(),
+	// --- Extra: News ---
+	bbcNews(),
+	googleNews(),
+	// --- Extra: Entertainment ---
+	steamTopSellers(),
+	youtubetrending(),
+	// --- Extra: Finance ---
+	binanceTop(),
+	// --- Extra: Social ---
+	blueskyTrending(),
+	jikeHot(),
+	// --- Extra: Reading ---
+	wereadRanking(),
+	mediumTrending(),
+	// --- Extra: Shopping ---
+	amazonBestsellers(),
+	xianyuHot(),
+	// --- Extra: Jobs ---
+	maimaiSearch(),
+	// --- Extra: Academic ---
+	wikipediaTrending(),
+	// --- Extra: Misc ---
+	lesswrongCurated(),
+	keErshoufang(),
+	doubanBookHot(),
+	zhihuDaily(),
+	// --- Extra: Search ---
+	weiboSearch(),
+	doubanSearch(),
+	githubSearch(),
+	zhihuSearch(),
 }
 
 func bilibiliHot() models.Script {

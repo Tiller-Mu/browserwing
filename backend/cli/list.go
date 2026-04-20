@@ -21,18 +21,15 @@ func handleList(args []string) bool {
 
 	body, err := apiGet("/api/v1/scripts?page_size=100")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitWithError(ExitConnectError, err.Error(), "Make sure the server is running")
 	}
 
-	// API returns {"scripts": [...], "total": N, ...}
 	var resp struct {
 		Scripts []map[string]interface{} `json:"scripts"`
 		Total   int                      `json:"total"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing response: %v\n", err)
-		os.Exit(1)
+		exitWithError(ExitGeneralError, fmt.Sprintf("failed to parse response: %v", err), "")
 	}
 	scripts := resp.Scripts
 

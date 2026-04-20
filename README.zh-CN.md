@@ -3,10 +3,30 @@
 </p>
 
 <p align="center">
-  <a href="./README.md">English</a> · 简体中文 · <a href="./README.ja.md">日本語</a> · <a href="./README.es.md">Español</a> · <a href="./README.pt.md">Português</a>
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.21%2B-00ADD8?logo=go&logoColor=white" />
+  <img alt="npm" src="https://img.shields.io/npm/v/browserwing?color=CB3837&logo=npm" />
+  <img alt="License" src="https://img.shields.io/github/license/browserwing/browserwing" />
+  <img alt="Scripts" src="https://img.shields.io/badge/%E5%86%85%E7%BD%AE%E8%84%9A%E6%9C%AC-57-brightgreen" />
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-7B61FF" />
+</p>
+
+<p align="center">
+  <a href="./README.md">English</a> · 简体中文 · <a href="./README.ja.md">日本语</a> · <a href="./README.es.md">Espanol</a> · <a href="./README.pt.md">Portugues</a>
 </p>
 
 <p align="center"><a href="https://browserwing.com">browserwing.com</a></p>
+
+> **一条命令，把任意网站变成结构化数据。** 浏览器自动化平台，57 个内置脚本（10 大分类）、CLI 直出 JSON、MCP & Skills 协议支持、可视化录制。
+
+```bash
+# 30 秒上手
+npm install -g browserwing && browserwing --port 8080
+
+# 一条命令获取数据
+browserwing run github-trending
+browserwing run bilibili-hot
+browserwing run hackernews-top | jq '.[0:5]'
+```
 
 ## 特性亮点
 
@@ -160,7 +180,38 @@ make package
 "访问淘宝，搜索 'MacBook'，提取前 5 个商品的价格"
 ```
 
-### 3. 直接使用 AI Agent
+### 3. CLI 模式（Agent 友好）
+
+BrowserWing 内置 CLI，专为 AI Agent 和 Shell 管道设计。直接在终端运行脚本获取结构化数据，默认无头模式（不弹浏览器窗口）。
+
+```bash
+# 列出所有可用脚本（JSON 格式，方便 Agent 解析）
+browserwing ls --format=json
+
+# 运行内置脚本，直接获取 JSON 数据
+browserwing run bilibili-hot
+browserwing run github-trending
+browserwing run hackernews-top
+
+# 传参运行
+browserwing run jd-search --keyword="机械键盘"
+
+# 管道组合
+browserwing run sinafinance-rank --format=csv > stocks.csv
+browserwing run hackernews-top | jq '.[0:5]'
+
+# 需要看浏览器操作过程时加 --no-headless
+browserwing run zhihu-hot --no-headless
+```
+
+**57 个预置脚本**，覆盖 10 大分类（技术、社交、资讯、财经、娱乐、购物、求职、阅读、搜索等），开箱即用。
+
+**AI Agent 典型调用流程：**
+1. `browserwing ls --format=json` — 发现可用脚本及其参数
+2. `browserwing run <脚本名> --key=value` — 执行脚本获取结构化 JSON 数据
+3. 解析输出进行后续处理
+
+### 4. 直接使用 AI Agent
 
 使用 BrowserWing 内置的 AI Agent 进行即时浏览器自动化：
 
@@ -257,6 +308,25 @@ BrowserWing 提供 26+ 个 RESTful 端点用于编程式浏览器控制：
 - 等待条件和元素可见性
 
 **完整文档**：详细的端点规范请参阅 `docs/EXECUTOR_HTTP_API.md`
+
+### CLI 退出码
+
+CLI 使用结构化退出码，方便 AI Agent 集成：
+
+| 退出码 | 含义 |
+|--------|------|
+| 0 | 成功 |
+| 1 | 一般错误 |
+| 2 | 服务连接失败 |
+| 3 | 脚本未找到 |
+| 4 | 脚本执行失败 |
+| 64 | 参数错误 |
+
+设置 `BROWSERWING_JSON_ERRORS=1` 可在 stderr 获取 JSON 格式的错误信息。
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=browserwing/browserwing&type=Date)](https://star-history.com/#browserwing/browserwing&Date)
 
 ## 参与贡献
 

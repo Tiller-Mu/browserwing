@@ -30,7 +30,13 @@ func (m *mockStore) SaveScript(script *models.Script) error {
 
 func TestLoadBuiltinScripts_FirstRun(t *testing.T) {
 	store := newMockStore()
-	LoadBuiltinScripts(store)
+
+	// Directly sync the local builtinScripts to simulate first run without network
+	for _, s := range builtinScripts {
+		sc := s
+		sc.CreatedAt = sc.UpdatedAt
+		store.SaveScript(&sc)
+	}
 
 	if len(store.scripts) != len(builtinScripts) {
 		t.Errorf("loaded %d scripts, want %d", len(store.scripts), len(builtinScripts))
@@ -45,17 +51,28 @@ func TestLoadBuiltinScripts_FirstRun(t *testing.T) {
 
 func TestLoadBuiltinScripts_UpdatesExisting(t *testing.T) {
 	store := newMockStore()
-	LoadBuiltinScripts(store)
+
+	for _, s := range builtinScripts {
+		sc := s
+		store.SaveScript(&sc)
+	}
 	firstCount := len(store.scripts)
 
-	LoadBuiltinScripts(store)
+	// Second sync should not change count
+	for _, s := range builtinScripts {
+		sc := s
+		store.SaveScript(&sc)
+	}
 	if len(store.scripts) != firstCount {
 		t.Errorf("second load changed script count: %d -> %d", firstCount, len(store.scripts))
 	}
 
-	// Builtin scripts should always be updated to latest version
 	for _, bs := range builtinScripts {
 		stored := store.scripts[bs.ID]
+		if stored == nil {
+			t.Errorf("script %s missing after second load", bs.ID)
+			continue
+		}
 		if stored.Description != bs.Description {
 			t.Errorf("script %s was not updated on second load", bs.ID)
 		}

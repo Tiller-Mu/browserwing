@@ -1,0 +1,131 @@
+[
+  {
+    "id": "builtin-eastmoney-hot",
+    "name": "eastmoney-hot",
+    "description": "获取东方财富人气股票排行",
+    "url": "https://guba.eastmoney.com/rank/",
+    "tags": [
+      "builtin",
+      "eastmoney",
+      "股票",
+      "热门"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "eastmoney_hot",
+    "mcp_command_description": "获取东方财富人气股票排行",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://guba.eastmoney.com/rank/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar rows = document.querySelectorAll('table.rank_table tbody tr, #rankCont tr, [class*=\"rank\"] table tr');\nvar list = [];\nrows.forEach(function(tr, i) {\n  var tds = tr.querySelectorAll('td');\n  if (tds.length \u003c 4) return;\n  var codeEl = tr.querySelector('a.stock_code, a[href*=\"list,\"]');\n  var nameEl = tr.querySelector('td.nametd a[title], td:nth-child(2) a');\n  var fansEl = tr.querySelector('td.fans, td:last-child');\n  if (nameEl) {\n    var code = codeEl ? codeEl.textContent.trim() : '';\n    list.push({\n      rank: list.length + 1,\n      symbol: code,\n      name: nameEl.getAttribute('title') || nameEl.textContent.trim(),\n      heat: fansEl ? fansEl.textContent.trim() : '',\n      url: 'https://guba.eastmoney.com/list,' + code + '.html',\n    });\n  }\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-sinafinance-rank",
+    "name": "sinafinance-rank",
+    "description": "获取新浪财经涨幅排行榜",
+    "url": "https://finance.sina.com.cn/stock/",
+    "tags": [
+      "builtin",
+      "sinafinance",
+      "股票",
+      "涨幅榜"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "sinafinance_rank",
+    "mcp_command_description": "获取新浪财经股票涨幅榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "about:blank"
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst resp = await fetch('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=1\u0026num=20\u0026sort=changepercent\u0026asc=0\u0026node=hs_a\u0026symbol=\u0026_s_r_a=auto');\nconst data = await resp.json();\nreturn JSON.stringify(data.map((s, i) =\u003e ({\n  rank: i + 1,\n  symbol: s.symbol,\n  name: s.name,\n  price: s.trade,\n  change_percent: s.changepercent + '%',\n  volume: s.volume,\n})));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-xueqiu-hot",
+    "name": "xueqiu-hot",
+    "description": "获取雪球热帖（需要登录雪球）",
+    "url": "https://xueqiu.com",
+    "tags": [
+      "builtin",
+      "xueqiu",
+      "金融",
+      "热帖",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "xueqiu_hot",
+    "mcp_command_description": "获取雪球热帖",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://xueqiu.com"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst resp = await fetch('/statuses/hot/listV3.json?source=hot\u0026page=1', {credentials: 'include'});\nconst data = await resp.json();\nconst items = data.items || [];\nreturn JSON.stringify(items.map((item, i) =\u003e {\n  var s = item.original_status || item;\n  return {\n    rank: i + 1,\n    author: s.user ? s.user.screen_name : '',\n    title: (s.description || s.text || '').replace(/\u003c[^\u003e]+\u003e/g, '').slice(0, 80),\n    likes: s.fav_count || 0,\n    url: 'https://xueqiu.com' + (s.target || ''),\n  };\n}));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-binance-gainers",
+    "name": "binance-gainers",
+    "description": "Get Binance top gainers (24h)",
+    "url": "https://www.binance.com/en/markets/gainersAndLosers?type=zone\u0026tradeType=spot",
+    "tags": [
+      "builtin",
+      "binance",
+      "crypto"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "binance-gainers",
+    "mcp_command_description": "Get Binance top gainers (24h)",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.binance.com/en/markets/gainersAndLosers?type=zone\u0026tradeType=spot"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('tr[class*=\"css\"]');\nvar list = [];\nitems.forEach(function(el, i) {\n  var cells = el.querySelectorAll('td');\n  if (cells.length \u003e= 3) {\n    var name = cells[0].textContent.trim();\n    var price = cells[1] ? cells[1].textContent.trim() : '';\n    var change = cells[2] ? cells[2].textContent.trim() : '';\n    if (name \u0026\u0026 name !== 'Name' \u0026\u0026 list.length \u003c 30) list.push({rank: list.length+1, name: name, price: price, change_24h: change});\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  }
+]

@@ -578,6 +578,7 @@ func (h *Handler) ListScripts(c *gin.Context) {
 	// 获取过滤参数
 	group := c.Query("group")
 	tag := c.Query("tag")
+	builtinFilter := c.Query("is_builtin")
 
 	scripts, err := h.db.ListScripts()
 	if err != nil {
@@ -588,11 +589,16 @@ func (h *Handler) ListScripts(c *gin.Context) {
 	// 应用过滤
 	filteredScripts := make([]*models.Script, 0)
 	for _, script := range scripts {
-		// 按分组过滤
+		isBuiltin := strings.HasPrefix(script.ID, "builtin-")
+		if builtinFilter == "true" && !isBuiltin {
+			continue
+		}
+		if builtinFilter == "false" && isBuiltin {
+			continue
+		}
 		if group != "" && script.Group != group {
 			continue
 		}
-		// 按标签过滤
 		if tag != "" {
 			hasTag := false
 			for _, t := range script.Tags {
@@ -622,11 +628,23 @@ func (h *Handler) ListScripts(c *gin.Context) {
 		filteredScripts = filteredScripts[start:end]
 	}
 
+	builtinCount := 0
+	userCount := 0
+	for _, s := range scripts {
+		if strings.HasPrefix(s.ID, "builtin-") {
+			builtinCount++
+		} else {
+			userCount++
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"scripts":   filteredScripts,
-		"total":     total,
-		"page":      page,
-		"page_size": pageSize,
+		"scripts":       filteredScripts,
+		"total":         total,
+		"page":          page,
+		"page_size":     pageSize,
+		"builtin_count": builtinCount,
+		"user_count":    userCount,
 	})
 }
 
