@@ -385,22 +385,28 @@ func cnkiSearch() models.Script {
 
 func googleTrends() models.Script {
 	return scriptTemplate("google-trends", "google-trends", "Google Trends daily trending searches", "https://trends.google.com/trending?geo=US&hours=24", []string{"google", "trends"}, false, `
-var items = document.querySelectorAll('[class*="feed-item"], [class*="trending-item"], tr[class*="enOk"]');
-var results = [];
-items.forEach(function(item, idx) {
-  var titleEl = item.querySelector('[class*="title"], .mZ3RIc, td:first-child');
-  var title = titleEl ? titleEl.textContent.replace(/\s+/g,' ').trim() : '';
-  var trafficEl = item.querySelector('[class*="traffic"], .lqv0Cb');
-  var traffic = trafficEl ? trafficEl.textContent.trim() : '';
-  if (title && title.length > 1) results.push({rank: idx+1, title: title, traffic: traffic});
+var results = [], seen = {};
+document.querySelectorAll('tr, [class*="feed-item"], [class*="trending-item"], [role="row"]').forEach(function(row, idx) {
+  var cells = row.querySelectorAll('td, [role="cell"]');
+  if (cells.length >= 2) {
+    var title = cells[0].textContent.replace(/\s+/g,' ').trim();
+    var traffic = cells.length > 1 ? cells[1].textContent.replace(/\s+/g,' ').trim() : '';
+    if (title && title.length > 1 && title.length < 80 && !seen[title]) {
+      seen[title] = true;
+      results.push({rank: results.length+1, title: title, traffic: traffic});
+    }
+  }
 });
 if (results.length === 0) {
-  document.querySelectorAll('a[href*="/trending"]').forEach(function(a, idx) {
-    var t = a.textContent.replace(/\s+/g,' ').trim();
-    if (t && t.length > 2 && t.length < 100) results.push({rank: idx+1, title: t});
+  document.querySelectorAll('[class*="details"] a, [class*="title"], .mZ3RIc').forEach(function(el) {
+    var t = el.textContent.replace(/\s+/g,' ').trim();
+    if (t && t.length > 2 && t.length < 80 && !seen[t]) {
+      seen[t] = true;
+      results.push({rank: results.length+1, title: t});
+    }
   });
 }
-return results.slice(0, 20);
+return results.slice(0, 30);
 `)
 }
 

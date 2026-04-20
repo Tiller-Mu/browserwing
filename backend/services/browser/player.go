@@ -2111,7 +2111,8 @@ func (p *Player) executeEvaluate(ctx context.Context, page *rod.Page, action mod
 }
 
 // ensureReturn wraps code so the last expression is returned.
-// Handles multiline return statements (e.g. return JSON.stringify(\n  ...\n));)
+// Only detects top-level return statements (depth 0), ignoring returns
+// inside nested functions/closures like (async function(){ return x; })().
 func ensureReturn(code string) string {
 	lines := strings.Split(strings.TrimSpace(code), "\n")
 	last := strings.TrimSpace(lines[len(lines)-1])
@@ -2120,11 +2121,15 @@ func ensureReturn(code string) string {
 		return code
 	}
 
-	// Check if any line already has a top-level return (multiline return statement)
+	depth := 0
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "return ") || trimmed == "return" {
+		if depth == 0 && (strings.HasPrefix(trimmed, "return ") || trimmed == "return") {
 			return code
+		}
+		depth += strings.Count(trimmed, "{") - strings.Count(trimmed, "}")
+		if depth < 0 {
+			depth = 0
 		}
 	}
 

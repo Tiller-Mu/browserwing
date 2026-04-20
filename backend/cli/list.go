@@ -192,11 +192,11 @@ func handleList(args []string) bool {
 		tw.Flush()
 	}
 
-	printListSummary(len(scripts), totalMatched, resp.BuiltinCount, resp.UserCount, filter, search, category)
+	printListSummary(len(scripts), totalMatched, resp.BuiltinCount, resp.UserCount, limit, page, filter, search, category)
 	return true
 }
 
-func printListSummary(shown, matched, builtinCount, userCount int, filter, search, category string) {
+func printListSummary(shown, matched, builtinCount, userCount, limit, page int, filter, search, category string) {
 	parts := []string{}
 	if shown < matched {
 		parts = append(parts, fmt.Sprintf("Showing %d of %d", shown, matched))
@@ -217,6 +217,11 @@ func printListSummary(shown, matched, builtinCount, userCount int, filter, searc
 		parts = append(parts, fmt.Sprintf("category: %s", category))
 	}
 	fmt.Fprintf(os.Stderr, "\n  %s\n", strings.Join(parts, " | "))
+
+	if limit > 0 && shown < matched {
+		totalPages := (matched + limit - 1) / limit
+		fmt.Fprintf(os.Stderr, "  Page %d/%d. Next: --limit=%d --page=%d\n", page, totalPages, limit, page+1)
+	}
 }
 
 func fuzzyMatch(needle, haystack string) bool {

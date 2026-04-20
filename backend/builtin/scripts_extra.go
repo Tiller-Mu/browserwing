@@ -99,12 +99,16 @@ return JSON.stringify(list.slice(0, 30));
 
 func nowcoderHot() models.Script {
 	return scriptTemplate("nowcoder-hot", "nowcoder-hot", "获取牛客网热门讨论", "https://www.nowcoder.com/discuss?type=2&order=3", []string{"nowcoder", "求职"}, false, `
-var items = document.querySelectorAll('.discuss-main .common-list li, [class*="discuss-item"]');
-var list = [];
-items.forEach(function(el, i) {
-  var t = el.querySelector('a.discuss-title, .title a, a[class*="title"]');
-  var v = el.querySelector('[class*="view"], [class*="count"]');
-  if (t) list.push({rank: i+1, title: t.textContent.trim(), url: t.href, views: v ? v.textContent.trim() : ''});
+var items = document.querySelectorAll('[class*="discuss"] li, [class*="list-item"], .nk-list-item, a[href*="/discuss/"]');
+var list = [], seen = {};
+items.forEach(function(el) {
+  var a = el.tagName === 'A' ? el : el.querySelector('a[href*="/discuss/"]') || el.querySelector('a');
+  if (!a) return;
+  var title = a.textContent.replace(/\s+/g,' ').trim();
+  var href = a.href || a.getAttribute('href') || '';
+  if (!title || title.length < 4 || title.length > 120 || seen[title]) return;
+  seen[title] = true;
+  list.push({rank: list.length+1, title: title, url: href});
 });
 return JSON.stringify(list.slice(0, 30));
 `)
@@ -468,16 +472,18 @@ func githubSearch() models.Script {
 			{Type: "navigate", URL: "https://github.com/search?q=${keyword}&type=repositories&s=stars"},
 			{Type: "sleep", Duration: 3000},
 			{Type: "evaluate", VariableName: "result", JSCode: `
-var items = document.querySelectorAll('[data-testid="results-list"] > div, .repo-list-item');
+var items = document.querySelectorAll('[data-testid="results-list"] > div, .Box-row, .repo-list-item, [class*="search-title"]');
 var list = [];
-items.forEach(function(el, i) {
-  var t = el.querySelector('a[class*="prc-Link"], .v-align-middle');
-  var d = el.querySelector('p, [class*="description"]');
-  var s = el.querySelector('[class*="octicon-star"]');
-  var star = s ? s.parentElement.textContent.trim() : '';
-  if (t && list.length < 20) list.push({rank: list.length+1, name: t.textContent.trim(), url: t.href, description: d ? d.textContent.trim() : '', stars: star});
+items.forEach(function(el) {
+  var t = el.querySelector('a[href*="/"] span, a.v-align-middle, a[class*="prc-Link"], .search-title a');
+  if (!t) t = el.querySelector('a[href*="/"]');
+  var d = el.querySelector('p, [class*="description"], .search-match');
+  var star = '';
+  var s = el.querySelector('[class*="octicon-star"], svg.octicon-star');
+  if (s && s.parentElement) star = s.parentElement.textContent.replace(/\s+/g,'').trim();
+  if (t && list.length < 20) list.push({rank: list.length+1, name: t.textContent.replace(/\s+/g,' ').trim(), url: t.closest('a') ? t.closest('a').href : (t.href || ''), description: d ? d.textContent.trim().slice(0,120) : '', stars: star});
 });
-return JSON.stringify(list);
+return list;
 `},
 		},
 	}
