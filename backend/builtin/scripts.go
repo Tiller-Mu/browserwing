@@ -42,7 +42,7 @@ func LoadBuiltinScripts(db ScriptStore) {
 	scripts := fetchRemoteScripts()
 	source := "remote"
 	if scripts == nil {
-		log.Printf("Using local builtin scripts (remote fetch failed)")
+		log.Printf("[builtin] using %d local builtin scripts", len(builtinScripts))
 		scripts = builtinScripts
 		source = "local"
 	} else {
@@ -120,7 +120,7 @@ func fetchRemoteScripts() []models.Script {
 	for _, base := range []string{githubBaseURL, giteeBaseURL} {
 		scripts, err := fetchFromIndex(client, base)
 		if err != nil {
-			log.Printf("Index fetch from %s failed: %v, trying next...", base, err)
+			log.Printf("[builtin] remote index unavailable (%s), trying next source...", base)
 			continue
 		}
 		return scripts
@@ -130,7 +130,7 @@ func fetchRemoteScripts() []models.Script {
 	for _, url := range []string{githubLegacyURL, giteeLegacyURL} {
 		scripts, err := fetchFromURL(client, url)
 		if err != nil {
-			log.Printf("Legacy fetch from %s failed: %v", url, err)
+			log.Printf("[builtin] legacy source unavailable (%s), trying next...", url)
 			continue
 		}
 		return scripts
