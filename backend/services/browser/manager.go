@@ -664,6 +664,36 @@ func (m *Manager) SetInstanceHeadless(instanceID string, headless bool) {
 	_ = m.db.SaveBrowserInstance(instance)
 }
 
+// SetInstanceHeadlessTemp temporarily overrides headless mode for one run.
+// Returns a restore function that reverts to the original value.
+func (m *Manager) SetInstanceHeadlessTemp(instanceID string, headless bool) func() {
+	if instanceID == "" {
+		instanceID = "default"
+	}
+	instance, err := m.db.GetBrowserInstance(instanceID)
+	if err != nil || instance == nil {
+		instance = &models.BrowserInstance{
+			ID:   instanceID,
+			Name: instanceID,
+			Type: "local",
+		}
+	}
+
+	origHeadless := instance.Headless
+
+	instance.Headless = &headless
+	_ = m.db.SaveBrowserInstance(instance)
+
+	return func() {
+		inst, err := m.db.GetBrowserInstance(instanceID)
+		if err != nil || inst == nil {
+			return
+		}
+		inst.Headless = origHeadless
+		_ = m.db.SaveBrowserInstance(inst)
+	}
+}
+
 // GetActivePage 获取当前活动页面
 func (m *Manager) GetActivePage() *rod.Page {
 	m.mu.Lock()

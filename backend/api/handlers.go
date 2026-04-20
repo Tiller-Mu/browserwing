@@ -568,8 +568,10 @@ func (h *Handler) ListScripts(c *gin.Context) {
 		}
 	}
 	if ps := c.Query("page_size"); ps != "" {
-		if parsed, err := fmt.Sscanf(ps, "%d", &pageSize); err == nil && parsed == 1 && pageSize > 0 && pageSize <= 100 {
-			// pageSize is valid
+		if parsed, err := fmt.Sscanf(ps, "%d", &pageSize); err == nil && parsed == 1 && pageSize > 0 {
+			if pageSize > 500 {
+				pageSize = 500
+			}
 		} else {
 			pageSize = 20
 		}
@@ -783,10 +785,16 @@ func (h *Handler) PlayScript(c *gin.Context) {
 	// 检查浏览器是否运行
 	if !h.browserManager.IsInstanceRunning(instanceID) {
 		logger.Info(c, "Browser not running, starting...")
-		// 如果请求指定了 headless 模式，先设置实例配置
+		// CLI headless 模式：临时设置，执行完后恢复
+		var restoreHeadless func()
 		if req.Headless != nil {
-			h.browserManager.SetInstanceHeadless(instanceID, *req.Headless)
+			restoreHeadless = h.browserManager.SetInstanceHeadlessTemp(instanceID, *req.Headless)
 		}
+		defer func() {
+			if restoreHeadless != nil {
+				restoreHeadless()
+			}
+		}()
 		if err := h.browserManager.StartInstance(c, instanceID); err != nil {
 			logger.Error(c.Request.Context(), "Failed to start browser: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "error.playScriptFailed"})
