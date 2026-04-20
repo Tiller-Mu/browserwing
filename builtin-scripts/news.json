@@ -131,5 +131,180 @@
         "variable_name": "result"
       }
     ]
+  },
+  {
+    "id": "builtin-google-news",
+    "name": "google-news",
+    "description": "Get Google News top stories",
+    "url": "https://news.google.com/",
+    "tags": [
+      "builtin",
+      "google",
+      "news"
+    ],
+    "group": "内置脚本",
+    "category": "news",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "google-news",
+    "mcp_command_description": "Get Google News top stories",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://news.google.com/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('article, c-wiz article');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('a[class*=\"gPFEn\"], h3 a, h4 a, a');\n  if (t \u0026\u0026 t.textContent.trim().length \u003e 5 \u0026\u0026 list.length \u003c 20) {\n    list.push({rank: list.length+1, title: t.textContent.trim(), url: t.href});\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-bloomberg-rss",
+    "name": "bloomberg-rss",
+    "description": "Bloomberg top headlines via RSS",
+    "url": "https://feeds.bloomberg.com/news.rss",
+    "tags": [
+      "builtin",
+      "bloomberg",
+      "news"
+    ],
+    "group": "内置脚本",
+    "category": "news",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "bloomberg-rss",
+    "mcp_command_description": "Bloomberg top headlines via RSS",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://feeds.bloomberg.com/news.rss"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('item, entry');\nvar results = [];\nitems.forEach(function(item, idx) {\n  var title = (item.querySelector('title')?.textContent || '').trim();\n  var link = (item.querySelector('link')?.textContent || item.querySelector('link')?.getAttribute('href') || '').trim();\n  var desc = (item.querySelector('description')?.textContent || '').replace(/\u003c[^\u003e]*\u003e/g,'').trim().slice(0, 200);\n  var date = (item.querySelector('pubDate, published, updated')?.textContent || '').trim();\n  if (title) results.push({rank: idx+1, title: title, link: link, summary: desc, date: date});\n});\nreturn results.slice(0, 20);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-reuters-search",
+    "name": "reuters-search",
+    "description": "Reuters news search",
+    "url": "https://www.reuters.com/site-search/?query=",
+    "tags": [
+      "builtin",
+      "reuters",
+      "news"
+    ],
+    "group": "内置脚本",
+    "category": "news",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "reuters-search",
+    "mcp_command_description": "Reuters news search",
+    "mcp_input_schema": {
+      "properties": {
+        "query": {
+          "description": "News search keyword",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "query": ""
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.reuters.com/site-search/?query=${query}"
+      },
+      {
+        "type": "sleep",
+        "duration": 4000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\n(async function() {\n  var apiQuery = JSON.stringify({keyword: new URLSearchParams(location.search).get('query') || '', offset: 0, orderby: 'display_date:desc', size: 20, website: 'reuters'});\n  var apiUrl = 'https://www.reuters.com/pf/api/v3/content/fetch/articles-by-search-v2?query=' + encodeURIComponent(apiQuery);\n  try {\n    var resp = await fetch(apiUrl, {credentials: 'include'});\n    if (resp.ok) {\n      var data = await resp.json();\n      var articles = data.result?.articles || data.articles || [];\n      return articles.slice(0, 20).map(function(a, i) {\n        return {rank: i+1, title: a.title || a.headlines?.basic || '', date: (a.display_date || a.published_time || '').split('T')[0], section: a.taxonomy?.section?.name || '', url: a.canonical_url ? 'https://www.reuters.com' + a.canonical_url : ''};\n      });\n    }\n  } catch(e) {}\n  var items = document.querySelectorAll('[class*=\"search-result\"], [data-testid*=\"SearchResult\"]');\n  var results = [];\n  items.forEach(function(el, idx) {\n    var a = el.querySelector('a');\n    var title = a ? a.textContent.trim() : '';\n    var href = a ? a.getAttribute('href') : '';\n    if (title) results.push({rank: idx+1, title: title, url: href \u0026\u0026 !href.startsWith('http') ? 'https://www.reuters.com'+href : href});\n  });\n  return results.slice(0, 20);\n})()\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-gov-policy",
+    "name": "gov-policy",
+    "description": "国务院最新政策文件",
+    "url": "https://www.gov.cn/zhengce/zuixin/index.htm",
+    "tags": [
+      "builtin",
+      "gov",
+      "policy"
+    ],
+    "group": "内置脚本",
+    "category": "news",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "gov-policy",
+    "mcp_command_description": "国务院最新政策文件",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.gov.cn/zhengce/zuixin/index.htm"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 20; i++) {\n    if (document.querySelector('.news_box li, .list li, .list_item, .news-list li')) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var results = [];\n  document.querySelectorAll('.news_box li, .list li, .list_item, .news-list li').forEach(function(el) {\n    var titleEl = el.querySelector('a');\n    var title = titleEl ? titleEl.textContent.replace(/\\s+/g,' ').trim() : '';\n    if (!title || title.length \u003c 4) return;\n    var url = titleEl ? titleEl.getAttribute('href') : '';\n    if (url \u0026\u0026 !url.startsWith('http')) url = 'https://www.gov.cn' + url;\n    var date = ((el.textContent||'').match(/(\\d{4}[-./]\\d{1,2}[-./]\\d{1,2})/)||[''])[0];\n    var source = (el.querySelector('.source, .from')?.textContent || '').replace(/\\s+/g,' ').trim();\n    results.push({rank: results.length+1, title: title, date: date, source: source, url: url});\n  });\n  return results.slice(0, 20);\n})()\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-gov-law",
+    "name": "gov-law",
+    "description": "国家法律法规数据库最新",
+    "url": "https://flk.npc.gov.cn/index.html",
+    "tags": [
+      "builtin",
+      "gov",
+      "law"
+    ],
+    "group": "内置脚本",
+    "category": "news",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "gov-law",
+    "mcp_command_description": "国家法律法规数据库最新",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://flk.npc.gov.cn/index.html"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 30; i++) {\n    if (document.querySelectorAll('.law-item, .el-table__row, .result-item, li a').length \u003e 3) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var results = [];\n  document.querySelectorAll('.law-item, .el-table__row, .result-item').forEach(function(el) {\n    var titleEl = el.querySelector('a, .law-title, .title');\n    var title = titleEl ? titleEl.textContent.replace(/\\s+/g,' ').trim() : '';\n    if (!title || title.length \u003c 3) return;\n    var url = titleEl?.tagName === 'A' ? titleEl.getAttribute('href') : (el.querySelector('a')?.getAttribute('href') || '');\n    if (url \u0026\u0026 !url.startsWith('http')) url = 'https://flk.npc.gov.cn' + url;\n    var date = ((el.textContent||'').match(/(\\d{4}[-./]\\d{1,2}[-./]\\d{1,2})/)||[''])[0];\n    var status = (el.querySelector('.status, .state')?.textContent || '').trim();\n    results.push({rank: results.length+1, title: title, date: date, status: status, url: url});\n  });\n  if (results.length === 0) {\n    document.querySelectorAll('.fl-list li a, .list-group-item a').forEach(function(a) {\n      var title = a.textContent.replace(/\\s+/g,' ').trim();\n      var href = a.getAttribute('href') || '';\n      if (title \u0026\u0026 title.length \u003e 3) results.push({rank: results.length+1, title: title, url: href.startsWith('http') ? href : 'https://flk.npc.gov.cn' + href});\n    });\n  }\n  return results.slice(0, 20);\n})()\n",
+        "variable_name": "result"
+      }
+    ]
   }
 ]

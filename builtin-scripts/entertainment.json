@@ -272,5 +272,102 @@
         "variable_name": "result"
       }
     ]
+  },
+  {
+    "id": "builtin-apple-podcasts-top",
+    "name": "apple-podcasts-top",
+    "description": "Apple Podcasts top chart",
+    "url": "https://rss.marketingtools.apple.com/api/v2/us/podcasts/top/25/podcasts.json",
+    "tags": [
+      "builtin",
+      "apple",
+      "podcasts"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "apple-podcasts-top",
+    "mcp_command_description": "Apple Podcasts top chart",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://rss.marketingtools.apple.com/api/v2/us/podcasts/top/25/podcasts.json"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\ntry {\n  var text = document.body?.innerText || document.querySelector('pre')?.textContent || '';\n  var data = JSON.parse(text);\n  var results = (data?.feed?.results || []).map(function(p, i) {\n    return {rank: i+1, title: p.name, author: p.artistName, id: p.id, url: p.url || ''};\n  });\n  return results.slice(0, 25);\n} catch(e) { return [{error: 'Failed to parse podcast data'}]; }\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-tiktok-explore",
+    "name": "tiktok-explore",
+    "description": "TikTok Explore trending videos",
+    "url": "https://www.tiktok.com/explore",
+    "tags": [
+      "builtin",
+      "tiktok",
+      "trending"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "tiktok-explore",
+    "mcp_command_description": "TikTok Explore trending videos",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.tiktok.com/explore"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar cards = document.querySelectorAll('[data-e2e=\"explore-item\"], [class*=\"DivItemContainer\"], [class*=\"video-feed-item\"]');\nvar results = [];\ncards.forEach(function(card, idx) {\n  var a = card.querySelector('a[href*=\"/video/\"]') || card.querySelector('a');\n  var desc = card.querySelector('[data-e2e=\"explore-item-desc\"], [class*=\"ItemDescription\"], p')?.textContent?.trim() || '';\n  var author = card.querySelector('[data-e2e=\"explore-item-user\"], [class*=\"Author\"], span[class*=\"user\"]')?.textContent?.trim() || '';\n  var views = card.querySelector('[class*=\"play\"], [class*=\"view\"]')?.textContent?.trim() || '';\n  var href = a ? a.getAttribute('href') : '';\n  if (href \u0026\u0026 !href.startsWith('http')) href = 'https://www.tiktok.com' + href;\n  if (desc || href) results.push({rank: idx+1, description: desc.slice(0,100), author: author, views: views, url: href});\n});\nreturn results.slice(0, 20);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-pixiv-ranking",
+    "name": "pixiv-ranking",
+    "description": "Pixiv illustration daily ranking",
+    "url": "https://www.pixiv.net/ranking.php?mode=daily",
+    "tags": [
+      "builtin",
+      "pixiv",
+      "illustration"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "pixiv-ranking",
+    "mcp_command_description": "Pixiv illustration daily ranking",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.pixiv.net/ranking.php?mode=daily"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.ranking-item, [class*=\"rankingItem\"]');\nvar results = [];\nitems.forEach(function(item, idx) {\n  var titleEl = item.querySelector('.title, a[data-title], h2');\n  var title = titleEl ? (titleEl.getAttribute('data-title') || titleEl.textContent || '').trim() : '';\n  var userEl = item.querySelector('.user-name, [data-user-name]');\n  var user = userEl ? (userEl.getAttribute('data-user-name') || userEl.textContent || '').trim() : '';\n  var a = item.querySelector('a[href*=\"/artworks/\"]');\n  var href = a ? a.getAttribute('href') : '';\n  if (href \u0026\u0026 !href.startsWith('http')) href = 'https://www.pixiv.net' + href;\n  if (title || href) results.push({rank: idx+1, title: title, author: user, url: href});\n});\nreturn results.slice(0, 30);\n",
+        "variable_name": "result"
+      }
+    ]
   }
 ]

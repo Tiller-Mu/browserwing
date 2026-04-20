@@ -49,12 +49,13 @@ var categoryMap = map[string]string{
 	"bilibili": "social", "zhihu": "social", "weibo": "social",
 	"douyin": "social", "tieba": "social", "xiaohongshu": "social",
 	"twitter": "social", "reddit": "social", "facebook": "social",
-	"instagram": "social", "tiktok": "social", "bluesky": "social",
+	"instagram": "social", "bluesky": "social",
 	"jike": "social", "zsxq": "social",
 
 	"douban": "entertainment", "hupu": "entertainment", "imdb": "entertainment",
 	"youtube": "entertainment", "bilibili-ranking": "entertainment",
 	"steam": "entertainment", "pixiv": "entertainment",
+	"apple-podcasts": "entertainment", "tiktok": "entertainment",
 
 	"github": "tech", "hackernews": "tech", "v2ex": "tech",
 	"stackoverflow": "tech", "linux-do": "tech", "juejin": "tech",
@@ -68,6 +69,7 @@ var categoryMap = map[string]string{
 
 	"eastmoney": "finance", "sinafinance": "finance", "xueqiu": "finance",
 	"binance": "finance", "yahoo-finance": "finance", "barchart": "finance",
+	"ths": "finance", "tdx": "finance",
 
 	"jd": "shopping", "taobao": "shopping", "smzdm": "shopping",
 	"1688": "shopping", "amazon": "shopping", "xianyu": "shopping",
@@ -75,20 +77,31 @@ var categoryMap = map[string]string{
 
 	"boss": "jobs", "linkedin": "jobs", "maimai": "jobs",
 
-	"google": "search", "baidu-scholar": "search", "google-scholar": "search",
+	"google-scholar": "search", "google-trends": "search",
+	"google": "search", "baidu-scholar": "search",
 	"wikipedia": "search", "wanfang": "search", "cnki": "search",
 
 	"weread": "reading", "medium": "reading", "substack": "reading",
+	"dictionary": "reading",
+
+	"sinablog": "social",
+
+	"gov-policy": "news", "gov-law": "news",
+
+	"ctrip": "other", "jianyu": "other", "ke": "other",
 }
 
 func classifyScript(name string) string {
 	lower := strings.ToLower(name)
+	bestPrefix := ""
+	bestCat := "other"
 	for prefix, cat := range categoryMap {
-		if strings.HasPrefix(lower, prefix) {
-			return cat
+		if strings.HasPrefix(lower, prefix) && len(prefix) > len(bestPrefix) {
+			bestPrefix = prefix
+			bestCat = cat
 		}
 	}
-	return "other"
+	return bestCat
 }
 
 func toCompact(s models.Script) compactScript {
@@ -137,8 +150,8 @@ func main() {
 		categories[c.Category] = append(categories[c.Category], c)
 	}
 
-	// Output directory
-	outDir := filepath.Join("..", "builtin-scripts")
+	// Output directory (relative to CWD, run from project root)
+	outDir := "builtin-scripts"
 	os.MkdirAll(outDir, 0o755)
 
 	// Write category files
@@ -161,7 +174,7 @@ func main() {
 
 	// Write legacy single file
 	legacyData, _ := json.MarshalIndent(allCompact, "", "  ")
-	os.WriteFile(filepath.Join("..", "builtin-scripts.json"), legacyData, 0o644)
+	os.WriteFile("builtin-scripts.json", legacyData, 0o644)
 
 	fmt.Fprintf(os.Stderr, "\nExported %d scripts into %d categories + legacy file\n", len(allCompact), len(categories))
 }

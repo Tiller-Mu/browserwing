@@ -454,5 +454,37 @@
         "variable_name": "result"
       }
     ]
+  },
+  {
+    "id": "builtin-sinablog-hot",
+    "name": "sinablog-hot",
+    "description": "新浪博客热门文章",
+    "url": "https://blog.sina.com.cn/",
+    "tags": [
+      "builtin",
+      "sinablog",
+      "blog"
+    ],
+    "group": "内置脚本",
+    "category": "social",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "sinablog-hot",
+    "mcp_command_description": "新浪博客热门文章",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://blog.sina.com.cn/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar links = document.querySelectorAll('a[href*=\"blog.sina.com.cn/s/blog_\"]');\nvar results = [], seen = {};\nlinks.forEach(function(a, idx) {\n  var title = a.textContent.replace(/\\s+/g,' ').trim();\n  var href = a.getAttribute('href') || '';\n  if (!title || title.length \u003c 4 || seen[title]) return;\n  seen[title] = true;\n  results.push({rank: results.length+1, title: title, url: href});\n});\nif (results.length === 0) {\n  document.querySelectorAll('.atc_title a, .SG_txtb a, .title a').forEach(function(a) {\n    var title = a.textContent.replace(/\\s+/g,' ').trim();\n    var href = a.getAttribute('href') || '';\n    if (title \u0026\u0026 title.length \u003e= 4 \u0026\u0026 !seen[title]) {\n      seen[title] = true;\n      results.push({rank: results.length+1, title: title, url: href});\n    }\n  });\n}\nreturn results.slice(0, 20);\n",
+        "variable_name": "result"
+      }
+    ]
   }
 ]
