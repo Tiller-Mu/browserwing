@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import MDEditor, { commands } from '@uiw/react-md-editor'
+import { copyToClipboard } from '../utils/clipboard'
 import '@uiw/react-md-editor/markdown-editor.css'
 import '@uiw/react-markdown-preview/markdown.css'
 
@@ -51,7 +52,7 @@ export default function MarkdownEditor({ value, onChange, placeholder }: Markdow
       </svg>
     ),
     execute: () => {
-      navigator.clipboard.writeText(value).then(() => {
+      copyToClipboard(value).then(() => {
         const btn = document.querySelector('[aria-label="复制内容"]')
         if (btn) {
           const originalTitle = btn.getAttribute('title')

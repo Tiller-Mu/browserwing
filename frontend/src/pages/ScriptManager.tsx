@@ -7,6 +7,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import ScriptParamsDialog from '../components/ScriptParamsDialog'
 import { useLanguage } from '../i18n'
 import { extractScriptParameters } from '../utils/scriptParamsExtractor'
+import { copyToClipboard } from '../utils/clipboard'
 import {
   DndContext,
   closestCenter,
@@ -626,7 +627,7 @@ export default function ScriptManager() {
 
   // 处理复制并显示反馈
   const handleCopyToClipboard = (text: string, itemId: string) => {
-    navigator.clipboard.writeText(text)
+    copyToClipboard(text)
     setCopiedItem(itemId)
     setTimeout(() => setCopiedItem(null), 2000)
   }
@@ -653,7 +654,7 @@ export default function ScriptManager() {
   -d '${JSON.stringify({ params: paramsExample }, null, 2)}'`
     }
 
-    navigator.clipboard.writeText(curlCommand)
+    copyToClipboard(curlCommand)
     showMessage(t('script.card.curlCopied'), 'success')
   }
 
@@ -1000,7 +1001,7 @@ export default function ScriptManager() {
     }
 
     const jsonStr = JSON.stringify(exportData, null, 2)
-    navigator.clipboard.writeText(jsonStr)
+    copyToClipboard(jsonStr)
       .then(() => {
         showMessage(t('script.copyAsJsonSuccess'), 'success')
       })
@@ -2098,7 +2099,7 @@ export default function ScriptManager() {
                       const textValue = typeof value === 'object'
                         ? JSON.stringify(value, null, 2)
                         : String(value)
-                      navigator.clipboard.writeText(textValue)
+                      copyToClipboard(textValue)
                       showMessage(t('script.extractedData.copied'), 'success')
                     }}
                     className="ml-3 p-2 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 rounded transition-colors"

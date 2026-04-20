@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { Chrome, FileCode, Download, Copy, Check, Settings, ChevronRight, Zap, ArrowRight } from 'lucide-react'
 import { useLanguage } from '../i18n'
 import { useState } from 'react'
+import { copyToClipboard } from '../utils/clipboard'
 
 export default function Dashboard() {
   const { t } = useLanguage()
@@ -18,7 +19,7 @@ export default function Dashboard() {
 }`
 
   const handleCopyMCP = () => {
-    navigator.clipboard.writeText(mcpConfig)
+    copyToClipboard(mcpConfig)
     setCopiedMCP(true)
     setTimeout(() => setCopiedMCP(false), 2000)
   }

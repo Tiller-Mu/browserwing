@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useLanguage } from '../i18n'
+import { copyToClipboard as clipboardCopy } from '../utils/clipboard'
 import { 
   listUsers, 
   createUser, 
@@ -184,7 +185,7 @@ export default function Settings() {
   }
 
   const copyToClipboard = (text: string, id?: string) => {
-    navigator.clipboard.writeText(text)
+    clipboardCopy(text)
     showToast(t('success.copiedToClipboard'), 'success')
     if (id) {
       setJustCopied(id)

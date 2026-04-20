@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import Toast from '../components/Toast'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { useLanguage } from '../i18n'
+import { copyToClipboard } from '../utils/clipboard'
 
 // 创建带认证的 fetch wrapper
 const authFetch = async (url: string, options: RequestInit = {}) => {
@@ -608,7 +609,7 @@ export default function AgentChat() {
   // 复制消息内容
   const copyMessage = async (content: string, messageId: string) => {
     try {
-      await navigator.clipboard.writeText(content)
+      await copyToClipboard(content)
       setCopiedMessageId(messageId)
       setTimeout(() => setCopiedMessageId(null), 2000)
     } catch (error) {
