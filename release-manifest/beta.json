@@ -1,10 +1,15 @@
 {
-  "version": "1.0.1-beta.2",
-  "releaseDate": "2026-03-06",
+  "version": "1.1.0",
+  "releaseDate": "2026-04-20",
   "features": [
-    "NoSandbox configuration for Linux browser launch",
-    "Batch delete for scheduled task execution records",
-    "Beta channel version update detection"
+    "CLI mode: run/list/doctor commands for agent-friendly automation",
+    "78 built-in scripts across 10 categories with remote dynamic updates",
+    "Dedicated built-in scripts tab in web UI with category filtering",
+    "Clipboard fallback for non-HTTPS deployments",
+    "BoltDB lock timeout fix — no more deleting data/ on restart",
+    "CLI headless mode no longer persists to web UI settings",
+    "Smart script sync with content hash comparison",
+    "Improved evaluate action: IIFE async patterns now work correctly"
   ],
-  "downloadUrl": "https://github.com/browserwing/browserwing/releases"
+  "downloadUrl": "https://github.com/browserwing/browserwing/releases/latest"
 }

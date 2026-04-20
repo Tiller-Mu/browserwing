@@ -57,9 +57,9 @@ func handleDoctor() bool {
 	fmt.Print("  Checking config...")
 	port := detectPortFromConfig()
 	if port != "" {
-		printOK(fmt.Sprintf("config.toml found (port=%s)", port))
+		printOK(fmt.Sprintf("config.toml found (config port=%s, connected via %s)", port, baseURL))
 	} else {
-		printWarn("No config.toml found, using defaults")
+		printWarn(fmt.Sprintf("No config.toml found, connected via %s", baseURL))
 	}
 
 	fmt.Println()
