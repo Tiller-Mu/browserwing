@@ -41,9 +41,14 @@ func NewBoltDB(dbPath string) (*BoltDB, error) {
 	dir := filepath.Dir(dbPath)
 
 	db, err := bolt.Open(dbPath, 0o600, &bolt.Options{
-		Timeout: 1 * time.Second,
+		Timeout: 5 * time.Second,
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "timeout") {
+			return nil, fmt.Errorf("database is locked by another process (waited 5s). "+
+				"Make sure no other BrowserWing instance is running, then try again. "+
+				"You do NOT need to delete the data directory. (path: %s)", dbPath)
+		}
 		return nil, fmt.Errorf("failed to open database %s: %w (directory: %s)", dbPath, err, dir)
 	}
 
