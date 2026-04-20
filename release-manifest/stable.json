@@ -1,17 +1,15 @@
 {
-  "version": "1.1.0",
-  "releaseDate": "2026-04-19",
+  "version": "1.0.0",
+  "releaseDate": "2026-01-25",
   "features": [
-    "CLI mode with 30+ built-in scripts — one command to get structured data",
-    "browserwing doctor: one-command health check for server, Chrome, and scripts",
-    "Structured exit codes and JSON error output for AI agent integration",
-    "TTY-aware spinner animation during script execution",
-    "Background version update check with upgrade notification",
-    "Smart builtin script sync with content-hash comparison",
-    "Remote script definitions fetched from GitHub/Gitee with local fallback",
-    "evaluate action type for custom JavaScript data extraction",
-    "Headless-by-default CLI execution with --no-headless override",
-    "Enhanced parameter discovery from MCP schema and action placeholders"
+    "Built-in AI Agent with multi-LLM support (OpenAI, Claude, DeepSeek, etc.)",
+    "Universal AI tool integration (MCP Server + Skills file + HTTP API)",
+    "Visual script recording and playback",
+    "LLM-driven intelligent data extraction",
+    "Complete session management and authentication",
+    "RefID system for stable element location",
+    "High-performance architecture (startup 89% faster, memory 97% lower)",
+    "26+ HTTP API endpoints for browser automation"
   ],
   "downloadUrl": "https://github.com/browserwing/browserwing/releases/latest"
 }
