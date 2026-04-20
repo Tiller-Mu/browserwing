@@ -31,7 +31,7 @@
     "id": "builtin-v2ex-hot",
     "name": "v2ex-hot",
     "description": "获取 V2EX 热门主题",
-    "url": "https://www.v2ex.com/api/topics/hot.json",
+    "url": "https://www.v2ex.com",
     "tags": [
       "builtin",
       "v2ex",
@@ -47,11 +47,15 @@
     "actions": [
       {
         "type": "navigate",
-        "url": "about:blank"
+        "url": "https://www.v2ex.com"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
       },
       {
         "type": "evaluate",
-        "js_code": "\nconst resp = await fetch('https://www.v2ex.com/api/topics/hot.json');\nconst data = await resp.json();\nreturn JSON.stringify(data.map((t, i) =\u003e ({\n  rank: i + 1,\n  title: t.title,\n  node: t.node ? t.node.title : '',\n  replies: t.replies,\n  url: t.url,\n})));\n",
+        "js_code": "\n(async function() {\n  try {\n    var resp = await fetch('/api/topics/hot.json');\n    var data = await resp.json();\n    return data.map(function(t, i) {\n      return {rank: i+1, title: t.title, node: t.node ? t.node.title : '', replies: t.replies, url: t.url};\n    });\n  } catch(e) {\n    var items = document.querySelectorAll('.cell.item');\n    var list = [];\n    items.forEach(function(el, i) {\n      var a = el.querySelector('.item_title a');\n      var node = el.querySelector('.node');\n      if (a) list.push({rank: i+1, title: a.textContent.trim(), node: node ? node.textContent.trim() : '', url: 'https://www.v2ex.com' + a.getAttribute('href')});\n    });\n    return list.slice(0, 30);\n  }\n})()\n",
         "variable_name": "hot_list"
       }
     ]
@@ -171,15 +175,15 @@
     "actions": [
       {
         "type": "navigate",
-        "url": "https://linux.do"
+        "url": "https://linux.do/top?period=weekly"
       },
       {
         "type": "sleep",
-        "duration": 2000
+        "duration": 3000
       },
       {
         "type": "evaluate",
-        "js_code": "\nconst resp = await fetch('/top.json?per_page=25\u0026period=weekly');\nconst data = await resp.json();\nconst topics = data.topic_list.topics;\nreturn JSON.stringify(topics.map((t, i) =\u003e ({\n  rank: i + 1,\n  title: t.title,\n  replies: t.posts_count - 1,\n  likes: t.like_count,\n  views: t.views,\n  url: 'https://linux.do/t/topic/' + t.id,\n})));\n",
+        "js_code": "\n(async function() {\n  try {\n    var resp = await fetch('/top.json?per_page=25\u0026period=weekly');\n    var data = await resp.json();\n    var topics = data.topic_list.topics;\n    return topics.map(function(t, i) {\n      return {rank: i+1, title: t.title, replies: t.posts_count - 1, likes: t.like_count, views: t.views, url: 'https://linux.do/t/topic/' + t.id};\n    });\n  } catch(e) {\n    var rows = document.querySelectorAll('tr.topic-list-item');\n    var list = [];\n    rows.forEach(function(row, i) {\n      var a = row.querySelector('.main-link a.title');\n      var replies = row.querySelector('.num.posts span');\n      var views = row.querySelector('.num.views span');\n      if (a) list.push({rank: i+1, title: a.textContent.trim(), replies: replies ? parseInt(replies.textContent) : 0, views: views ? views.textContent.trim() : '', url: 'https://linux.do' + a.getAttribute('href')});\n    });\n    return list.slice(0, 25);\n  }\n})()\n",
         "variable_name": "hot_list"
       }
     ]
@@ -381,7 +385,7 @@
     "id": "builtin-nowcoder-hot",
     "name": "nowcoder-hot",
     "description": "获取牛客网热门讨论",
-    "url": "https://www.nowcoder.com/discuss?type=2\u0026order=3",
+    "url": "https://www.nowcoder.com/feed/main/detail",
     "tags": [
       "builtin",
       "nowcoder",
@@ -396,7 +400,7 @@
     "actions": [
       {
         "type": "navigate",
-        "url": "https://www.nowcoder.com/discuss?type=2\u0026order=3"
+        "url": "https://www.nowcoder.com/feed/main/detail"
       },
       {
         "type": "sleep",
@@ -404,7 +408,7 @@
       },
       {
         "type": "evaluate",
-        "js_code": "\nvar items = document.querySelectorAll('.discuss-main .common-list li, [class*=\"discuss-item\"]');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('a.discuss-title, .title a, a[class*=\"title\"]');\n  var v = el.querySelector('[class*=\"view\"], [class*=\"count\"]');\n  if (t) list.push({rank: i+1, title: t.textContent.trim(), url: t.href, views: v ? v.textContent.trim() : ''});\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 15; i++) {\n    if (document.querySelectorAll('[class*=\"feed-item\"], [class*=\"discuss-item\"], .nk-list-item, a[href*=\"/discuss/\"]').length \u003e 2) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var list = [], seen = {};\n  document.querySelectorAll('a[href*=\"/discuss/\"], a[href*=\"/feed/main/detail/\"]').forEach(function(a) {\n    var title = a.textContent.replace(/\\s+/g,' ').trim();\n    var href = a.href || a.getAttribute('href') || '';\n    if (!title || title.length \u003c 6 || title.length \u003e 150 || seen[title]) return;\n    if (/^\\d+$/.test(title) || title === '讨论' || title === '查看') return;\n    seen[title] = true;\n    if (!href.startsWith('http')) href = 'https://www.nowcoder.com' + href;\n    list.push({rank: list.length+1, title: title, url: href});\n  });\n  return list.slice(0, 30);\n})()\n",
         "variable_name": "result"
       }
     ]
@@ -483,7 +487,7 @@
       },
       {
         "type": "evaluate",
-        "js_code": "\nvar items = document.querySelectorAll('[data-testid=\"results-list\"] \u003e div, .repo-list-item');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('a[class*=\"prc-Link\"], .v-align-middle');\n  var d = el.querySelector('p, [class*=\"description\"]');\n  var s = el.querySelector('[class*=\"octicon-star\"]');\n  var star = s ? s.parentElement.textContent.trim() : '';\n  if (t \u0026\u0026 list.length \u003c 20) list.push({rank: list.length+1, name: t.textContent.trim(), url: t.href, description: d ? d.textContent.trim() : '', stars: star});\n});\nreturn JSON.stringify(list);\n",
+        "js_code": "\nvar items = document.querySelectorAll('[data-testid=\"results-list\"] \u003e div, .Box-row, .repo-list-item, [class*=\"search-title\"]');\nvar list = [];\nitems.forEach(function(el) {\n  var t = el.querySelector('a[href*=\"/\"] span, a.v-align-middle, a[class*=\"prc-Link\"], .search-title a');\n  if (!t) t = el.querySelector('a[href*=\"/\"]');\n  var d = el.querySelector('p, [class*=\"description\"], .search-match');\n  var star = '';\n  var s = el.querySelector('[class*=\"octicon-star\"], svg.octicon-star');\n  if (s \u0026\u0026 s.parentElement) star = s.parentElement.textContent.replace(/\\s+/g,'').trim();\n  if (t \u0026\u0026 list.length \u003c 20) list.push({rank: list.length+1, name: t.textContent.replace(/\\s+/g,' ').trim(), url: t.closest('a') ? t.closest('a').href : (t.href || ''), description: d ? d.textContent.trim().slice(0,120) : '', stars: star});\n});\nreturn list;\n",
         "variable_name": "result"
       }
     ]

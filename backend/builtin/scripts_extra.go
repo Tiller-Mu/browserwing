@@ -98,19 +98,24 @@ return JSON.stringify(list.slice(0, 30));
 }
 
 func nowcoderHot() models.Script {
-	return scriptTemplate("nowcoder-hot", "nowcoder-hot", "获取牛客网热门讨论", "https://www.nowcoder.com/discuss?type=2&order=3", []string{"nowcoder", "求职"}, false, `
-var items = document.querySelectorAll('[class*="discuss"] li, [class*="list-item"], .nk-list-item, a[href*="/discuss/"]');
-var list = [], seen = {};
-items.forEach(function(el) {
-  var a = el.tagName === 'A' ? el : el.querySelector('a[href*="/discuss/"]') || el.querySelector('a');
-  if (!a) return;
-  var title = a.textContent.replace(/\s+/g,' ').trim();
-  var href = a.href || a.getAttribute('href') || '';
-  if (!title || title.length < 4 || title.length > 120 || seen[title]) return;
-  seen[title] = true;
-  list.push({rank: list.length+1, title: title, url: href});
-});
-return JSON.stringify(list.slice(0, 30));
+	return scriptTemplate("nowcoder-hot", "nowcoder-hot", "获取牛客网热门讨论", "https://www.nowcoder.com/feed/main/detail", []string{"nowcoder", "求职"}, false, `
+(async function() {
+  for (var i = 0; i < 15; i++) {
+    if (document.querySelectorAll('[class*="feed-item"], [class*="discuss-item"], .nk-list-item, a[href*="/discuss/"]').length > 2) break;
+    await new Promise(function(r){setTimeout(r, 500);});
+  }
+  var list = [], seen = {};
+  document.querySelectorAll('a[href*="/discuss/"], a[href*="/feed/main/detail/"]').forEach(function(a) {
+    var title = a.textContent.replace(/\s+/g,' ').trim();
+    var href = a.href || a.getAttribute('href') || '';
+    if (!title || title.length < 6 || title.length > 150 || seen[title]) return;
+    if (/^\d+$/.test(title) || title === '讨论' || title === '查看') return;
+    seen[title] = true;
+    if (!href.startsWith('http')) href = 'https://www.nowcoder.com' + href;
+    list.push({rank: list.length+1, title: title, url: href});
+  });
+  return list.slice(0, 30);
+})()
 `)
 }
 
@@ -209,15 +214,24 @@ return JSON.stringify(list);
 
 func jikeHot() models.Script {
 	return scriptTemplate("jike-hot", "jike-hot", "获取即刻热门动态", "https://web.okjike.com/", []string{"jike", "社交"}, true, `
-var items = document.querySelectorAll('[class*="MessageCard"], [class*="message-card"]');
-var list = [];
-items.forEach(function(el, i) {
-  var author = el.querySelector('[class*="username"], [class*="UserName"]');
-  var text = el.querySelector('[class*="content"], [class*="text"]');
-  var likes = el.querySelector('[class*="like-count"]');
-  if (text && list.length < 20) list.push({rank: list.length+1, author: author ? author.textContent.trim() : '', text: text.textContent.trim().substring(0, 200), likes: likes ? likes.textContent.trim() : ''});
-});
-return JSON.stringify(list);
+(async function() {
+  for (var i = 0; i < 20; i++) {
+    var cards = document.querySelectorAll('[class*="MessageCard"], [class*="message-card"], [class*="feed-item"], [class*="feedItem"], article');
+    if (cards.length > 2) break;
+    await new Promise(function(r){setTimeout(r, 500);});
+  }
+  var items = document.querySelectorAll('[class*="MessageCard"], [class*="message-card"], [class*="feed-item"], [class*="feedItem"], article');
+  var list = [];
+  items.forEach(function(el) {
+    var author = el.querySelector('[class*="username"], [class*="UserName"], [class*="displayName"], [class*="nickName"]');
+    var text = el.querySelector('[class*="content"], [class*="text"], [class*="body"] p, p');
+    if (text && list.length < 20) {
+      var txt = text.textContent.replace(/\s+/g,' ').trim().substring(0, 200);
+      if (txt.length > 5) list.push({rank: list.length+1, author: author ? author.textContent.trim() : '', text: txt});
+    }
+  });
+  return list;
+})()
 `)
 }
 

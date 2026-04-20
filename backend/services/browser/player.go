@@ -2114,20 +2114,37 @@ func (p *Player) executeEvaluate(ctx context.Context, page *rod.Page, action mod
 // Only detects top-level return statements (depth 0), ignoring returns
 // inside nested functions/closures like (async function(){ return x; })().
 func ensureReturn(code string) string {
-	lines := strings.Split(strings.TrimSpace(code), "\n")
+	trimmed := strings.TrimSpace(code)
+	lines := strings.Split(trimmed, "\n")
+	first := strings.TrimSpace(lines[0])
 	last := strings.TrimSpace(lines[len(lines)-1])
 
-	if strings.HasPrefix(last, "return ") {
+	if strings.HasPrefix(last, "return ") || strings.HasPrefix(first, "return ") {
 		return code
+	}
+
+	// IIFE pattern: (async function(){...})() or (function(){...})()
+	// Prepend return to the first line so the Promise/value is returned
+	if (strings.HasPrefix(first, "(async function") || strings.HasPrefix(first, "(function")) &&
+		(strings.HasSuffix(last, ")()") || strings.HasSuffix(last, ")();")) {
+		lines[0] = "return " + strings.TrimSpace(lines[0])
+		return strings.Join(lines, "\n")
+	}
+
+	// Arrow IIFE: (async () => {...})()
+	if strings.HasPrefix(first, "(async ") && strings.Contains(first, "=>") &&
+		(strings.HasSuffix(last, ")()") || strings.HasSuffix(last, ")();")) {
+		lines[0] = "return " + strings.TrimSpace(lines[0])
+		return strings.Join(lines, "\n")
 	}
 
 	depth := 0
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if depth == 0 && (strings.HasPrefix(trimmed, "return ") || trimmed == "return") {
+		t := strings.TrimSpace(line)
+		if depth == 0 && (strings.HasPrefix(t, "return ") || t == "return") {
 			return code
 		}
-		depth += strings.Count(trimmed, "{") - strings.Count(trimmed, "}")
+		depth += strings.Count(t, "{") - strings.Count(t, "}")
 		if depth < 0 {
 			depth = 0
 		}

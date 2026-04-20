@@ -1,15 +1,15 @@
 {
   "files": [
-    "shopping.json",
-    "reading.json",
-    "finance.json",
+    "tech.json",
+    "news.json",
+    "jobs.json",
     "search.json",
     "other.json",
     "social.json",
     "entertainment.json",
-    "tech.json",
-    "news.json",
-    "jobs.json"
+    "finance.json",
+    "shopping.json",
+    "reading.json"
   ],
   "total": 78
 }

@@ -639,7 +639,7 @@ func v2exHot() models.Script {
 		ID:          "builtin-v2ex-hot",
 		Name:        "v2ex-hot",
 		Description: "获取 V2EX 热门主题",
-		URL:         "https://www.v2ex.com/api/topics/hot.json",
+		URL:         "https://www.v2ex.com",
 		Tags:        []string{"builtin", "v2ex", "技术", "热门"},
 		Group:       "内置脚本",
 		CanFetch:    true,
@@ -647,19 +647,29 @@ func v2exHot() models.Script {
 		MCPCommandName:        "v2ex_hot",
 		MCPCommandDescription: "获取 V2EX 热门主题",
 		Actions: []models.ScriptAction{
-			{Type: "navigate", URL: "about:blank"},
+			{Type: "navigate", URL: "https://www.v2ex.com"},
+			{Type: "sleep", Duration: 2000},
 			{
 				Type: "evaluate", VariableName: "hot_list",
 				JSCode: `
-const resp = await fetch('https://www.v2ex.com/api/topics/hot.json');
-const data = await resp.json();
-return JSON.stringify(data.map((t, i) => ({
-  rank: i + 1,
-  title: t.title,
-  node: t.node ? t.node.title : '',
-  replies: t.replies,
-  url: t.url,
-})));
+(async function() {
+  try {
+    var resp = await fetch('/api/topics/hot.json');
+    var data = await resp.json();
+    return data.map(function(t, i) {
+      return {rank: i+1, title: t.title, node: t.node ? t.node.title : '', replies: t.replies, url: t.url};
+    });
+  } catch(e) {
+    var items = document.querySelectorAll('.cell.item');
+    var list = [];
+    items.forEach(function(el, i) {
+      var a = el.querySelector('.item_title a');
+      var node = el.querySelector('.node');
+      if (a) list.push({rank: i+1, title: a.textContent.trim(), node: node ? node.textContent.trim() : '', url: 'https://www.v2ex.com' + a.getAttribute('href')});
+    });
+    return list.slice(0, 30);
+  }
+})()
 `,
 			},
 		},
@@ -954,22 +964,31 @@ func linuxDoHot() models.Script {
 		MCPCommandName:        "linux_do_hot",
 		MCPCommandDescription: "获取 Linux.do 热门话题",
 		Actions: []models.ScriptAction{
-			{Type: "navigate", URL: "https://linux.do"},
-			{Type: "sleep", Duration: 2000},
+			{Type: "navigate", URL: "https://linux.do/top?period=weekly"},
+			{Type: "sleep", Duration: 3000},
 			{
 				Type: "evaluate", VariableName: "hot_list",
 				JSCode: `
-const resp = await fetch('/top.json?per_page=25&period=weekly');
-const data = await resp.json();
-const topics = data.topic_list.topics;
-return JSON.stringify(topics.map((t, i) => ({
-  rank: i + 1,
-  title: t.title,
-  replies: t.posts_count - 1,
-  likes: t.like_count,
-  views: t.views,
-  url: 'https://linux.do/t/topic/' + t.id,
-})));
+(async function() {
+  try {
+    var resp = await fetch('/top.json?per_page=25&period=weekly');
+    var data = await resp.json();
+    var topics = data.topic_list.topics;
+    return topics.map(function(t, i) {
+      return {rank: i+1, title: t.title, replies: t.posts_count - 1, likes: t.like_count, views: t.views, url: 'https://linux.do/t/topic/' + t.id};
+    });
+  } catch(e) {
+    var rows = document.querySelectorAll('tr.topic-list-item');
+    var list = [];
+    rows.forEach(function(row, i) {
+      var a = row.querySelector('.main-link a.title');
+      var replies = row.querySelector('.num.posts span');
+      var views = row.querySelector('.num.views span');
+      if (a) list.push({rank: i+1, title: a.textContent.trim(), replies: replies ? parseInt(replies.textContent) : 0, views: views ? views.textContent.trim() : '', url: 'https://linux.do' + a.getAttribute('href')});
+    });
+    return list.slice(0, 25);
+  }
+})()
 `,
 			},
 		},
@@ -1443,27 +1462,31 @@ func smzdmHot() models.Script {
 		MCPCommandDescription: "获取什么值得买热门好价",
 		Actions: []models.ScriptAction{
 			{Type: "navigate", URL: "https://www.smzdm.com/jingxuan/"},
-			{Type: "sleep", Duration: 2000},
+			{Type: "sleep", Duration: 4000},
 			{
 				Type: "evaluate", VariableName: "hot_list",
 				JSCode: `
-var items = document.querySelectorAll('.feed-block, [class*="feed-block"], article');
-var list = [];
-items.forEach(function(el, i) {
-  var titleEl = el.querySelector('.feed-block__title a, h5 a, [class*="title"] a');
-  var priceEl = el.querySelector('.z-highlight, [class*="price"]');
-  var mallEl = el.querySelector('.feed-block__mall, [class*="mall"]');
-  if (titleEl && i < 30) {
-    list.push({
-      rank: i + 1,
-      title: titleEl.textContent.trim(),
-      price: priceEl ? priceEl.textContent.trim() : '',
-      mall: mallEl ? mallEl.textContent.trim() : '',
-      url: titleEl.href || '',
-    });
+(async function() {
+  for (var i = 0; i < 15; i++) {
+    if (document.querySelectorAll('.feed-block, [class*="feed-block"], article, li[class*="feed"]').length > 2) break;
+    await new Promise(function(r){setTimeout(r, 500);});
   }
-});
-return JSON.stringify(list);
+  var items = document.querySelectorAll('.feed-block, [class*="feed-block"], article, li[class*="feed"]');
+  var list = [];
+  items.forEach(function(el, i) {
+    var titleEl = el.querySelector('.feed-block__title a, h5 a, [class*="title"] a, a[class*="title"]');
+    if (!titleEl) titleEl = el.querySelector('a');
+    var priceEl = el.querySelector('.z-highlight, [class*="price"]');
+    var mallEl = el.querySelector('.feed-block__mall, [class*="mall"]');
+    if (titleEl && list.length < 30) {
+      var title = titleEl.textContent.replace(/\s+/g,' ').trim();
+      if (title.length > 4 && title.length < 200) {
+        list.push({rank: list.length+1, title: title, price: priceEl ? priceEl.textContent.trim() : '', mall: mallEl ? mallEl.textContent.trim() : '', url: titleEl.href || ''});
+      }
+    }
+  });
+  return list;
+})()
 `,
 			},
 		},
@@ -1560,7 +1583,7 @@ func toutiaoHot() models.Script {
 		ID:          "builtin-toutiao-hot",
 		Name:        "toutiao-hot",
 		Description: "获取今日头条热榜",
-		URL:         "https://www.toutiao.com/hot-event/hot-board/",
+		URL:         "https://www.toutiao.com",
 		Tags:        []string{"builtin", "toutiao", "头条", "热榜"},
 		Group:       "内置脚本",
 		CanFetch:    true,
@@ -1568,28 +1591,38 @@ func toutiaoHot() models.Script {
 		MCPCommandName:        "toutiao_hot",
 		MCPCommandDescription: "获取今日头条热榜",
 		Actions: []models.ScriptAction{
-			{Type: "navigate", URL: "https://www.toutiao.com/hot-event/hot-board/"},
-			{Type: "sleep", Duration: 3000},
+			{Type: "navigate", URL: "https://www.toutiao.com"},
+			{Type: "sleep", Duration: 2000},
 			{
 				Type: "evaluate", VariableName: "hot_list",
 				JSCode: `
-var items = document.querySelectorAll('[class*="hot-board"] a, [class*="hotBoard"] a, [class*="HotBoard"] a');
-if (!items.length) items = document.querySelectorAll('a[href*="/trending/"]');
-var seen = {};
-var list = [];
-items.forEach(function(el) {
-  var title = el.textContent.trim();
-  var href = el.href || '';
-  if (title && title.length > 2 && title.length < 50 && !seen[title]) {
-    seen[title] = true;
-    list.push({
-      rank: list.length + 1,
-      title: title,
-      url: href,
-    });
-  }
-});
-return JSON.stringify(list.slice(0, 30));
+(async function() {
+  try {
+    var resp = await fetch('/hot-event/hot-board/?origin=toutiao_pc');
+    var data = await resp.json();
+    if (data && data.data && data.data.length > 0) {
+      return data.data.map(function(item, i) {
+        return {rank: i+1, title: item.Title || '', heat: item.HotValue || 0, url: item.Url || ''};
+      }).filter(function(item) { return item.title; }).slice(0, 50);
+    }
+    if (data && data.fixed_top_data) {
+      return data.fixed_top_data.map(function(item, i) {
+        return {rank: i+1, title: item.Title || '', heat: item.HotValue || 0, url: item.Url || ''};
+      }).slice(0, 5);
+    }
+  } catch(e) {}
+  var items = document.querySelectorAll('[class*="hot"] a, a[href*="/trending/"]');
+  var seen = {}, list = [];
+  items.forEach(function(el) {
+    var title = el.textContent.trim();
+    var href = el.href || '';
+    if (title && title.length > 2 && title.length < 80 && !seen[title]) {
+      seen[title] = true;
+      list.push({rank: list.length+1, title: title, url: href});
+    }
+  });
+  return list.slice(0, 30);
+})()
 `,
 			},
 		},

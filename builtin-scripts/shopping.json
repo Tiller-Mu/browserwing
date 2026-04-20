@@ -123,11 +123,11 @@
       },
       {
         "type": "sleep",
-        "duration": 2000
+        "duration": 4000
       },
       {
         "type": "evaluate",
-        "js_code": "\nvar items = document.querySelectorAll('.feed-block, [class*=\"feed-block\"], article');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.feed-block__title a, h5 a, [class*=\"title\"] a');\n  var priceEl = el.querySelector('.z-highlight, [class*=\"price\"]');\n  var mallEl = el.querySelector('.feed-block__mall, [class*=\"mall\"]');\n  if (titleEl \u0026\u0026 i \u003c 30) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      price: priceEl ? priceEl.textContent.trim() : '',\n      mall: mallEl ? mallEl.textContent.trim() : '',\n      url: titleEl.href || '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 15; i++) {\n    if (document.querySelectorAll('.feed-block, [class*=\"feed-block\"], article, li[class*=\"feed\"]').length \u003e 2) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var items = document.querySelectorAll('.feed-block, [class*=\"feed-block\"], article, li[class*=\"feed\"]');\n  var list = [];\n  items.forEach(function(el, i) {\n    var titleEl = el.querySelector('.feed-block__title a, h5 a, [class*=\"title\"] a, a[class*=\"title\"]');\n    if (!titleEl) titleEl = el.querySelector('a');\n    var priceEl = el.querySelector('.z-highlight, [class*=\"price\"]');\n    var mallEl = el.querySelector('.feed-block__mall, [class*=\"mall\"]');\n    if (titleEl \u0026\u0026 list.length \u003c 30) {\n      var title = titleEl.textContent.replace(/\\s+/g,' ').trim();\n      if (title.length \u003e 4 \u0026\u0026 title.length \u003c 200) {\n        list.push({rank: list.length+1, title: title, price: priceEl ? priceEl.textContent.trim() : '', mall: mallEl ? mallEl.textContent.trim() : '', url: titleEl.href || ''});\n      }\n    }\n  });\n  return list;\n})()\n",
         "variable_name": "hot_list"
       }
     ]

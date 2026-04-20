@@ -175,8 +175,8 @@
   {
     "id": "builtin-cnki-search",
     "name": "cnki-search",
-    "description": "中国知网论文搜索(海外版)",
-    "url": "https://oversea.cnki.net/kns/search?dbcode=CFLS\u0026kw=",
+    "description": "中国知网论文搜索",
+    "url": "https://kns.cnki.net/kns2/article/result/navi/retrieval?dbcode=CFLS\u0026kw=",
     "tags": [
       "builtin",
       "cnki",
@@ -187,7 +187,7 @@
     "can_fetch": true,
     "is_mcp_command": true,
     "mcp_command_name": "cnki-search",
-    "mcp_command_description": "中国知网论文搜索(海外版)",
+    "mcp_command_description": "中国知网论文搜索",
     "mcp_input_schema": {
       "properties": {
         "query": {
@@ -206,7 +206,7 @@
     "actions": [
       {
         "type": "navigate",
-        "url": "https://oversea.cnki.net/kns/search?dbcode=CFLS\u0026kw=${query}"
+        "url": "https://kns.cnki.net/kns2/article/result/navi/retrieval?dbcode=CFLS\u0026kw=${query}"
       },
       {
         "type": "sleep",
@@ -214,7 +214,7 @@
       },
       {
         "type": "evaluate",
-        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 40; i++) {\n    if (document.querySelector('.result-table-list tbody tr, #gridTable tbody tr')) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var rows = document.querySelectorAll('.result-table-list tbody tr, #gridTable tbody tr');\n  var results = [];\n  rows.forEach(function(row) {\n    var tds = row.querySelectorAll('td');\n    if (tds.length \u003c 5) return;\n    var nameCell = row.querySelector('td.name') || tds[2];\n    var titleEl = nameCell?.querySelector('a');\n    var title = titleEl ? titleEl.textContent.replace(/\\s+/g,' ').trim().replace(/免费$/,'') : '';\n    if (!title) return;\n    var url = titleEl ? titleEl.getAttribute('href') : '';\n    if (url \u0026\u0026 !url.startsWith('http')) url = 'https://oversea.cnki.net' + url;\n    var authorCell = row.querySelector('td.author') || tds[3];\n    var journalCell = row.querySelector('td.source') || tds[4];\n    var dateCell = row.querySelector('td.date') || tds[5];\n    results.push({rank: results.length+1, title: title, authors: (authorCell?.textContent||'').trim(), journal: (journalCell?.textContent||'').trim(), date: (dateCell?.textContent||'').trim(), url: url});\n  });\n  return results.slice(0, 20);\n})()\n",
+        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 40; i++) {\n    if (document.querySelectorAll('.result-table-list tbody tr, #gridTable tbody tr, table tbody tr').length \u003e 0) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var rows = document.querySelectorAll('.result-table-list tbody tr, #gridTable tbody tr, table.result-table tbody tr');\n  var results = [];\n  rows.forEach(function(row) {\n    var tds = row.querySelectorAll('td');\n    if (tds.length \u003c 3) return;\n    var titleEl = row.querySelector('td.name a, td a.fz14, a[href*=\"detail\"]');\n    if (!titleEl) titleEl = tds[1]?.querySelector('a') || tds[0]?.querySelector('a');\n    var title = titleEl ? titleEl.textContent.replace(/\\s+/g,' ').trim().replace(/免费$/,'') : '';\n    if (!title || title.length \u003c 3) return;\n    var url = titleEl ? titleEl.getAttribute('href') : '';\n    if (url \u0026\u0026 !url.startsWith('http')) url = 'https://kns.cnki.net' + url;\n    var authors = (tds[2]?.textContent || '').replace(/\\s+/g,' ').trim();\n    var journal = (tds[3]?.textContent || '').replace(/\\s+/g,' ').trim();\n    var date = (tds[4]?.textContent || '').replace(/\\s+/g,' ').trim();\n    results.push({rank: results.length+1, title: title, authors: authors, journal: journal, date: date, url: url});\n  });\n  return results.slice(0, 20);\n})()\n",
         "variable_name": "result"
       }
     ]
@@ -246,7 +246,7 @@
       },
       {
         "type": "evaluate",
-        "js_code": "\nvar items = document.querySelectorAll('[class*=\"feed-item\"], [class*=\"trending-item\"], tr[class*=\"enOk\"]');\nvar results = [];\nitems.forEach(function(item, idx) {\n  var titleEl = item.querySelector('[class*=\"title\"], .mZ3RIc, td:first-child');\n  var title = titleEl ? titleEl.textContent.replace(/\\s+/g,' ').trim() : '';\n  var trafficEl = item.querySelector('[class*=\"traffic\"], .lqv0Cb');\n  var traffic = trafficEl ? trafficEl.textContent.trim() : '';\n  if (title \u0026\u0026 title.length \u003e 1) results.push({rank: idx+1, title: title, traffic: traffic});\n});\nif (results.length === 0) {\n  document.querySelectorAll('a[href*=\"/trending\"]').forEach(function(a, idx) {\n    var t = a.textContent.replace(/\\s+/g,' ').trim();\n    if (t \u0026\u0026 t.length \u003e 2 \u0026\u0026 t.length \u003c 100) results.push({rank: idx+1, title: t});\n  });\n}\nreturn results.slice(0, 20);\n",
+        "js_code": "\nvar results = [], seen = {};\ndocument.querySelectorAll('tr, [class*=\"feed-item\"], [class*=\"trending-item\"], [role=\"row\"]').forEach(function(row, idx) {\n  var cells = row.querySelectorAll('td, [role=\"cell\"]');\n  if (cells.length \u003e= 2) {\n    var title = cells[0].textContent.replace(/\\s+/g,' ').trim();\n    var traffic = cells.length \u003e 1 ? cells[1].textContent.replace(/\\s+/g,' ').trim() : '';\n    if (title \u0026\u0026 title.length \u003e 1 \u0026\u0026 title.length \u003c 80 \u0026\u0026 !seen[title]) {\n      seen[title] = true;\n      results.push({rank: results.length+1, title: title, traffic: traffic});\n    }\n  }\n});\nif (results.length === 0) {\n  document.querySelectorAll('[class*=\"details\"] a, [class*=\"title\"], .mZ3RIc').forEach(function(el) {\n    var t = el.textContent.replace(/\\s+/g,' ').trim();\n    if (t \u0026\u0026 t.length \u003e 2 \u0026\u0026 t.length \u003c 80 \u0026\u0026 !seen[t]) {\n      seen[t] = true;\n      results.push({rank: results.length+1, title: t});\n    }\n  });\n}\nreturn results.slice(0, 30);\n",
         "variable_name": "result"
       }
     ]

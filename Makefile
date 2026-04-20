@@ -49,6 +49,11 @@ help:
 	@echo "  make release              - 准备 GitHub Release 文件（直接二进制）"
 	@echo "  make package              - 打包所有平台并生成压缩包"
 	@echo ""
+	@echo "$(COLOR_GREEN)Windows 部署 (WSL):$(COLOR_RESET)"
+	@echo "  make deploy-windows       - 编译 + 杀进程 + 复制 + 启动"
+	@echo "  make restart-windows      - 仅杀进程 + 启动（不重编译）"
+	@echo "  make stop-windows         - 停止 Windows 服务"
+	@echo ""
 	@echo "$(COLOR_GREEN)其他命令:$(COLOR_RESET)"
 	@echo "  make clean                - 清理构建文件"
 	@echo "  make test                 - 运行测试"
@@ -216,6 +221,44 @@ package: build-all
 	@cd $(BUILD_DIR) && zip -q releases/$(APP_NAME)-windows-arm64-$(VERSION).zip $(APP_NAME)-windows-arm64.exe
 	@echo "$(COLOR_GREEN)✓ 发布包已创建:$(COLOR_RESET)"
 	@ls -lh $(BUILD_DIR)/releases/ | grep -v "^total" | awk '{printf "  %-50s %10s\n", $$9, $$5}'
+
+# Windows 部署目标路径（可通过环境变量覆盖）
+WIN_DEPLOY_DIR ?= /mnt/c/Users/Administrator/Desktop/code/code/browserwing
+WIN_EXE_NAME ?= browserwing.exe
+TASKKILL = /mnt/c/Windows/System32/taskkill.exe
+
+# 一键部署到 Windows：杀进程 -> 编译 -> 复制 -> 启动
+deploy-windows: build-windows-amd64
+	@echo "$(COLOR_YELLOW)🔄 部署到 Windows...$(COLOR_RESET)"
+	@echo "$(COLOR_BLUE)停止旧进程...$(COLOR_RESET)"
+	-@$(TASKKILL) /IM $(WIN_EXE_NAME) /F 2>/dev/null || true
+	@sleep 1
+	@echo "$(COLOR_BLUE)复制新二进制...$(COLOR_RESET)"
+	@cp $(BUILD_DIR)/$(APP_NAME)-windows-amd64.exe $(WIN_DEPLOY_DIR)/$(WIN_EXE_NAME)
+	@echo "$(COLOR_BLUE)启动服务...$(COLOR_RESET)"
+	@/mnt/c/Windows/System32/cmd.exe /C "cd /D C:\Users\Administrator\Desktop\code\code\browserwing && start $(WIN_EXE_NAME)" 2>/dev/null &
+	@echo "$(COLOR_BLUE)等待服务启动...$(COLOR_RESET)"
+	@sleep 6
+	@echo "$(COLOR_GREEN)✓ 部署完成$(COLOR_RESET)"
+	@echo "$(COLOR_BLUE)验证连接...$(COLOR_RESET)"
+	@/mnt/c/Windows/System32/curl.exe -s http://localhost:18089/api/v1/version 2>/dev/null && echo "" || echo "$(COLOR_YELLOW)⚠ 无法连接，请手动检查$(COLOR_RESET)"
+
+# 仅重启 Windows 服务（不重新编译）
+restart-windows:
+	@echo "$(COLOR_YELLOW)🔄 重启 Windows 服务...$(COLOR_RESET)"
+	-@$(TASKKILL) /IM $(WIN_EXE_NAME) /F 2>/dev/null || true
+	@sleep 1
+	@/mnt/c/Windows/System32/cmd.exe /C "cd /D C:\Users\Administrator\Desktop\code\code\browserwing && start $(WIN_EXE_NAME)" 2>/dev/null &
+	@echo "$(COLOR_BLUE)等待服务启动...$(COLOR_RESET)"
+	@sleep 6
+	@echo "$(COLOR_GREEN)✓ 重启完成$(COLOR_RESET)"
+	@/mnt/c/Windows/System32/curl.exe -s http://localhost:18089/api/v1/version 2>/dev/null && echo "" || echo "$(COLOR_YELLOW)⚠ 无法连接，请手动检查$(COLOR_RESET)"
+
+# 停止 Windows 服务
+stop-windows:
+	@echo "$(COLOR_YELLOW)🛑 停止 Windows 服务...$(COLOR_RESET)"
+	-@$(TASKKILL) /IM $(WIN_EXE_NAME) /F 2>/dev/null || true
+	@echo "$(COLOR_GREEN)✓ 已停止$(COLOR_RESET)"
 
 # 运行集成版本
 run: build-embedded

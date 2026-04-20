@@ -354,27 +354,27 @@ func wanfangSearch() models.Script {
 }
 
 func cnkiSearch() models.Script {
-	return searchTemplate("cnki-search", "cnki-search", "中国知网论文搜索(海外版)", "https://oversea.cnki.net/kns/search?dbcode=CFLS&kw=", []string{"cnki", "academic"}, false, "query", "搜索关键词", `
+	return searchTemplate("cnki-search", "cnki-search", "中国知网论文搜索", "https://kns.cnki.net/kns2/article/result/navi/retrieval?dbcode=CFLS&kw=", []string{"cnki", "academic"}, false, "query", "搜索关键词", `
 (async function() {
   for (var i = 0; i < 40; i++) {
-    if (document.querySelector('.result-table-list tbody tr, #gridTable tbody tr')) break;
+    if (document.querySelectorAll('.result-table-list tbody tr, #gridTable tbody tr, table tbody tr').length > 0) break;
     await new Promise(function(r){setTimeout(r, 500);});
   }
-  var rows = document.querySelectorAll('.result-table-list tbody tr, #gridTable tbody tr');
+  var rows = document.querySelectorAll('.result-table-list tbody tr, #gridTable tbody tr, table.result-table tbody tr');
   var results = [];
   rows.forEach(function(row) {
     var tds = row.querySelectorAll('td');
-    if (tds.length < 5) return;
-    var nameCell = row.querySelector('td.name') || tds[2];
-    var titleEl = nameCell?.querySelector('a');
+    if (tds.length < 3) return;
+    var titleEl = row.querySelector('td.name a, td a.fz14, a[href*="detail"]');
+    if (!titleEl) titleEl = tds[1]?.querySelector('a') || tds[0]?.querySelector('a');
     var title = titleEl ? titleEl.textContent.replace(/\s+/g,' ').trim().replace(/免费$/,'') : '';
-    if (!title) return;
+    if (!title || title.length < 3) return;
     var url = titleEl ? titleEl.getAttribute('href') : '';
-    if (url && !url.startsWith('http')) url = 'https://oversea.cnki.net' + url;
-    var authorCell = row.querySelector('td.author') || tds[3];
-    var journalCell = row.querySelector('td.source') || tds[4];
-    var dateCell = row.querySelector('td.date') || tds[5];
-    results.push({rank: results.length+1, title: title, authors: (authorCell?.textContent||'').trim(), journal: (journalCell?.textContent||'').trim(), date: (dateCell?.textContent||'').trim(), url: url});
+    if (url && !url.startsWith('http')) url = 'https://kns.cnki.net' + url;
+    var authors = (tds[2]?.textContent || '').replace(/\s+/g,' ').trim();
+    var journal = (tds[3]?.textContent || '').replace(/\s+/g,' ').trim();
+    var date = (tds[4]?.textContent || '').replace(/\s+/g,' ').trim();
+    results.push({rank: results.length+1, title: title, authors: authors, journal: journal, date: date, url: url});
   });
   return results.slice(0, 20);
 })()
@@ -413,52 +413,61 @@ return results.slice(0, 30);
 func govPolicy() models.Script {
 	return scriptTemplate("gov-policy", "gov-policy", "国务院最新政策文件", "https://www.gov.cn/zhengce/zuixin/index.htm", []string{"gov", "policy"}, false, `
 (async function() {
-  for (var i = 0; i < 20; i++) {
-    if (document.querySelector('.news_box li, .list li, .list_item, .news-list li')) break;
+  for (var i = 0; i < 30; i++) {
+    if (document.querySelectorAll('li a, .news_box a, .list a, .list_item a').length > 5) break;
     await new Promise(function(r){setTimeout(r, 500);});
   }
-  var results = [];
-  document.querySelectorAll('.news_box li, .list li, .list_item, .news-list li').forEach(function(el) {
-    var titleEl = el.querySelector('a');
-    var title = titleEl ? titleEl.textContent.replace(/\s+/g,' ').trim() : '';
-    if (!title || title.length < 4) return;
-    var url = titleEl ? titleEl.getAttribute('href') : '';
+  var results = [], seen = {};
+  document.querySelectorAll('li').forEach(function(el) {
+    var a = el.querySelector('a');
+    if (!a) return;
+    var title = a.textContent.replace(/\s+/g,' ').trim();
+    if (!title || title.length < 6 || title.length > 200 || seen[title]) return;
+    seen[title] = true;
+    var url = a.getAttribute('href') || '';
     if (url && !url.startsWith('http')) url = 'https://www.gov.cn' + url;
+    if (!url.includes('gov.cn')) return;
     var date = ((el.textContent||'').match(/(\d{4}[-./]\d{1,2}[-./]\d{1,2})/)||[''])[0];
-    var source = (el.querySelector('.source, .from')?.textContent || '').replace(/\s+/g,' ').trim();
-    results.push({rank: results.length+1, title: title, date: date, source: source, url: url});
+    results.push({rank: results.length+1, title: title, date: date, url: url});
   });
-  return results.slice(0, 20);
+  return results.slice(0, 30);
 })()
 `)
 }
 
 func govLaw() models.Script {
-	return scriptTemplate("gov-law", "gov-law", "国家法律法规数据库最新", "https://flk.npc.gov.cn/index.html", []string{"gov", "law"}, false, `
+	return scriptTemplate("gov-law", "gov-law", "国家法律法规数据库最新", "https://flk.npc.gov.cn/fl.html", []string{"gov", "law"}, false, `
 (async function() {
   for (var i = 0; i < 30; i++) {
-    if (document.querySelectorAll('.law-item, .el-table__row, .result-item, li a').length > 3) break;
+    if (document.querySelectorAll('.el-table__row, .law-item, .result-item, li a[href*="detail"]').length > 2) break;
     await new Promise(function(r){setTimeout(r, 500);});
   }
-  var results = [];
-  document.querySelectorAll('.law-item, .el-table__row, .result-item').forEach(function(el) {
-    var titleEl = el.querySelector('a, .law-title, .title');
-    var title = titleEl ? titleEl.textContent.replace(/\s+/g,' ').trim() : '';
-    if (!title || title.length < 3) return;
-    var url = titleEl?.tagName === 'A' ? titleEl.getAttribute('href') : (el.querySelector('a')?.getAttribute('href') || '');
+  var results = [], seen = {};
+  document.querySelectorAll('.el-table__row, .law-item, .result-item, tr').forEach(function(el) {
+    var cells = el.querySelectorAll('td, .cell');
+    var titleEl = el.querySelector('a') || (cells.length > 0 ? cells[0] : null);
+    if (!titleEl) return;
+    var title = titleEl.textContent.replace(/\s+/g,' ').trim();
+    if (!title || title.length < 3 || title.length > 200 || seen[title]) return;
+    seen[title] = true;
+    var url = '';
+    var a = el.querySelector('a');
+    if (a) { url = a.getAttribute('href') || ''; }
     if (url && !url.startsWith('http')) url = 'https://flk.npc.gov.cn' + url;
     var date = ((el.textContent||'').match(/(\d{4}[-./]\d{1,2}[-./]\d{1,2})/)||[''])[0];
-    var status = (el.querySelector('.status, .state')?.textContent || '').trim();
-    results.push({rank: results.length+1, title: title, date: date, status: status, url: url});
+    results.push({rank: results.length+1, title: title, date: date, url: url});
   });
   if (results.length === 0) {
-    document.querySelectorAll('.fl-list li a, .list-group-item a').forEach(function(a) {
+    document.querySelectorAll('a').forEach(function(a) {
       var title = a.textContent.replace(/\s+/g,' ').trim();
       var href = a.getAttribute('href') || '';
-      if (title && title.length > 3) results.push({rank: results.length+1, title: title, url: href.startsWith('http') ? href : 'https://flk.npc.gov.cn' + href});
+      if (title && title.length > 4 && title.length < 200 && !seen[title] && href.includes('detail')) {
+        seen[title] = true;
+        results.push({rank: results.length+1, title: title, url: href.startsWith('http') ? href : 'https://flk.npc.gov.cn/' + href});
+      }
     });
   }
-  return results.slice(0, 20);
+  return results.slice(0, 30);
 })()
 `)
 }
