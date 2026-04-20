@@ -11,7 +11,7 @@
   <img alt="MCP" src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-7B61FF" />
   <img alt="npm" src="https://img.shields.io/npm/v/browserwing?color=CB3837&logo=npm" />
   <img alt="License" src="https://img.shields.io/github/license/browserwing/browserwing" />
-  <img alt="Scripts" src="https://img.shields.io/badge/Built--in%20Scripts-57-brightgreen" />
+  <img alt="Scripts" src="https://img.shields.io/badge/Built--in%20Scripts-78-brightgreen" />
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@
 
 <p align="center"><a href="https://browserwing.com">browserwing.com</a></p>
 
-> **Turn any website into structured data with one command.** Browser automation platform with 57 built-in scripts, CLI for AI agents, MCP & Skills protocol support, and a visual recorder.
+> **Turn any website into structured data with one command.** Browser automation platform with 78 built-in scripts, CLI for AI agents, MCP & Skills protocol support, and a visual recorder.
 
 https://github.com/user-attachments/assets/e5377892-4b88-433a-8620-43b38a2fb28f
 
@@ -214,7 +214,7 @@ browserwing run hackernews-top | jq '.[0:5]'
 browserwing run zhihu-hot --no-headless
 ```
 
-**57 built-in scripts** across 10 categories (Bilibili, GitHub, Reddit, Hacker News, YouTube, Steam, BBC, Binance, Amazon, Weibo, Zhihu, etc.) — ready to use out of the box.
+**78 built-in scripts** across 10 categories (Bilibili, GitHub, Reddit, Hacker News, YouTube, Steam, BBC, Bloomberg, Reuters, Google Scholar, Binance, Amazon, Weibo, Zhihu, CNKI, Yahoo Finance, etc.) — ready to use out of the box.
 
 **AI Agent Workflow:**
 1. `browserwing ls --format=json` — discover available scripts and their parameters

@@ -293,6 +293,33 @@ var builtinScripts = []models.Script{
 	doubanSearch(),
 	githubSearch(),
 	zhihuSearch(),
+	// --- Extra2: Finance ---
+	thsHotRank(),
+	tdxHotRank(),
+	yahooFinanceQuote(),
+	barchartOptions(),
+	// --- Extra2: News ---
+	bloombergNews(),
+	reutersSearch(),
+	sinablogHot(),
+	// --- Extra2: Entertainment ---
+	applePodcastsTop(),
+	tiktokExplore(),
+	pixivRanking(),
+	// --- Extra2: Reading ---
+	substackFeed(),
+	dictionaryLookup(),
+	// --- Extra2: Academic ---
+	googleScholarSearch(),
+	baiduScholarSearch(),
+	wanfangSearch(),
+	cnkiSearch(),
+	// --- Extra2: Other ---
+	googleTrends(),
+	govPolicy(),
+	govLaw(),
+	ctripSearch(),
+	jianyuSearch(),
 }
 
 func bilibiliHot() models.Script {

@@ -6,7 +6,7 @@
   <img alt="Go" src="https://img.shields.io/badge/Go-1.21%2B-00ADD8?logo=go&logoColor=white" />
   <img alt="npm" src="https://img.shields.io/npm/v/browserwing?color=CB3837&logo=npm" />
   <img alt="License" src="https://img.shields.io/github/license/browserwing/browserwing" />
-  <img alt="Scripts" src="https://img.shields.io/badge/%E5%86%85%E7%BD%AE%E8%84%9A%E6%9C%AC-57-brightgreen" />
+  <img alt="Scripts" src="https://img.shields.io/badge/%E5%86%85%E7%BD%AE%E8%84%9A%E6%9C%AC-78-brightgreen" />
   <img alt="MCP" src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-7B61FF" />
 </p>
 
@@ -16,7 +16,7 @@
 
 <p align="center"><a href="https://browserwing.com">browserwing.com</a></p>
 
-> **一条命令，把任意网站变成结构化数据。** 浏览器自动化平台，57 个内置脚本（10 大分类）、CLI 直出 JSON、MCP & Skills 协议支持、可视化录制。
+> **一条命令，把任意网站变成结构化数据。** 浏览器自动化平台，78 个内置脚本（10 大分类）、CLI 直出 JSON、MCP & Skills 协议支持、可视化录制。
 
 ```bash
 # 30 秒上手
@@ -204,7 +204,7 @@ browserwing run hackernews-top | jq '.[0:5]'
 browserwing run zhihu-hot --no-headless
 ```
 
-**57 个预置脚本**，覆盖 10 大分类（技术、社交、资讯、财经、娱乐、购物、求职、阅读、搜索等），开箱即用。
+**78 个预置脚本**，覆盖 10 大分类（技术、社交、资讯、财经、娱乐、购物、求职、阅读、学术、搜索等），开箱即用。
 
 **AI Agent 典型调用流程：**
 1. `browserwing ls --format=json` — 发现可用脚本及其参数
