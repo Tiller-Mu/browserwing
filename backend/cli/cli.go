@@ -175,6 +175,12 @@ RUN OPTIONS:
 
 LIST OPTIONS:
   --format=<json|table|csv>  Output format (default: table)
+  --builtin                  Show only built-in scripts
+  --user | --no-builtin      Show only user-created scripts
+  --search=<keyword>         Fuzzy search by name/description/id
+  --category=<name>          Filter by category (tech, finance, news...)
+  --limit=<n>                Max results per page
+  --page=<n>                 Page number (use with --limit)
 
 ENVIRONMENT:
   BROWSERWING_URL            Server URL (overrides all other settings)
@@ -208,6 +214,16 @@ EXAMPLES:
   # List all scripts (discover params)
   browserwing ls --format=json
 
+  # List only built-in scripts
+  browserwing ls --builtin
+
+  # Search scripts by keyword
+  browserwing ls --search=stock
+  browserwing ls finance          # positional arg also works as search
+
+  # Filter by category with limit
+  browserwing ls --category=tech --limit=10
+
   # Pipe output to other tools
   browserwing run hackernews-top | jq '.[0:5]'
   browserwing run sinafinance-rank --format=csv > stocks.csv
@@ -220,9 +236,10 @@ EXAMPLES:
   Use --format=json for structured output that's easy to parse.
 
   Typical workflow:
-    1. browserwing ls --format=json    # discover available scripts
-    2. browserwing run <name>          # execute and get data as JSON
-    3. Parse the JSON output for further processing
+    1. browserwing ls --format=json                # discover all scripts
+    2. browserwing ls --search=<keyword> --format=json  # find relevant scripts
+    3. browserwing run <name>                       # execute and get data
+    4. Parse the JSON output for further processing
 
   MCP (Model Context Protocol) is also supported via the web API.
   See: http://localhost:18050/api/v1/mcp for the MCP endpoint.
