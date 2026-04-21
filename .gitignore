@@ -35,6 +35,7 @@ test
 project_docs
 
 browserwing
+!skills/browserwing/
 browserpilot
 
 RELEASE.md
