@@ -91,6 +91,46 @@ func apiPost(path string, payload interface{}) ([]byte, error) {
 	return body, nil
 }
 
+func apiDelete(path string) ([]byte, error) {
+	url := getBaseURL() + path
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("cannot connect to BrowserWing server at %s: %w\nMake sure the server is running", getBaseURL(), err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+	}
+	return body, nil
+}
+
+func apiPut(path string, payload interface{}) ([]byte, error) {
+	url := getBaseURL() + path
+	client := &http.Client{Timeout: 30 * time.Second}
+	data, _ := json.Marshal(payload)
+	req, err := http.NewRequest("PUT", url, strings.NewReader(string(data)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("cannot connect to BrowserWing server at %s: %w\nMake sure the server is running", getBaseURL(), err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+	}
+	return body, nil
+}
+
 // Execute is the main entry point for CLI mode.
 // Returns true if a CLI subcommand was handled, false if the server should start.
 func Execute(args []string) bool {
@@ -124,6 +164,24 @@ func Execute(args []string) bool {
 		result := handleList(filteredArgs[1:])
 		checkForUpdate()
 		return result
+	case "exec":
+		return handleExec(filteredArgs[1:])
+	case "config":
+		return handleConfig(filteredArgs[1:])
+	case "browser":
+		return handleBrowser(filteredArgs[1:])
+	case "cookie":
+		return handleCookie(filteredArgs[1:])
+	case "script":
+		return handleScript(filteredArgs[1:])
+	case "explore":
+		return handleExplore(filteredArgs[1:])
+	case "prompt":
+		return handlePrompt(filteredArgs[1:])
+	case "mcp":
+		return handleMCP(filteredArgs[1:])
+	case "health":
+		return handleHealth(filteredArgs[1:])
 	case "doctor":
 		return handleDoctor()
 	case "help", "--help", "-h":
@@ -157,33 +215,48 @@ func printHelp() {
 	fmt.Print(`USAGE:
   browserwing <command> [options]
 
-COMMANDS:
-  run <name|id> [options]    Execute a script and return extracted data
-  list | ls    [options]     List all available scripts
-  doctor                     Check server, Chrome, and system health
-  help                       Show this help message
-  version                    Show version info
+SCRIPT COMMANDS:
+  run <name|id> [options]     Execute a script and return extracted data
+  list | ls    [options]      List all available scripts
+
+BROWSER CONTROL (executor):
+  exec <action> [args]        Direct browser control (navigate, click, type, extract...)
+
+MANAGEMENT:
+  config <action>             LLM configuration management
+  browser <action>            Browser instance management
+  cookie <action>             Cookie management
+  script <action>             Script CRUD and export
+  explore <action>            AI autonomous exploration
+  prompt <action>             System prompt management
+  mcp <action>                MCP server status and tools
+
+SYSTEM:
+  doctor                      Check server, Chrome, and system health
+  health                      Quick service health check
+  help                        Show this help message
+  version                     Show version info
 
 GLOBAL OPTIONS:
-  --port=<port>              Server port (auto-detected from config.toml)
-  --url=<url>               Full server URL (overrides port)
+  --port=<port>               Server port (auto-detected from config.toml)
+  --url=<url>                 Full server URL (overrides port)
 
 RUN OPTIONS:
-  --format=<json|table|csv>  Output format (default: json)
-  --no-headless              Show browser window (default: headless)
-  --<key>=<value>            Pass variables to the script
+  --format=<json|table|csv>   Output format (default: json)
+  --no-headless               Show browser window (default: headless)
+  --<key>=<value>             Pass variables to the script
 
 LIST OPTIONS:
-  --format=<json|table|csv>  Output format (default: table)
-  --builtin                  Show only built-in scripts
-  --user | --no-builtin      Show only user-created scripts
-  --search=<keyword>         Fuzzy search by name/description/id
-  --category=<name>          Filter by category (tech, finance, news...)
-  --limit=<n>                Max results per page
-  --page=<n>                 Page number (use with --limit)
+  --format=<json|table|csv>   Output format (default: table)
+  --builtin                   Show only built-in scripts
+  --user | --no-builtin       Show only user-created scripts
+  --search=<keyword>          Fuzzy search by name/description/id
+  --category=<name>           Filter by category (tech, finance, news...)
+  --limit=<n>                 Max results per page
+  --page=<n>                  Page number (use with --limit)
 
 ENVIRONMENT:
-  BROWSERWING_URL            Server URL (overrides all other settings)
+  BROWSERWING_URL             Server URL (overrides all other settings)
 
 `)
 
@@ -198,35 +271,35 @@ ENVIRONMENT:
 
 EXAMPLES:
 
-  # Get Bilibili trending videos (outputs JSON for piping)
+  # Run built-in scripts
   browserwing run bilibili-hot
-
-  # Get GitHub trending repos as a table
   browserwing run github-trending --format=table
-
-  # Search with parameters
   browserwing run jd-search --keyword="机械键盘"
-  browserwing run taobao-search --keyword="蓝牙耳机" --format=table
 
-  # Run with visible browser for debugging
-  browserwing run zhihu-hot --no-headless
-
-  # List all scripts (discover params)
-  browserwing ls --format=json
-
-  # List only built-in scripts
+  # List and search scripts
   browserwing ls --builtin
+  browserwing ls --search=stock --format=json
 
-  # Search scripts by keyword
-  browserwing ls --search=stock
-  browserwing ls finance          # positional arg also works as search
+  # Direct browser control
+  browserwing exec navigate https://example.com
+  browserwing exec snapshot
+  browserwing exec click @e3
+  browserwing exec type @e5 "search query"
+  browserwing exec extract ".item" --fields=text,href --multiple
+  browserwing exec screenshot --output=page.png
+  browserwing exec eval 'document.title'
 
-  # Filter by category with limit
-  browserwing ls --category=tech --limit=10
+  # Admin operations
+  browserwing config list
+  browserwing config add --name=gpt --provider=openai --api-key=sk-xxx --model=gpt-4o
+  browserwing browser list
+  browserwing cookie list
+  browserwing script export --output=SKILL.md
+  browserwing explore start --url=https://bilibili.com --task="search AI"
+  browserwing health
 
-  # Pipe output to other tools
+  # Pipe to other tools
   browserwing run hackernews-top | jq '.[0:5]'
-  browserwing run sinafinance-rank --format=csv > stocks.csv
 
 `)
 
@@ -235,14 +308,20 @@ EXAMPLES:
   BrowserWing CLI is designed for AI agent consumption.
   Use --format=json for structured output that's easy to parse.
 
-  Typical workflow:
-    1. browserwing ls --format=json                # discover all scripts
-    2. browserwing ls --search=<keyword> --format=json  # find relevant scripts
-    3. browserwing run <name>                       # execute and get data
-    4. Parse the JSON output for further processing
+  Typical agent workflow:
+    1. browserwing ls --format=json                  # discover scripts
+    2. browserwing run <name>                         # execute and get data
 
-  MCP (Model Context Protocol) is also supported via the web API.
-  See: http://localhost:18050/api/v1/mcp for the MCP endpoint.
+  Direct browser control workflow:
+    1. browserwing exec navigate <url>                # open page
+    2. browserwing exec snapshot                      # get page structure
+    3. browserwing exec click @e3                     # interact with elements
+    4. browserwing exec extract ".result" --multiple  # extract data
+
+  Each subcommand has its own help:
+    browserwing exec help
+    browserwing config help
+    browserwing script help
 
 `)
 }
