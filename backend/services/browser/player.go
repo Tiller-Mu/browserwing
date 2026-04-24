@@ -2262,9 +2262,21 @@ func (p *Player) executeUploadFile(ctx context.Context, page *rod.Page, action m
 		return fmt.Errorf("missing selector information")
 	}
 
-	// 检查是否有文件路径
+	// Expand comma-separated paths into individual entries
+	expandedPaths := make([]string, 0, len(action.FilePaths))
+	for _, p := range action.FilePaths {
+		for _, seg := range strings.Split(p, ",") {
+			seg = strings.TrimSpace(seg)
+			if seg != "" {
+				expandedPaths = append(expandedPaths, seg)
+			}
+		}
+	}
+	action.FilePaths = expandedPaths
+
 	if len(action.FilePaths) == 0 {
-		return fmt.Errorf("no file paths specified for upload")
+		logger.Info(ctx, "No file paths provided, skipping upload")
+		return nil
 	}
 
 	logger.Info(ctx, "Preparing to upload %d files: %v", len(action.FilePaths), action.FilePaths)

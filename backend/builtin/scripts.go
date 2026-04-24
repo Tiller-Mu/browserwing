@@ -320,6 +320,17 @@ var builtinScripts = []models.Script{
 	govLaw(),
 	ctripSearch(),
 	jianyuSearch(),
+	// --- Publish ---
+	xiaohongshuPublish(),
+	twitterPost(),
+	twitterReply(),
+	// --- XHS Extra ---
+	xiaohongshuSearch(),
+	xiaohongshuNote(),
+	xiaohongshuUser(),
+	// --- Twitter Extra ---
+	twitterSearch(),
+	twitterProfile(),
 }
 
 func bilibiliHot() models.Script {
@@ -1622,6 +1633,773 @@ func toutiaoHot() models.Script {
     }
   });
   return list.slice(0, 30);
+})()
+`,
+			},
+		},
+	}
+}
+
+func xiaohongshuPublish() models.Script {
+	return models.Script{
+		ID:          "builtin-xiaohongshu-publish",
+		Name:        "xiaohongshu-publish",
+		Description: "小红书发布图文笔记（需要登录创作者中心）",
+		URL:         "https://creator.xiaohongshu.com/publish/publish",
+		Tags:        []string{"builtin", "xiaohongshu", "发布", "publish", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:    false,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "xiaohongshu_publish",
+		MCPCommandDescription: "小红书发布图文笔记（需要登录创作者中心）",
+		MCPInputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"title":  map[string]interface{}{"type": "string", "description": "笔记标题（最多20字）"},
+				"content": map[string]interface{}{"type": "string", "description": "笔记正文内容"},
+				"images": map[string]interface{}{"type": "string", "description": "图片路径，逗号分隔，支持本地路径或HTTP URL，最多9张（jpg/png/gif/webp）"},
+				"topics": map[string]interface{}{"type": "string", "description": "话题标签，逗号分隔，不含#号（可选）"},
+				"draft":  map[string]interface{}{"type": "string", "description": "设为 true 则保存为草稿（可选，默认直接发布）"},
+			},
+			"required": []string{"title", "content", "images"},
+		},
+		Variables: map[string]string{
+			"title":   "",
+			"content": "",
+			"images":  "",
+			"topics":  "",
+			"draft":   "false",
+		},
+		Actions: []models.ScriptAction{
+			// Step 1: Navigate to creator publish page
+			{Type: "navigate", URL: "https://creator.xiaohongshu.com/publish/publish?from=menu_left"},
+			{Type: "sleep", Duration: 3000},
+
+			// Step 2: Select "图文" tab and verify we're on the right page
+			{
+				Type: "evaluate", VariableName: "_select_tab",
+				JSCode: `
+(async function() {
+  var url = location.href;
+  if (!url.includes('creator.xiaohongshu.com')) {
+    return JSON.stringify({error: "未在创作者中心，可能未登录。请先登录 creator.xiaohongshu.com"});
+  }
+  var nodes = document.querySelectorAll('button, [role="tab"], [role="button"], a, label, div, span, li');
+  var targets = ['上传图文', '图文', '图片'];
+  for (var t = 0; t < targets.length; t++) {
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el || el.offsetParent === null) continue;
+      var text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text || text.includes('视频')) continue;
+      if (text === targets[t] || text.startsWith(targets[t]) || text.includes(targets[t])) {
+        var clickable = el.closest('button, [role="tab"], [role="button"], a, label') || el;
+        clickable.click();
+        return JSON.stringify({ok: true, clicked: text});
+      }
+    }
+  }
+  return JSON.stringify({ok: true, note: "no tab switch needed"});
+})()
+`,
+			},
+			{Type: "sleep", Duration: 2000},
+
+			// Step 3: Upload images via file input
+			{
+				Type:      "upload_file",
+				Selector:  `input[type="file"][accept*="image"], input[type="file"][accept*=".jpg"], input[type="file"][accept*=".png"], input[type="file"][accept*=".jpeg"]`,
+				FilePaths: []string{"${images}"},
+				Multiple:  true,
+			},
+			{Type: "sleep", Duration: 5000},
+
+			// Step 4: Wait for editor form and fill title
+			{
+				Type: "evaluate", VariableName: "_fill_title",
+				JSCode: `
+(async function() {
+  var title = "${title}";
+  if (!title) return JSON.stringify({error: "title is empty"});
+  var maxWait = 10000, elapsed = 0;
+  while (elapsed < maxWait) {
+    var selectors = [
+      '[contenteditable="true"][placeholder*="标题"]',
+      '[contenteditable="true"][placeholder*="赞"]',
+      '[contenteditable="true"][class*="title"]',
+      'input[maxlength="20"]',
+      'input[class*="title"]',
+      'input[placeholder*="标题"]',
+      '.title-input input',
+      '.note-title input'
+    ];
+    for (var s = 0; s < selectors.length; s++) {
+      var el = document.querySelector(selectors[s]);
+      if (el && el.offsetParent !== null) {
+        el.focus();
+        if (el.isContentEditable) {
+          el.textContent = '';
+          document.execCommand('insertText', false, title);
+          el.dispatchEvent(new Event('input', {bubbles: true}));
+        } else {
+          var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+          if (setter && setter.set) setter.set.call(el, title);
+          else el.value = title;
+          el.dispatchEvent(new Event('input', {bubbles: true}));
+          el.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+        el.blur();
+        return JSON.stringify({ok: true, title: title});
+      }
+    }
+    await new Promise(function(r) { setTimeout(r, 1000); });
+    elapsed += 1000;
+  }
+  return JSON.stringify({error: "title input not found after waiting"});
+})()
+`,
+			},
+			{Type: "sleep", Duration: 500},
+
+			// Step 5: Fill content body
+			{
+				Type: "evaluate", VariableName: "_fill_content",
+				JSCode: `
+(async function() {
+  var content = "${content}";
+  if (!content) return JSON.stringify({error: "content is empty"});
+  var selectors = [
+    '[contenteditable="true"][class*="content"]',
+    '[contenteditable="true"][class*="editor"]',
+    '[contenteditable="true"][placeholder*="描述"]',
+    '[contenteditable="true"][placeholder*="正文"]',
+    '[contenteditable="true"][placeholder*="内容"]',
+    '.note-content [contenteditable="true"]',
+    '.editor-content [contenteditable="true"]',
+    '[contenteditable="true"]:not([placeholder*="标题"]):not([placeholder*="赞"])'
+  ];
+  for (var s = 0; s < selectors.length; s++) {
+    var els = document.querySelectorAll(selectors[s]);
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (el && el.offsetParent !== null) {
+        el.focus();
+        el.textContent = '';
+        var sel = window.getSelection();
+        var range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('insertText', false, content);
+        el.dispatchEvent(new Event('input', {bubbles: true}));
+        el.blur();
+        return JSON.stringify({ok: true, length: content.length});
+      }
+    }
+  }
+  return JSON.stringify({error: "content editor not found"});
+})()
+`,
+			},
+			{Type: "sleep", Duration: 500},
+
+			// Step 6: Add topic hashtags (if provided)
+			{
+				Type: "evaluate", VariableName: "_add_topics",
+				JSCode: `
+(async function() {
+  var topicsStr = "${topics}";
+  if (!topicsStr) return JSON.stringify({ok: true, note: "no topics"});
+  var topics = topicsStr.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+  var added = [];
+  for (var t = 0; t < topics.length; t++) {
+    var candidates = document.querySelectorAll('*');
+    var btnClicked = false;
+    for (var i = 0; i < candidates.length; i++) {
+      var el = candidates[i];
+      var text = (el.innerText || el.textContent || '').trim();
+      if ((text === '添加话题' || text === '# 话题' || text.startsWith('添加话题')) &&
+          el.offsetParent !== null && el.children.length === 0) {
+        el.click();
+        btnClicked = true;
+        break;
+      }
+    }
+    if (!btnClicked) {
+      var hashBtn = document.querySelector('[class*="topic"][class*="btn"], [class*="hashtag"][class*="btn"]');
+      if (hashBtn) { hashBtn.click(); btnClicked = true; }
+    }
+    if (!btnClicked) continue;
+    await new Promise(function(r) { setTimeout(r, 1000); });
+    var input = document.querySelector('[class*="topic"] input, [class*="hashtag"] input, input[placeholder*="搜索话题"]');
+    if (!input || input.offsetParent === null) continue;
+    input.focus();
+    document.execCommand('insertText', false, topics[t]);
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    await new Promise(function(r) { setTimeout(r, 1500); });
+    var item = document.querySelector('[class*="topic-item"], [class*="hashtag-item"], [class*="suggest-item"], [class*="suggestion"] li');
+    if (item) { item.click(); added.push(topics[t]); }
+    await new Promise(function(r) { setTimeout(r, 500); });
+  }
+  return JSON.stringify({ok: true, added: added});
+})()
+`,
+			},
+			{Type: "sleep", Duration: 1000},
+
+			// Step 7: Click publish or save draft
+			{
+				Type: "evaluate", VariableName: "publish_result",
+				JSCode: `
+(async function() {
+  var isDraft = "${draft}" === "true";
+  var labels = isDraft ? ['暂存离开', '存草稿'] : ['发布', '发布笔记'];
+  var buttons = document.querySelectorAll('button, [role="button"]');
+  var clicked = false;
+  for (var i = 0; i < buttons.length; i++) {
+    var btn = buttons[i];
+    var text = (btn.innerText || btn.textContent || '').trim();
+    if (btn.offsetParent !== null && !btn.disabled) {
+      for (var j = 0; j < labels.length; j++) {
+        if (text === labels[j] || text.includes(labels[j])) {
+          btn.click();
+          clicked = true;
+          break;
+        }
+      }
+    }
+    if (clicked) break;
+  }
+  if (!clicked) return JSON.stringify({error: "publish/draft button not found"});
+  await new Promise(function(r) { setTimeout(r, 4000); });
+  var finalUrl = location.href;
+  var successMarkers = isDraft ? ['草稿已保存', '暂存成功', '保存成功'] : ['发布成功', '上传成功'];
+  var successMsg = '';
+  var allEls = document.querySelectorAll('*');
+  for (var k = 0; k < allEls.length; k++) {
+    var t = (allEls[k].innerText || '').trim();
+    if (allEls[k].children.length === 0) {
+      for (var m = 0; m < successMarkers.length; m++) {
+        if (t.includes(successMarkers[m])) { successMsg = t; break; }
+      }
+    }
+    if (successMsg) break;
+  }
+  var navigatedAway = !finalUrl.includes('/publish/publish');
+  var ok = successMsg.length > 0 || navigatedAway;
+  return JSON.stringify({
+    success: ok,
+    status: ok ? (isDraft ? "草稿已保存" : "发布成功") : "请在浏览器中确认结果",
+    title: "${title}",
+    url: finalUrl,
+    message: successMsg || ""
+  });
+})()
+`,
+			},
+		},
+	}
+}
+
+func twitterReply() models.Script {
+	return models.Script{
+		ID:          "builtin-twitter-reply",
+		Name:        "twitter-reply",
+		Description: "Reply to a tweet on X/Twitter (login required)",
+		URL:         "https://x.com",
+		Tags:        []string{"builtin", "twitter", "x", "reply", "publish", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:    false,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "twitter_reply",
+		MCPCommandDescription: "Reply to a tweet on X/Twitter (login required)",
+		MCPInputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"url":    map[string]interface{}{"type": "string", "description": "Tweet URL to reply to (e.g. https://x.com/user/status/123)"},
+				"text":   map[string]interface{}{"type": "string", "description": "Reply text content"},
+				"images": map[string]interface{}{"type": "string", "description": "Image paths, comma-separated, max 4 (optional)"},
+			},
+			"required": []string{"url", "text"},
+		},
+		Variables: map[string]string{"url": "", "text": "", "images": ""},
+		Actions: []models.ScriptAction{
+			{Type: "evaluate", VariableName: "_compose_url",
+				JSCode: `(function(){ var u="${url}"; var m=u.match(/status[/](\d+)/); if(!m) return JSON.stringify({error:"Invalid tweet URL"}); return JSON.stringify({ok:true,id:m[1]}); })()`},
+			{Type: "navigate", URL: "https://x.com/compose/post?in_reply_to=${url}"},
+			{Type: "sleep", Duration: 3000},
+			{Type: "evaluate", VariableName: "_type_reply",
+				JSCode: `
+(async function() {
+  var text = "${text}";
+  var maxWait = 8000, elapsed = 0;
+  var box = null;
+  while (elapsed < maxWait) {
+    box = document.querySelector('[data-testid="tweetTextarea_0"]');
+    if (box) break;
+    await new Promise(function(r){ setTimeout(r, 500); });
+    elapsed += 500;
+  }
+  if (!box) return JSON.stringify({error: "Reply composer not found"});
+  box.focus();
+  var dt = new DataTransfer();
+  dt.setData('text/plain', text);
+  box.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true}));
+  return JSON.stringify({ok: true});
+})()
+`},
+			{Type: "upload_file", Selector: `input[data-testid="fileInput"]`, FilePaths: []string{"${images}"}, Multiple: true},
+			{Type: "sleep", Duration: 2000},
+			{Type: "evaluate", VariableName: "reply_result",
+				JSCode: `
+(async function() {
+  var images = "${images}";
+  if (images && images.trim()) {
+    var maxW = 30000, el = 0;
+    while (el < maxW) {
+      var c = document.querySelector('[data-testid="attachments"]');
+      var btn = document.querySelector('[data-testid="tweetButton"]') || document.querySelector('[data-testid="tweetButtonInline"]');
+      if (c && btn && !btn.disabled) break;
+      await new Promise(function(r){ setTimeout(r, 500); });
+      el += 500;
+    }
+  }
+  await new Promise(function(r){ setTimeout(r, 1000); });
+  var btn = document.querySelector('[data-testid="tweetButton"]') || document.querySelector('[data-testid="tweetButtonInline"]');
+  if (!btn || btn.disabled) return JSON.stringify({success: false, error: "Reply button disabled or not found"});
+  btn.click();
+  await new Promise(function(r){ setTimeout(r, 3000); });
+  return JSON.stringify({success: !location.href.includes('/compose/'), status: "Reply sent"});
+})()
+`},
+		},
+	}
+}
+
+func xiaohongshuSearch() models.Script {
+	return models.Script{
+		ID:          "builtin-xiaohongshu-search",
+		Name:        "xiaohongshu-search",
+		Description: "搜索小红书笔记（需要登录）",
+		URL:         "https://www.xiaohongshu.com/search_result",
+		Tags:        []string{"builtin", "xiaohongshu", "搜索", "search", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:    true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "xiaohongshu_search",
+		MCPCommandDescription: "搜索小红书笔记（需要登录）",
+		MCPInputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"keyword": map[string]interface{}{"type": "string", "description": "搜索关键词"},
+			},
+			"required": []string{"keyword"},
+		},
+		Variables: map[string]string{"keyword": ""},
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://www.xiaohongshu.com/search_result?keyword=${keyword}&source=web_search_result_notes"},
+			{Type: "sleep", Duration: 4000},
+			{Type: "evaluate", VariableName: "search_results",
+				JSCode: `
+(async function() {
+  await new Promise(function(r){ setTimeout(r, 2000); });
+  var items = document.querySelectorAll('section.note-item, [class*="note-item"], .feeds-page .note-item');
+  if (!items.length) items = document.querySelectorAll('a[href*="/explore/"]');
+  var list = [], seen = {};
+  items.forEach(function(el, i) {
+    if (i >= 20) return;
+    var titleEl = el.querySelector('.title, .note-title, [class*="title"]');
+    var authorEl = el.querySelector('.author-wrapper .name, .author .name, [class*="author"] .name, [class*="nickname"]');
+    var likesEl = el.querySelector('.like-wrapper .count, [class*="like"] .count, [class*="like-count"]');
+    var linkEl = el.querySelector('a[href*="/explore/"], a[href*="/discovery/item/"]');
+    var title = titleEl ? titleEl.textContent.trim() : '';
+    var href = linkEl ? linkEl.href : (el.querySelector('a') ? el.querySelector('a').href : '');
+    if (!title && el.textContent) title = el.textContent.trim().split('\n')[0].substring(0, 60);
+    if (title && !seen[title]) {
+      seen[title] = true;
+      list.push({
+        rank: list.length + 1,
+        title: title,
+        author: authorEl ? authorEl.textContent.trim() : '',
+        likes: likesEl ? likesEl.textContent.trim() : '',
+        url: href
+      });
+    }
+  });
+  return list;
+})()
+`},
+		},
+	}
+}
+
+func xiaohongshuNote() models.Script {
+	return models.Script{
+		ID:          "builtin-xiaohongshu-note",
+		Name:        "xiaohongshu-note",
+		Description: "获取小红书笔记详情（标题/正文/点赞/收藏/评论）",
+		URL:         "https://www.xiaohongshu.com",
+		Tags:        []string{"builtin", "xiaohongshu", "笔记", "note", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:    true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "xiaohongshu_note",
+		MCPCommandDescription: "获取小红书笔记详情（标题/正文/点赞/收藏/评论）",
+		MCPInputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"url": map[string]interface{}{"type": "string", "description": "笔记完整URL（含xsec_token）"},
+			},
+			"required": []string{"url"},
+		},
+		Variables: map[string]string{"url": ""},
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "${url}"},
+			{Type: "sleep", Duration: 4000},
+			{Type: "evaluate", VariableName: "note_detail",
+				JSCode: `
+(async function() {
+  await new Promise(function(r){ setTimeout(r, 1000); });
+  var title = '', content = '', author = '', likes = '', collects = '', comments = '';
+  var t = document.querySelector('#detail-title, .title, .note-title');
+  if (t) title = t.textContent.trim();
+  var d = document.querySelector('#detail-desc, .desc, .note-desc, [class*="note-text"]');
+  if (d) content = d.textContent.trim();
+  var u = document.querySelector('.username, .author .name, [class*="user-name"]');
+  if (u) author = u.textContent.trim();
+  var interact = document.querySelector('.interact-container, .note-detail .engage-bar, [class*="interact"]');
+  var scope = interact || document;
+  var likeEl = scope.querySelector('.like-wrapper .count, [class*="like"] .count, [data-testid="like-count"]');
+  if (likeEl) likes = likeEl.textContent.trim();
+  var collectEl = scope.querySelector('.collect-wrapper .count, [class*="collect"] .count');
+  if (collectEl) collects = collectEl.textContent.trim();
+  var commentEl = scope.querySelector('.chat-wrapper .count, [class*="comment"] .count');
+  if (commentEl) comments = commentEl.textContent.trim();
+  var tags = [];
+  document.querySelectorAll('a.tag, [class*="tag"] a, a[href*="search_result"]').forEach(function(a) {
+    var txt = a.textContent.trim().replace(/^#/, '');
+    if (txt && tags.indexOf(txt) === -1) tags.push(txt);
+  });
+  return {title: title, author: author, content: content.substring(0, 2000), likes: likes, collects: collects, comments: comments, tags: tags, url: location.href};
+})()
+`},
+		},
+	}
+}
+
+func xiaohongshuUser() models.Script {
+	return models.Script{
+		ID:          "builtin-xiaohongshu-user",
+		Name:        "xiaohongshu-user",
+		Description: "获取小红书用户主页笔记列表（需要登录）",
+		URL:         "https://www.xiaohongshu.com/user/profile/",
+		Tags:        []string{"builtin", "xiaohongshu", "用户", "user", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:    true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "xiaohongshu_user",
+		MCPCommandDescription: "获取小红书用户主页笔记列表（需要登录）",
+		MCPInputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"user_id": map[string]interface{}{"type": "string", "description": "用户ID或用户主页URL"},
+			},
+			"required": []string{"user_id"},
+		},
+		Variables: map[string]string{"user_id": ""},
+		Actions: []models.ScriptAction{
+			{Type: "evaluate", VariableName: "_nav_url",
+				JSCode: `(function(){ var id="${user_id}"; if(id.startsWith("http")) return JSON.stringify({url:id}); return JSON.stringify({url:"https://www.xiaohongshu.com/user/profile/"+id}); })()`},
+			{Type: "navigate", URL: "https://www.xiaohongshu.com/user/profile/${user_id}"},
+			{Type: "sleep", Duration: 4000},
+			{Type: "evaluate", VariableName: "user_notes",
+				JSCode: `
+(async function() {
+  await new Promise(function(r){ setTimeout(r, 1000); });
+  var state = window.__INITIAL_STATE__;
+  if (state && state.user && state.user.notes) {
+    var notes = [];
+    var raw = state.user.notes;
+    if (Array.isArray(raw)) {
+      raw.forEach(function(n, i) {
+        if (i >= 30) return;
+        notes.push({
+          rank: i + 1,
+          id: n.id || n.note_id || '',
+          title: n.display_title || n.title || '',
+          type: n.type === 'video' ? 'video' : 'image',
+          likes: n.liked_count || n.likes || 0,
+          url: 'https://www.xiaohongshu.com/explore/' + (n.id || n.note_id || '')
+        });
+      });
+    }
+    if (notes.length > 0) return notes;
+  }
+  var items = document.querySelectorAll('[class*="note-item"] a, .note-item a, section.note-item a');
+  var list = [], seen = {};
+  items.forEach(function(a, i) {
+    if (i >= 30 || !a.href) return;
+    var title = a.textContent.trim().split('\n')[0].substring(0, 60);
+    if (title && !seen[a.href]) {
+      seen[a.href] = true;
+      list.push({rank: list.length + 1, title: title, url: a.href});
+    }
+  });
+  return list;
+})()
+`},
+		},
+	}
+}
+
+func twitterSearch() models.Script {
+	return models.Script{
+		ID:          "builtin-twitter-search",
+		Name:        "twitter-search",
+		Description: "Search tweets on X/Twitter (login required)",
+		URL:         "https://x.com/search",
+		Tags:        []string{"builtin", "twitter", "x", "search", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:    true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "twitter_search",
+		MCPCommandDescription: "Search tweets on X/Twitter (login required)",
+		MCPInputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string", "description": "Search query"},
+			},
+			"required": []string{"query"},
+		},
+		Variables: map[string]string{"query": ""},
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://x.com/search?q=${query}&src=typed_query&f=top"},
+			{Type: "sleep", Duration: 4000},
+			{Type: "evaluate", VariableName: "search_results",
+				JSCode: `
+(async function() {
+  await new Promise(function(r){ setTimeout(r, 2000); });
+  var articles = document.querySelectorAll('article[data-testid="tweet"]');
+  var list = [];
+  articles.forEach(function(el, i) {
+    if (i >= 20) return;
+    var userEl = el.querySelector('[data-testid="User-Name"]');
+    var textEl = el.querySelector('[data-testid="tweetText"]');
+    var timeEl = el.querySelector('time');
+    var linkEl = el.querySelector('a[href*="/status/"]');
+    var author = '', handle = '';
+    if (userEl) {
+      var spans = userEl.querySelectorAll('span');
+      for (var s = 0; s < spans.length; s++) {
+        var t = spans[s].textContent.trim();
+        if (t.startsWith('@')) handle = t;
+        else if (t && !author && t !== '·' && !t.match(/^\d/)) author = t;
+      }
+    }
+    var replyEl = el.querySelector('[data-testid="reply"] span, [data-testid="reply"] [dir]');
+    var retweetEl = el.querySelector('[data-testid="retweet"] span, [data-testid="retweet"] [dir]');
+    var likeEl = el.querySelector('[data-testid="like"] span, [data-testid="like"] [dir]');
+    list.push({
+      rank: i + 1,
+      author: author,
+      handle: handle,
+      text: textEl ? textEl.textContent.trim().substring(0, 280) : '',
+      time: timeEl ? timeEl.getAttribute('datetime') : '',
+      replies: replyEl ? replyEl.textContent.trim() : '0',
+      retweets: retweetEl ? retweetEl.textContent.trim() : '0',
+      likes: likeEl ? likeEl.textContent.trim() : '0',
+      url: linkEl ? 'https://x.com' + linkEl.getAttribute('href') : ''
+    });
+  });
+  return list;
+})()
+`},
+		},
+	}
+}
+
+func twitterProfile() models.Script {
+	return models.Script{
+		ID:          "builtin-twitter-profile",
+		Name:        "twitter-profile",
+		Description: "Get X/Twitter user profile info (login required)",
+		URL:         "https://x.com",
+		Tags:        []string{"builtin", "twitter", "x", "profile", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:    true,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "twitter_profile",
+		MCPCommandDescription: "Get X/Twitter user profile info (login required)",
+		MCPInputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"username": map[string]interface{}{"type": "string", "description": "Twitter username (without @)"},
+			},
+			"required": []string{"username"},
+		},
+		Variables: map[string]string{"username": ""},
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://x.com/${username}"},
+			{Type: "sleep", Duration: 4000},
+			{Type: "evaluate", VariableName: "profile_info",
+				JSCode: `
+(async function() {
+  await new Promise(function(r){ setTimeout(r, 1000); });
+  var name = '', bio = '', location = '', website = '', joined = '';
+  var followers = '', following = '', verified = false;
+  var nameEl = document.querySelector('[data-testid="UserName"] span span');
+  if (nameEl) name = nameEl.textContent.trim();
+  var bioEl = document.querySelector('[data-testid="UserDescription"]');
+  if (bioEl) bio = bioEl.textContent.trim();
+  var locEl = document.querySelector('[data-testid="UserLocation"]');
+  if (locEl) location = locEl.textContent.trim();
+  var urlEl = document.querySelector('[data-testid="UserUrl"] a');
+  if (urlEl) website = urlEl.textContent.trim();
+  var joinEl = document.querySelector('[data-testid="UserJoinDate"]');
+  if (joinEl) joined = joinEl.textContent.trim();
+  var badge = document.querySelector('[data-testid="UserName"] svg[data-testid="icon-verified"]');
+  if (badge) verified = true;
+  var links = document.querySelectorAll('a[href*="/verified_followers"], a[href*="/followers"], a[href*="/following"]');
+  links.forEach(function(a) {
+    var text = a.textContent.trim();
+    var href = a.getAttribute('href') || '';
+    if (href.includes('/following')) following = text.replace(/Following.*/, '').trim();
+    else if (href.includes('/followers') || href.includes('/verified_followers')) followers = text.replace(/Follower.*/, '').trim();
+  });
+  return {
+    name: name,
+    username: "${username}",
+    bio: bio.substring(0, 500),
+    location: location,
+    website: website,
+    joined: joined,
+    followers: followers,
+    following: following,
+    verified: verified,
+    url: location.href
+  };
+})()
+`},
+		},
+	}
+}
+
+func twitterPost() models.Script {
+	return models.Script{
+		ID:          "builtin-twitter-post",
+		Name:        "twitter-post",
+		Description: "Post a tweet on X/Twitter (login required)",
+		URL:         "https://x.com/compose/tweet",
+		Tags:        []string{"builtin", "twitter", "x", "post", "publish", "需要登录"},
+		Group:       "内置脚本",
+		CanFetch:    false,
+		RequiresLogin: true,
+		IsMCPCommand:          true,
+		MCPCommandName:        "twitter_post",
+		MCPCommandDescription: "Post a tweet on X/Twitter (login required)",
+		MCPInputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"text":   map[string]interface{}{"type": "string", "description": "Tweet text content"},
+				"images": map[string]interface{}{"type": "string", "description": "Image paths, comma-separated, max 4 (jpg/png/gif/webp). Optional."},
+			},
+			"required": []string{"text"},
+		},
+		Variables: map[string]string{
+			"text":   "",
+			"images": "",
+		},
+		Actions: []models.ScriptAction{
+			{Type: "navigate", URL: "https://x.com/compose/tweet"},
+			{Type: "sleep", Duration: 3000},
+
+			// Step 1: Verify login and type text via clipboard paste (handles Draft.js)
+			{
+				Type: "evaluate", VariableName: "_type_text",
+				JSCode: `
+(async function() {
+  var text = "${text}";
+  if (!text) return JSON.stringify({error: "text is empty"});
+  if (location.href.includes('/login') || location.href.includes('/i/flow')) {
+    return JSON.stringify({error: "Not logged in. Please login to x.com first."});
+  }
+  var maxWait = 8000, elapsed = 0;
+  var box = null;
+  while (elapsed < maxWait) {
+    box = document.querySelector('[data-testid="tweetTextarea_0"]');
+    if (box) break;
+    await new Promise(function(r) { setTimeout(r, 500); });
+    elapsed += 500;
+  }
+  if (!box) return JSON.stringify({error: "Tweet composer not found. Page may not have loaded."});
+  box.focus();
+  var dt = new DataTransfer();
+  dt.setData('text/plain', text);
+  box.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true}));
+  return JSON.stringify({ok: true});
+})()
+`,
+			},
+			{Type: "sleep", Duration: 1000},
+
+			// Step 2: Upload images if provided
+			{
+				Type: "evaluate", VariableName: "_upload_check",
+				JSCode: `
+(function() {
+  var images = "${images}";
+  return JSON.stringify({has_images: images && images.trim().length > 0});
+})()
+`,
+			},
+			{
+				Type:      "upload_file",
+				Selector:  `input[data-testid="fileInput"]`,
+				FilePaths: []string{"${images}"},
+				Multiple:  true,
+			},
+			{Type: "sleep", Duration: 3000},
+
+			// Step 3: Wait for uploads to finish, then click post
+			{
+				Type: "evaluate", VariableName: "post_result",
+				JSCode: `
+(async function() {
+  var images = "${images}";
+  var hasImages = images && images.trim().length > 0;
+  if (hasImages) {
+    var maxWait = 30000, elapsed = 0;
+    while (elapsed < maxWait) {
+      var container = document.querySelector('[data-testid="attachments"]');
+      if (container) {
+        var btn = document.querySelector('[data-testid="tweetButton"]') || document.querySelector('[data-testid="tweetButtonInline"]');
+        if (btn && !btn.disabled) break;
+      }
+      await new Promise(function(r) { setTimeout(r, 500); });
+      elapsed += 500;
+    }
+  }
+  await new Promise(function(r) { setTimeout(r, 1000); });
+  var btn = document.querySelector('[data-testid="tweetButton"]') || document.querySelector('[data-testid="tweetButtonInline"]');
+  if (!btn) return JSON.stringify({success: false, error: "Tweet button not found"});
+  if (btn.disabled) return JSON.stringify({success: false, error: "Tweet button is disabled. Content may be invalid."});
+  btn.click();
+  await new Promise(function(r) { setTimeout(r, 3000); });
+  var url = location.href;
+  var composed = url.includes('/compose/');
+  return JSON.stringify({
+    success: !composed,
+    status: composed ? "Tweet may not have been sent. Please verify in browser." : "Tweet posted successfully",
+    url: url
+  });
 })()
 `,
 			},

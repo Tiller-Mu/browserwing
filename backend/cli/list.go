@@ -19,6 +19,7 @@ func handleList(args []string) bool {
 	category := ""  // category filter
 	limit := 0      // 0 = show all
 	page := 1
+	var positional string
 
 	for _, arg := range args {
 		switch {
@@ -40,9 +41,17 @@ func handleList(args []string) bool {
 			fmt.Sscanf(strings.TrimPrefix(arg, "--limit="), "%d", &limit)
 		case strings.HasPrefix(arg, "--page="):
 			fmt.Sscanf(strings.TrimPrefix(arg, "--page="), "%d", &page)
-		case !strings.HasPrefix(arg, "--") && search == "":
-			search = arg
+		case !strings.HasPrefix(arg, "--") && positional == "":
+			positional = arg
 		}
+	}
+
+	// If positional arg looks like a script ID/name, show detail
+	if positional != "" && filter == "" && category == "" {
+		if showScriptDetail(positional, format) {
+			return true
+		}
+		search = positional
 	}
 
 	query := url.Values{}
@@ -152,42 +161,31 @@ func handleList(args []string) bool {
 			if tags, ok := s["tags"].([]interface{}); ok && len(tags) > 0 {
 				item["tags"] = tags
 			}
-			if a, ok := s["actions"].([]interface{}); ok {
-				item["steps"] = len(a)
-			}
 			compact = append(compact, item)
 		}
 		out, _ := json.MarshalIndent(compact, "", "  ")
 		fmt.Println(string(out))
 	case "csv":
-		fmt.Println("id,name,description,actions")
+		fmt.Println("id,name,description")
 		for _, s := range scripts {
-			actions := "0"
-			if a, ok := s["actions"].([]interface{}); ok {
-				actions = fmt.Sprintf("%d", len(a))
-			}
 			desc := strings.ReplaceAll(fmt.Sprintf("%v", s["description"]), ",", " ")
-			fmt.Printf("%s,%s,%s,%s\n", s["id"], s["name"], desc, actions)
+			fmt.Printf("%s,%s,%s\n", s["id"], s["name"], desc)
 		}
 	default:
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tNAME\tDESCRIPTION\tSTEPS")
-		fmt.Fprintln(tw, "---\t---\t---\t---")
+		fmt.Fprintln(tw, "ID\tNAME\tDESCRIPTION")
+		fmt.Fprintln(tw, "---\t---\t---")
 		for _, s := range scripts {
 			id, _ := s["id"].(string)
 			name, _ := s["name"].(string)
 			desc, _ := s["description"].(string)
-			actions := 0
-			if a, ok := s["actions"].([]interface{}); ok {
-				actions = len(a)
-			}
 			if len(id) > 20 {
 				id = id[:20] + "…"
 			}
 			if len(desc) > 45 {
 				desc = desc[:45] + "…"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%d\n", id, name, desc, actions)
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", id, name, desc)
 		}
 		tw.Flush()
 	}
@@ -238,6 +236,106 @@ func fuzzyMatch(needle, haystack string) bool {
 		}
 	}
 	return true
+}
+
+func showScriptDetail(idOrName, format string) bool {
+	// Try exact match by ID first, then by builtin- prefix
+	candidates := []string{idOrName}
+	if !strings.HasPrefix(idOrName, "builtin-") {
+		candidates = append(candidates, "builtin-"+idOrName)
+	}
+
+	for _, candidate := range candidates {
+		body, err := apiGet("/api/v1/scripts/" + url.PathEscape(candidate))
+		if err != nil {
+			continue
+		}
+		var script map[string]interface{}
+		if json.Unmarshal(body, &script) != nil {
+			continue
+		}
+		if _, ok := script["id"]; !ok {
+			continue
+		}
+
+		if format == "json" {
+			detail := map[string]interface{}{
+				"id":   script["id"],
+				"name": script["name"],
+			}
+			if d, _ := script["description"].(string); d != "" {
+				detail["description"] = d
+			}
+			if u, _ := script["url"].(string); u != "" {
+				detail["url"] = u
+			}
+			if v, ok := script["requires_login"].(bool); ok && v {
+				detail["requires_login"] = true
+			}
+			params := extractParams(script)
+			if len(params) > 0 {
+				detail["params"] = params
+			}
+			if tags, ok := script["tags"].([]interface{}); ok && len(tags) > 0 {
+				detail["tags"] = tags
+			}
+			if actions, ok := script["actions"].([]interface{}); ok {
+				detail["steps"] = len(actions)
+			}
+			out, _ := json.MarshalIndent(detail, "", "  ")
+			fmt.Println(string(out))
+		} else {
+			id, _ := script["id"].(string)
+			name, _ := script["name"].(string)
+			desc, _ := script["description"].(string)
+			surl, _ := script["url"].(string)
+			login, _ := script["requires_login"].(bool)
+			params := extractParams(script)
+			actions, _ := script["actions"].([]interface{})
+
+			fmt.Fprintf(os.Stdout, "ID:           %s\n", id)
+			fmt.Fprintf(os.Stdout, "Name:         %s\n", name)
+			fmt.Fprintf(os.Stdout, "Description:  %s\n", desc)
+			if surl != "" {
+				fmt.Fprintf(os.Stdout, "URL:          %s\n", surl)
+			}
+			fmt.Fprintf(os.Stdout, "Steps:        %d\n", len(actions))
+			if login {
+				fmt.Fprintf(os.Stdout, "Login:        required\n")
+			}
+			if tags, ok := script["tags"].([]interface{}); ok && len(tags) > 0 {
+				tagStrs := make([]string, 0, len(tags))
+				for _, t := range tags {
+					if ts, ok := t.(string); ok && ts != "builtin" && ts != "需要登录" {
+						tagStrs = append(tagStrs, ts)
+					}
+				}
+				if len(tagStrs) > 0 {
+					fmt.Fprintf(os.Stdout, "Tags:         %s\n", strings.Join(tagStrs, ", "))
+				}
+			}
+			if len(params) > 0 {
+				fmt.Fprintf(os.Stdout, "\nParameters:\n")
+				tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				for k, v := range params {
+					if v != "" {
+						fmt.Fprintf(tw, "  --%s\t%s\n", k, v)
+					} else {
+						fmt.Fprintf(tw, "  --%s\n", k)
+					}
+				}
+				tw.Flush()
+			}
+			fmt.Fprintf(os.Stdout, "\nUsage:\n")
+			cmd := fmt.Sprintf("  browserwing run %s", name)
+			for k := range params {
+				cmd += fmt.Sprintf(" --%s=<value>", k)
+			}
+			fmt.Fprintln(os.Stdout, cmd)
+		}
+		return true
+	}
+	return false
 }
 
 // extractParams collects parameter info from mcp_input_schema, variables, and action placeholders.
