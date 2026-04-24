@@ -2846,15 +2846,19 @@
       },
       {
         "type": "upload_file",
-        "selector": "input[type=\"file\"][accept*=\"image\"], input[type=\"file\"][accept*=\".jpg\"], input[type=\"file\"][accept*=\".png\"], input[type=\"file\"][accept*=\".jpeg\"]"
+        "selector": "input[type=\"file\"]",
+        "file_paths": [
+          "${images}"
+        ],
+        "multiple": true
       },
       {
         "type": "sleep",
-        "duration": 5000
+        "duration": 8000
       },
       {
         "type": "evaluate",
-        "js_code": "\n(async function() {\n  var title = \"${title}\";\n  if (!title) return JSON.stringify({error: \"title is empty\"});\n  var maxWait = 10000, elapsed = 0;\n  while (elapsed \u003c maxWait) {\n    var selectors = [\n      '[contenteditable=\"true\"][placeholder*=\"标题\"]',\n      '[contenteditable=\"true\"][placeholder*=\"赞\"]',\n      '[contenteditable=\"true\"][class*=\"title\"]',\n      'input[maxlength=\"20\"]',\n      'input[class*=\"title\"]',\n      'input[placeholder*=\"标题\"]',\n      '.title-input input',\n      '.note-title input'\n    ];\n    for (var s = 0; s \u003c selectors.length; s++) {\n      var el = document.querySelector(selectors[s]);\n      if (el \u0026\u0026 el.offsetParent !== null) {\n        el.focus();\n        if (el.isContentEditable) {\n          el.textContent = '';\n          document.execCommand('insertText', false, title);\n          el.dispatchEvent(new Event('input', {bubbles: true}));\n        } else {\n          var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');\n          if (setter \u0026\u0026 setter.set) setter.set.call(el, title);\n          else el.value = title;\n          el.dispatchEvent(new Event('input', {bubbles: true}));\n          el.dispatchEvent(new Event('change', {bubbles: true}));\n        }\n        el.blur();\n        return JSON.stringify({ok: true, title: title});\n      }\n    }\n    await new Promise(function(r) { setTimeout(r, 1000); });\n    elapsed += 1000;\n  }\n  return JSON.stringify({error: \"title input not found after waiting\"});\n})()\n",
+        "js_code": "\n(async function() {\n  var title = \"${title}\";\n  if (!title) return JSON.stringify({error: \"title is empty\"});\n  var maxWait = 15000, elapsed = 0;\n  while (elapsed \u003c maxWait) {\n    var selectors = [\n      '[contenteditable=\"true\"][placeholder*=\"标题\"]',\n      '[contenteditable=\"true\"][placeholder*=\"赞\"]',\n      '[contenteditable=\"true\"][class*=\"title\"]',\n      'input[maxlength=\"20\"]',\n      'input[class*=\"title\"]',\n      'input[placeholder*=\"标题\"]',\n      'input[placeholder*=\"title\" i]',\n      '.title-input input',\n      '.note-title input',\n      '#post-title input',\n      '.c-input_inner'\n    ];\n    for (var s = 0; s \u003c selectors.length; s++) {\n      var el = document.querySelector(selectors[s]);\n      if (el \u0026\u0026 el.offsetParent !== null) {\n        el.focus();\n        if (el.isContentEditable) {\n          el.textContent = '';\n          document.execCommand('insertText', false, title);\n          el.dispatchEvent(new Event('input', {bubbles: true}));\n        } else {\n          var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');\n          if (setter \u0026\u0026 setter.set) setter.set.call(el, title);\n          else el.value = title;\n          el.dispatchEvent(new Event('input', {bubbles: true}));\n          el.dispatchEvent(new Event('change', {bubbles: true}));\n        }\n        el.blur();\n        return JSON.stringify({ok: true, title: title});\n      }\n    }\n    await new Promise(function(r) { setTimeout(r, 1000); });\n    elapsed += 1000;\n  }\n  return JSON.stringify({error: \"title input not found after waiting\"});\n})()\n",
         "variable_name": "_fill_title"
       },
       {
@@ -2950,7 +2954,11 @@
       },
       {
         "type": "upload_file",
-        "selector": "input[data-testid=\"fileInput\"]"
+        "selector": "input[data-testid=\"fileInput\"]",
+        "file_paths": [
+          "${images}"
+        ],
+        "multiple": true
       },
       {
         "type": "sleep",
@@ -3029,7 +3037,11 @@
       },
       {
         "type": "upload_file",
-        "selector": "input[data-testid=\"fileInput\"]"
+        "selector": "input[data-testid=\"fileInput\"]",
+        "file_paths": [
+          "${images}"
+        ],
+        "multiple": true
       },
       {
         "type": "sleep",

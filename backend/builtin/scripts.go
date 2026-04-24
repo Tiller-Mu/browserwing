@@ -1709,11 +1709,11 @@ func xiaohongshuPublish() models.Script {
 			// Step 3: Upload images via file input
 			{
 				Type:      "upload_file",
-				Selector:  `input[type="file"][accept*="image"], input[type="file"][accept*=".jpg"], input[type="file"][accept*=".png"], input[type="file"][accept*=".jpeg"]`,
+				Selector:  `input[type="file"]`,
 				FilePaths: []string{"${images}"},
 				Multiple:  true,
 			},
-			{Type: "sleep", Duration: 5000},
+			{Type: "sleep", Duration: 8000},
 
 			// Step 4: Wait for editor form and fill title
 			{
@@ -1722,7 +1722,7 @@ func xiaohongshuPublish() models.Script {
 (async function() {
   var title = "${title}";
   if (!title) return JSON.stringify({error: "title is empty"});
-  var maxWait = 10000, elapsed = 0;
+  var maxWait = 15000, elapsed = 0;
   while (elapsed < maxWait) {
     var selectors = [
       '[contenteditable="true"][placeholder*="标题"]',
@@ -1731,8 +1731,11 @@ func xiaohongshuPublish() models.Script {
       'input[maxlength="20"]',
       'input[class*="title"]',
       'input[placeholder*="标题"]',
+      'input[placeholder*="title" i]',
       '.title-input input',
-      '.note-title input'
+      '.note-title input',
+      '#post-title input',
+      '.c-input_inner'
     ];
     for (var s = 0; s < selectors.length; s++) {
       var el = document.querySelector(selectors[s]);

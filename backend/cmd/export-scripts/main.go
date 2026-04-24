@@ -17,14 +17,17 @@ import (
 )
 
 type compactAction struct {
-	Type         string `json:"type"`
-	URL          string `json:"url,omitempty"`
-	Duration     int    `json:"duration,omitempty"`
-	JSCode       string `json:"js_code,omitempty"`
-	VariableName string `json:"variable_name,omitempty"`
-	Selector     string `json:"selector,omitempty"`
-	Value        string `json:"value,omitempty"`
-	XPath        string `json:"xpath,omitempty"`
+	Type         string   `json:"type"`
+	URL          string   `json:"url,omitempty"`
+	Duration     int      `json:"duration,omitempty"`
+	JSCode       string   `json:"js_code,omitempty"`
+	VariableName string   `json:"variable_name,omitempty"`
+	Selector     string   `json:"selector,omitempty"`
+	Value        string   `json:"value,omitempty"`
+	XPath        string   `json:"xpath,omitempty"`
+	FilePaths    []string `json:"file_paths,omitempty"`
+	Multiple     bool     `json:"multiple,omitempty"`
+	Key          string   `json:"key,omitempty"`
 }
 
 type compactScript struct {
@@ -116,6 +119,9 @@ func toCompact(s models.Script) compactScript {
 			Selector:     a.Selector,
 			Value:        a.Value,
 			XPath:        a.XPath,
+			FilePaths:    a.FilePaths,
+			Multiple:     a.Multiple,
+			Key:          a.Key,
 		}
 	}
 	cat := classifyScript(s.Name)
