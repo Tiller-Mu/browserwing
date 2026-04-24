@@ -1,13 +1,13 @@
 {
   "files": [
-    "other.json",
+    "entertainment.json",
     "tech.json",
     "news.json",
-    "search.json",
-    "social.json",
-    "entertainment.json",
     "finance.json",
     "jobs.json",
+    "search.json",
+    "other.json",
+    "social.json",
     "shopping.json",
     "reading.json"
   ],

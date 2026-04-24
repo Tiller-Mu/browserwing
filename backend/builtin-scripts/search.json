@@ -1,0 +1,254 @@
+[
+  {
+    "id": "builtin-wikipedia-trending",
+    "name": "wikipedia-trending",
+    "description": "Get Wikipedia most viewed articles today",
+    "url": "https://en.wikipedia.org/wiki/Wikipedia:Top_25_Report",
+    "tags": [
+      "builtin",
+      "wikipedia",
+      "trending"
+    ],
+    "group": "内置脚本",
+    "category": "search",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "wikipedia-trending",
+    "mcp_command_description": "Get Wikipedia most viewed articles today",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://en.wikipedia.org/wiki/Wikipedia:Top_25_Report"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.wikitable tr');\nvar list = [];\nitems.forEach(function(el, i) {\n  if (i === 0) return;\n  var cells = el.querySelectorAll('td');\n  if (cells.length \u003e= 3) {\n    var link = cells[1] ? cells[1].querySelector('a') : null;\n    var views = cells[2] ? cells[2].textContent.trim() : '';\n    if (link \u0026\u0026 list.length \u003c 25) list.push({rank: list.length+1, title: link.textContent.trim(), url: 'https://en.wikipedia.org' + link.getAttribute('href'), views: views});\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-google-scholar-search",
+    "name": "google-scholar-search",
+    "description": "Google Scholar paper search",
+    "url": "https://scholar.google.com/scholar?hl=en\u0026q=",
+    "tags": [
+      "builtin",
+      "google-scholar",
+      "academic"
+    ],
+    "group": "内置脚本",
+    "category": "search",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "google-scholar-search",
+    "mcp_command_description": "Google Scholar paper search",
+    "mcp_input_schema": {
+      "properties": {
+        "query": {
+          "description": "Search keyword for academic papers",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "query": ""
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://scholar.google.com/scholar?hl=en\u0026q=${query}"
+      },
+      {
+        "type": "sleep",
+        "duration": 4000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.gs_r.gs_or.gs_scl, .gs_ri');\nvar results = [];\nitems.forEach(function(el) {\n  var container = el.querySelector('.gs_ri') || el;\n  var titleEl = container.querySelector('.gs_rt a, h3 a');\n  var title = titleEl ? titleEl.textContent.replace(/\\s+/g,' ').trim() : '';\n  if (!title) return;\n  var url = titleEl ? titleEl.getAttribute('href') : '';\n  var infoLine = (container.querySelector('.gs_a')?.textContent || '').replace(/\\s+/g,' ').trim();\n  var parts = infoLine.split(' - ');\n  var authors = (parts[0] || '').trim();\n  var sourceParts = (parts[1] || '').split(',');\n  var source = sourceParts.slice(0,-1).join(',').trim() || sourceParts[0]?.trim() || '';\n  var year = (infoLine.match(/(19|20)\\d{2}/) || [''])[0];\n  var citedText = (container.querySelector('.gs_fl a[href*=\"cites\"]')?.textContent || '');\n  var cited = (citedText.match(/(\\d+)/) || ['0','0'])[1];\n  results.push({rank: results.length+1, title: title, authors: authors.slice(0,80), source: source.slice(0,60), year: year, cited: cited, url: url});\n});\nreturn results.slice(0, 20);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-baidu-scholar-search",
+    "name": "baidu-scholar-search",
+    "description": "百度学术论文检索",
+    "url": "https://xueshu.baidu.com/s?wd=",
+    "tags": [
+      "builtin",
+      "baidu-scholar",
+      "academic"
+    ],
+    "group": "内置脚本",
+    "category": "search",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "baidu-scholar-search",
+    "mcp_command_description": "百度学术论文检索",
+    "mcp_input_schema": {
+      "properties": {
+        "query": {
+          "description": "搜索关键词",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "query": ""
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://xueshu.baidu.com/s?wd=${query}"
+      },
+      {
+        "type": "sleep",
+        "duration": 4000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 20; i++) {\n    if (document.querySelectorAll('.result').length \u003e 0) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var results = [];\n  document.querySelectorAll('.result').forEach(function(el) {\n    var titleEl = el.querySelector('h3 a, .paper-title a, .t a');\n    var title = titleEl ? titleEl.textContent.replace(/\\s+/g,' ').trim() : '';\n    if (!title) return;\n    var url = titleEl ? titleEl.getAttribute('href') : '';\n    if (url \u0026\u0026 !url.startsWith('http')) url = 'https://xueshu.baidu.com' + url;\n    var infoText = (el.querySelector('.paper-info')?.textContent || '').replace(/\\s+/g,' ').trim();\n    var year = (infoText.match(/(19|20)\\d{2}/) || [''])[0];\n    var cited = (infoText.match(/被引量[：:]\\s*(\\d+)/) || ['0','0'])[1];\n    var journal = '';\n    var spans = el.querySelectorAll('.paper-info span');\n    spans.forEach(function(span) {\n      var t = span.textContent.trim();\n      if (t.startsWith('《') || t.startsWith('〈')) journal = t.replace(/[《》〈〉]/g,'');\n    });\n    results.push({rank: results.length+1, title: title, journal: journal, year: year, cited: cited, url: url});\n  });\n  return results.slice(0, 20);\n})()\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-wanfang-search",
+    "name": "wanfang-search",
+    "description": "万方数据论文搜索",
+    "url": "https://s.wanfangdata.com.cn/paper?q=",
+    "tags": [
+      "builtin",
+      "wanfang",
+      "academic"
+    ],
+    "group": "内置脚本",
+    "category": "search",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "wanfang-search",
+    "mcp_command_description": "万方数据论文搜索",
+    "mcp_input_schema": {
+      "properties": {
+        "query": {
+          "description": "搜索关键词",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "query": ""
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://s.wanfangdata.com.cn/paper?q=${query}"
+      },
+      {
+        "type": "sleep",
+        "duration": 4000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 30; i++) {\n    if (document.querySelectorAll('span.title').length \u003e 0) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var results = [];\n  document.querySelectorAll('span.title').forEach(function(titleSpan) {\n    var title = titleSpan.textContent.replace(/\\s+/g,' ').trim();\n    if (!title || title.length \u003c 3) return;\n    var container = titleSpan.parentElement;\n    for (var i = 0; i \u003c 6; i++) {\n      if (!container?.parentElement || container.parentElement.tagName === 'BODY') break;\n      if (container.querySelectorAll('span.title').length \u003e= 1) break;\n      container = container.parentElement;\n    }\n    var id = (container.querySelector('span.title-id-hidden')?.textContent || '').trim();\n    var url = id ? 'https://d.wanfangdata.com.cn/' + id : '';\n    var authors = Array.from(container.querySelectorAll('span.authors')).map(function(s){return s.textContent.trim();}).filter(Boolean).join(', ').slice(0,80);\n    var type = (container.querySelector('span.essay-type')?.textContent || '').trim();\n    var source = (container.querySelector('span.periodical, span.source')?.textContent || '').trim();\n    var year = (container.querySelector('span.year, span.date')?.textContent || '').trim();\n    if (!year) year = ((container.textContent||'').match(/(19|20)\\d{2}/) || [''])[0];\n    results.push({rank: results.length+1, title: title, authors: authors, source: source, year: year, type: type, url: url});\n  });\n  return results.slice(0, 20);\n})()\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-cnki-search",
+    "name": "cnki-search",
+    "description": "中国知网论文搜索",
+    "url": "https://kns.cnki.net/kns2/article/result/navi/retrieval?dbcode=CFLS\u0026kw=",
+    "tags": [
+      "builtin",
+      "cnki",
+      "academic"
+    ],
+    "group": "内置脚本",
+    "category": "search",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "cnki-search",
+    "mcp_command_description": "中国知网论文搜索",
+    "mcp_input_schema": {
+      "properties": {
+        "query": {
+          "description": "搜索关键词",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "query": ""
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://kns.cnki.net/kns2/article/result/navi/retrieval?dbcode=CFLS\u0026kw=${query}"
+      },
+      {
+        "type": "sleep",
+        "duration": 4000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 40; i++) {\n    if (document.querySelectorAll('.result-table-list tbody tr, #gridTable tbody tr, table tbody tr').length \u003e 0) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var rows = document.querySelectorAll('.result-table-list tbody tr, #gridTable tbody tr, table.result-table tbody tr');\n  var results = [];\n  rows.forEach(function(row) {\n    var tds = row.querySelectorAll('td');\n    if (tds.length \u003c 3) return;\n    var titleEl = row.querySelector('td.name a, td a.fz14, a[href*=\"detail\"]');\n    if (!titleEl) titleEl = tds[1]?.querySelector('a') || tds[0]?.querySelector('a');\n    var title = titleEl ? titleEl.textContent.replace(/\\s+/g,' ').trim().replace(/免费$/,'') : '';\n    if (!title || title.length \u003c 3) return;\n    var url = titleEl ? titleEl.getAttribute('href') : '';\n    if (url \u0026\u0026 !url.startsWith('http')) url = 'https://kns.cnki.net' + url;\n    var authors = (tds[2]?.textContent || '').replace(/\\s+/g,' ').trim();\n    var journal = (tds[3]?.textContent || '').replace(/\\s+/g,' ').trim();\n    var date = (tds[4]?.textContent || '').replace(/\\s+/g,' ').trim();\n    results.push({rank: results.length+1, title: title, authors: authors, journal: journal, date: date, url: url});\n  });\n  return results.slice(0, 20);\n})()\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-google-trends",
+    "name": "google-trends",
+    "description": "Google Trends daily trending searches",
+    "url": "https://trends.google.com/trending?geo=US\u0026hours=24",
+    "tags": [
+      "builtin",
+      "google",
+      "trends"
+    ],
+    "group": "内置脚本",
+    "category": "search",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "google-trends",
+    "mcp_command_description": "Google Trends daily trending searches",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://trends.google.com/trending?geo=US\u0026hours=24"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar results = [], seen = {};\ndocument.querySelectorAll('tr, [class*=\"feed-item\"], [class*=\"trending-item\"], [role=\"row\"]').forEach(function(row, idx) {\n  var cells = row.querySelectorAll('td, [role=\"cell\"]');\n  if (cells.length \u003e= 2) {\n    var title = cells[0].textContent.replace(/\\s+/g,' ').trim();\n    var traffic = cells.length \u003e 1 ? cells[1].textContent.replace(/\\s+/g,' ').trim() : '';\n    if (title \u0026\u0026 title.length \u003e 1 \u0026\u0026 title.length \u003c 80 \u0026\u0026 !seen[title]) {\n      seen[title] = true;\n      results.push({rank: results.length+1, title: title, traffic: traffic});\n    }\n  }\n});\nif (results.length === 0) {\n  document.querySelectorAll('[class*=\"details\"] a, [class*=\"title\"], .mZ3RIc').forEach(function(el) {\n    var t = el.textContent.replace(/\\s+/g,' ').trim();\n    if (t \u0026\u0026 t.length \u003e 2 \u0026\u0026 t.length \u003c 80 \u0026\u0026 !seen[t]) {\n      seen[t] = true;\n      results.push({rank: results.length+1, title: t});\n    }\n  });\n}\nreturn results.slice(0, 30);\n",
+        "variable_name": "result"
+      }
+    ]
+  }
+]

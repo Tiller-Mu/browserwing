@@ -1724,37 +1724,23 @@ func xiaohongshuPublish() models.Script {
   if (!title) return JSON.stringify({error: "title is empty"});
   var maxWait = 15000, elapsed = 0;
   while (elapsed < maxWait) {
-    var selectors = [
-      '[contenteditable="true"][placeholder*="标题"]',
-      '[contenteditable="true"][placeholder*="赞"]',
-      '[contenteditable="true"][class*="title"]',
-      'input[maxlength="20"]',
-      'input[class*="title"]',
-      'input[placeholder*="标题"]',
-      'input[placeholder*="title" i]',
-      '.title-input input',
-      '.note-title input',
-      '#post-title input',
-      '.c-input_inner'
-    ];
-    for (var s = 0; s < selectors.length; s++) {
-      var el = document.querySelector(selectors[s]);
-      if (el && el.offsetParent !== null) {
-        el.focus();
-        if (el.isContentEditable) {
-          el.textContent = '';
-          document.execCommand('insertText', false, title);
-          el.dispatchEvent(new Event('input', {bubbles: true}));
-        } else {
-          var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-          if (setter && setter.set) setter.set.call(el, title);
-          else el.value = title;
-          el.dispatchEvent(new Event('input', {bubbles: true}));
-          el.dispatchEvent(new Event('change', {bubbles: true}));
-        }
-        el.blur();
-        return JSON.stringify({ok: true, title: title});
+    var el = document.querySelector('input[placeholder*="标题"]')
+           || document.querySelector('input.d-text')
+           || document.querySelector('[contenteditable="true"][placeholder*="标题"]');
+    if (el && el.offsetParent !== null) {
+      el.focus();
+      if (el.isContentEditable) {
+        el.textContent = '';
+        document.execCommand('insertText', false, title);
+        el.dispatchEvent(new Event('input', {bubbles: true}));
+      } else {
+        var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        nativeSetter.call(el, title);
+        el.dispatchEvent(new Event('input', {bubbles: true}));
+        el.dispatchEvent(new Event('change', {bubbles: true}));
       }
+      await new Promise(function(r) { setTimeout(r, 200); });
+      return JSON.stringify({ok: true, title: el.value || el.textContent, selector: el.className});
     }
     await new Promise(function(r) { setTimeout(r, 1000); });
     elapsed += 1000;
@@ -1765,44 +1751,32 @@ func xiaohongshuPublish() models.Script {
 			},
 			{Type: "sleep", Duration: 500},
 
-			// Step 5: Fill content body
+			// Step 5: Fill content body (tiptap ProseMirror editor)
 			{
 				Type: "evaluate", VariableName: "_fill_content",
 				JSCode: `
 (async function() {
   var content = "${content}";
   if (!content) return JSON.stringify({error: "content is empty"});
-  var selectors = [
-    '[contenteditable="true"][class*="content"]',
-    '[contenteditable="true"][class*="editor"]',
-    '[contenteditable="true"][placeholder*="描述"]',
-    '[contenteditable="true"][placeholder*="正文"]',
-    '[contenteditable="true"][placeholder*="内容"]',
-    '.note-content [contenteditable="true"]',
-    '.editor-content [contenteditable="true"]',
-    '[contenteditable="true"]:not([placeholder*="标题"]):not([placeholder*="赞"])'
-  ];
-  for (var s = 0; s < selectors.length; s++) {
-    var els = document.querySelectorAll(selectors[s]);
-    for (var i = 0; i < els.length; i++) {
-      var el = els[i];
-      if (el && el.offsetParent !== null) {
-        el.focus();
-        el.textContent = '';
-        var sel = window.getSelection();
-        var range = document.createRange();
-        range.selectNodeContents(el);
-        range.collapse(false);
-        sel.removeAllRanges();
-        sel.addRange(range);
-        document.execCommand('insertText', false, content);
-        el.dispatchEvent(new Event('input', {bubbles: true}));
-        el.blur();
-        return JSON.stringify({ok: true, length: content.length});
-      }
-    }
+  var el = document.querySelector('.ProseMirror[contenteditable="true"]')
+        || document.querySelector('.tiptap[contenteditable="true"]')
+        || document.querySelector('[contenteditable="true"][class*="editor"]')
+        || document.querySelector('[contenteditable="true"]:not(input)');
+  if (!el || el.offsetParent === null) {
+    return JSON.stringify({error: "content editor not found"});
   }
-  return JSON.stringify({error: "content editor not found"});
+  el.focus();
+  el.innerHTML = '';
+  var dt = new DataTransfer();
+  dt.setData('text/plain', content);
+  var pe = new ClipboardEvent('paste', {bubbles: true, cancelable: true, clipboardData: dt});
+  el.dispatchEvent(pe);
+  await new Promise(function(r) { setTimeout(r, 300); });
+  if (!el.textContent) {
+    document.execCommand('insertText', false, content);
+  }
+  el.dispatchEvent(new Event('input', {bubbles: true}));
+  return JSON.stringify({ok: true, length: el.textContent.length});
 })()
 `,
 			},

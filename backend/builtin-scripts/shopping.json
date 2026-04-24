@@ -1,0 +1,200 @@
+[
+  {
+    "id": "builtin-jd-search",
+    "name": "jd-search",
+    "description": "京东商品搜索（需要登录以查看价格）",
+    "url": "https://search.jd.com/Search",
+    "tags": [
+      "builtin",
+      "jd",
+      "京东",
+      "搜索",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "category": "shopping",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "jd_search",
+    "mcp_command_description": "京东商品搜索（需要登录以查看价格）",
+    "mcp_input_schema": {
+      "properties": {
+        "keyword": {
+          "description": "搜索关键词",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyword"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "keyword": "手机"
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://search.jd.com/Search?keyword=${keyword}\u0026enc=utf-8"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.gl-item, li.gl-item, [class*=\"gl-item\"]');\nif (!items.length) items = document.querySelectorAll('#J_goodsList li');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('.p-name a em, .p-name a, [class*=\"p-name\"]');\n  var priceEl = el.querySelector('.p-price i, .p-price strong, [class*=\"p-price\"]');\n  var shopEl = el.querySelector('.p-shop a, [class*=\"p-shop\"]');\n  var linkEl = el.querySelector('a[href*=\"item.jd.com\"]');\n  if (titleEl \u0026\u0026 i \u003c 20) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      price: priceEl ? priceEl.textContent.trim() : '',\n      shop: shopEl ? shopEl.textContent.trim() : '',\n      url: linkEl ? (linkEl.href.startsWith('//') ? 'https:' + linkEl.href : linkEl.href) : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "search_results"
+      }
+    ]
+  },
+  {
+    "id": "builtin-taobao-search",
+    "name": "taobao-search",
+    "description": "淘宝商品搜索（需要登录）",
+    "url": "https://s.taobao.com/search",
+    "tags": [
+      "builtin",
+      "taobao",
+      "淘宝",
+      "搜索",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "category": "shopping",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "taobao_search",
+    "mcp_command_description": "淘宝商品搜索（需要登录）",
+    "mcp_input_schema": {
+      "properties": {
+        "keyword": {
+          "description": "搜索关键词",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyword"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "keyword": "手机壳"
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://s.taobao.com/search?q=${keyword}"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('[class*=\"Card--\"], [class*=\"item\"], .item');\nvar list = [];\nitems.forEach(function(el, i) {\n  var titleEl = el.querySelector('[class*=\"Title\"], .title, a span');\n  var priceEl = el.querySelector('[class*=\"price\"], .price, [class*=\"Price\"]');\n  var shopEl = el.querySelector('[class*=\"shop\"], [class*=\"Store\"]');\n  var linkEl = el.querySelector('a[href*=\"item.taobao\"], a[href*=\"detail.tmall\"]');\n  if (titleEl \u0026\u0026 titleEl.textContent.trim() \u0026\u0026 i \u003c 20) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim(),\n      price: priceEl ? priceEl.textContent.trim() : '',\n      shop: shopEl ? shopEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "search_results"
+      }
+    ]
+  },
+  {
+    "id": "builtin-smzdm-hot",
+    "name": "smzdm-hot",
+    "description": "获取什么值得买热门好价",
+    "url": "https://www.smzdm.com/jingxuan/",
+    "tags": [
+      "builtin",
+      "smzdm",
+      "优惠",
+      "热门"
+    ],
+    "group": "内置脚本",
+    "category": "shopping",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "smzdm_hot",
+    "mcp_command_description": "获取什么值得买热门好价",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.smzdm.com/jingxuan/"
+      },
+      {
+        "type": "sleep",
+        "duration": 4000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 15; i++) {\n    if (document.querySelectorAll('.feed-block, [class*=\"feed-block\"], article, li[class*=\"feed\"]').length \u003e 2) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var items = document.querySelectorAll('.feed-block, [class*=\"feed-block\"], article, li[class*=\"feed\"]');\n  var list = [];\n  items.forEach(function(el, i) {\n    var titleEl = el.querySelector('.feed-block__title a, h5 a, [class*=\"title\"] a, a[class*=\"title\"]');\n    if (!titleEl) titleEl = el.querySelector('a');\n    var priceEl = el.querySelector('.z-highlight, [class*=\"price\"]');\n    var mallEl = el.querySelector('.feed-block__mall, [class*=\"mall\"]');\n    if (titleEl \u0026\u0026 list.length \u003c 30) {\n      var title = titleEl.textContent.replace(/\\s+/g,' ').trim();\n      if (title.length \u003e 4 \u0026\u0026 title.length \u003c 200) {\n        list.push({rank: list.length+1, title: title, price: priceEl ? priceEl.textContent.trim() : '', mall: mallEl ? mallEl.textContent.trim() : '', url: titleEl.href || ''});\n      }\n    }\n  });\n  return list;\n})()\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-amazon-bestsellers",
+    "name": "amazon-bestsellers",
+    "description": "Get Amazon bestsellers",
+    "url": "https://www.amazon.com/gp/bestsellers/",
+    "tags": [
+      "builtin",
+      "amazon",
+      "shopping"
+    ],
+    "group": "内置脚本",
+    "category": "shopping",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "amazon-bestsellers",
+    "mcp_command_description": "Get Amazon bestsellers",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.amazon.com/gp/bestsellers/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.zg-grid-general-faceout, .a-carousel-card, [id^=\"gridItemRoot\"]');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('.p13n-sc-truncate, ._cDEzb_p13n-sc-css-line-clamp-3_g3dy1, .a-link-normal span');\n  var p = el.querySelector('.p13n-sc-price, ._cDEzb_p13n-sc-price_3mJ9Z, .a-price .a-offscreen');\n  var link = el.querySelector('a.a-link-normal');\n  if (t \u0026\u0026 list.length \u003c 30) list.push({rank: list.length+1, name: t.textContent.trim(), price: p ? p.textContent.trim() : '', url: link ? link.href : ''});\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-xianyu-hot",
+    "name": "xianyu-hot",
+    "description": "获取闲鱼热卖商品",
+    "url": "https://www.goofish.com/",
+    "tags": [
+      "builtin",
+      "xianyu",
+      "二手"
+    ],
+    "group": "内置脚本",
+    "category": "shopping",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "xianyu-hot",
+    "mcp_command_description": "获取闲鱼热卖商品",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.goofish.com/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('[class*=\"feed-item\"], [class*=\"card\"]');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('[class*=\"title\"], h3');\n  var p = el.querySelector('[class*=\"price\"]');\n  var link = el.querySelector('a');\n  if (t \u0026\u0026 list.length \u003c 20) list.push({rank: list.length+1, title: t.textContent.trim(), price: p ? p.textContent.trim() : '', url: link ? link.href : ''});\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  }
+]

@@ -1,0 +1,128 @@
+[
+  {
+    "id": "builtin-ke-ershoufang",
+    "name": "ke-ershoufang",
+    "description": "获取贝壳找房热门二手房",
+    "url": "https://bj.ke.com/ershoufang/",
+    "tags": [
+      "builtin",
+      "ke",
+      "房产"
+    ],
+    "group": "内置脚本",
+    "category": "other",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "ke-ershoufang",
+    "mcp_command_description": "获取贝壳找房热门二手房",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://bj.ke.com/ershoufang/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.sellListContent li, .listContent .clear');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('.title a, .lj-lazy');\n  var p = el.querySelector('.totalPrice span, .priceInfo .totalPrice');\n  var info = el.querySelector('.houseInfo, .address');\n  if (t \u0026\u0026 list.length \u003c 20) list.push({rank: list.length+1, title: t.textContent.trim(), url: t.href, price: p ? p.textContent.trim() + '万' : '', info: info ? info.textContent.trim() : ''});\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-ctrip-search",
+    "name": "ctrip-search",
+    "description": "携程目的地/酒店搜索",
+    "url": "https://www.ctrip.com/hotels/list?keyword=",
+    "tags": [
+      "builtin",
+      "ctrip",
+      "travel"
+    ],
+    "group": "内置脚本",
+    "category": "other",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "ctrip-search",
+    "mcp_command_description": "携程目的地/酒店搜索",
+    "mcp_input_schema": {
+      "properties": {
+        "keyword": {
+          "description": "搜索关键词（城市/酒店名）",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyword"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "keyword": ""
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.ctrip.com/hotels/list?keyword=${keyword}"
+      },
+      {
+        "type": "sleep",
+        "duration": 4000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 20; i++) {\n    if (document.querySelectorAll('[class*=\"hotel-item\"], [class*=\"list-card\"], .hotel_new_list li').length \u003e 0) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var results = [];\n  document.querySelectorAll('[class*=\"hotel-item\"], [class*=\"list-card\"], .hotel_new_list li').forEach(function(el) {\n    var nameEl = el.querySelector('[class*=\"hotel-name\"], [class*=\"name\"], h2');\n    var name = nameEl ? nameEl.textContent.replace(/\\s+/g,' ').trim() : '';\n    if (!name) return;\n    var priceEl = el.querySelector('[class*=\"price\"], [class*=\"Price\"]');\n    var price = priceEl ? priceEl.textContent.replace(/\\s+/g,' ').trim() : '';\n    var scoreEl = el.querySelector('[class*=\"score\"], [class*=\"Score\"]');\n    var score = scoreEl ? scoreEl.textContent.trim() : '';\n    var a = el.querySelector('a');\n    var href = a ? a.getAttribute('href') : '';\n    results.push({rank: results.length+1, name: name, price: price, score: score, url: href});\n  });\n  return results.slice(0, 20);\n})()\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-jianyu-search",
+    "name": "jianyu-search",
+    "description": "剑鱼招投标公告检索",
+    "url": "https://www.jianyu360.cn/jylab/supsearch/index.html?keywords=",
+    "tags": [
+      "builtin",
+      "jianyu",
+      "bid"
+    ],
+    "group": "内置脚本",
+    "category": "other",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "jianyu-search",
+    "mcp_command_description": "剑鱼招投标公告检索",
+    "mcp_input_schema": {
+      "properties": {
+        "query": {
+          "description": "搜索关键词（如: 信息化建设）",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "query": ""
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.jianyu360.cn/jylab/supsearch/index.html?keywords=${query}"
+      },
+      {
+        "type": "sleep",
+        "duration": 4000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\n(async function() {\n  for (var i = 0; i \u003c 30; i++) {\n    if (document.querySelectorAll('.result-item, .list-item, [class*=\"search-result\"]').length \u003e 0) break;\n    await new Promise(function(r){setTimeout(r, 500);});\n  }\n  var results = [];\n  document.querySelectorAll('.result-item, .list-item, [class*=\"search-result\"], .news_list li').forEach(function(el) {\n    var titleEl = el.querySelector('a, .title, h3');\n    var title = titleEl ? titleEl.textContent.replace(/\\s+/g,' ').trim() : '';\n    if (!title || title.length \u003c 4) return;\n    var a = el.querySelector('a');\n    var href = a ? a.getAttribute('href') : '';\n    if (href \u0026\u0026 !href.startsWith('http')) href = 'https://www.jianyu360.cn' + href;\n    var date = ((el.textContent||'').match(/(\\d{4}[-./]\\d{1,2}[-./]\\d{1,2})/)||[''])[0];\n    results.push({rank: results.length+1, title: title, date: date, url: href});\n  });\n  return results.slice(0, 20);\n})()\n",
+        "variable_name": "result"
+      }
+    ]
+  }
+]

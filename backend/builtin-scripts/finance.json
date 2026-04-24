@@ -1,0 +1,293 @@
+[
+  {
+    "id": "builtin-eastmoney-hot",
+    "name": "eastmoney-hot",
+    "description": "获取东方财富人气股票排行",
+    "url": "https://guba.eastmoney.com/rank/",
+    "tags": [
+      "builtin",
+      "eastmoney",
+      "股票",
+      "热门"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "eastmoney_hot",
+    "mcp_command_description": "获取东方财富人气股票排行",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://guba.eastmoney.com/rank/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar rows = document.querySelectorAll('table.rank_table tbody tr, #rankCont tr, [class*=\"rank\"] table tr');\nvar list = [];\nrows.forEach(function(tr, i) {\n  var tds = tr.querySelectorAll('td');\n  if (tds.length \u003c 4) return;\n  var codeEl = tr.querySelector('a.stock_code, a[href*=\"list,\"]');\n  var nameEl = tr.querySelector('td.nametd a[title], td:nth-child(2) a');\n  var fansEl = tr.querySelector('td.fans, td:last-child');\n  if (nameEl) {\n    var code = codeEl ? codeEl.textContent.trim() : '';\n    list.push({\n      rank: list.length + 1,\n      symbol: code,\n      name: nameEl.getAttribute('title') || nameEl.textContent.trim(),\n      heat: fansEl ? fansEl.textContent.trim() : '',\n      url: 'https://guba.eastmoney.com/list,' + code + '.html',\n    });\n  }\n});\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-sinafinance-rank",
+    "name": "sinafinance-rank",
+    "description": "获取新浪财经涨幅排行榜",
+    "url": "https://finance.sina.com.cn/stock/",
+    "tags": [
+      "builtin",
+      "sinafinance",
+      "股票",
+      "涨幅榜"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "sinafinance_rank",
+    "mcp_command_description": "获取新浪财经股票涨幅榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "about:blank"
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst resp = await fetch('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=1\u0026num=20\u0026sort=changepercent\u0026asc=0\u0026node=hs_a\u0026symbol=\u0026_s_r_a=auto');\nconst data = await resp.json();\nreturn JSON.stringify(data.map((s, i) =\u003e ({\n  rank: i + 1,\n  symbol: s.symbol,\n  name: s.name,\n  price: s.trade,\n  change_percent: s.changepercent + '%',\n  volume: s.volume,\n})));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-xueqiu-hot",
+    "name": "xueqiu-hot",
+    "description": "获取雪球热帖（需要登录雪球）",
+    "url": "https://xueqiu.com",
+    "tags": [
+      "builtin",
+      "xueqiu",
+      "金融",
+      "热帖",
+      "需要登录"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "xueqiu_hot",
+    "mcp_command_description": "获取雪球热帖",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://xueqiu.com"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst resp = await fetch('/statuses/hot/listV3.json?source=hot\u0026page=1', {credentials: 'include'});\nconst data = await resp.json();\nconst items = data.items || [];\nreturn JSON.stringify(items.map((item, i) =\u003e {\n  var s = item.original_status || item;\n  return {\n    rank: i + 1,\n    author: s.user ? s.user.screen_name : '',\n    title: (s.description || s.text || '').replace(/\u003c[^\u003e]+\u003e/g, '').slice(0, 80),\n    likes: s.fav_count || 0,\n    url: 'https://xueqiu.com' + (s.target || ''),\n  };\n}));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-binance-gainers",
+    "name": "binance-gainers",
+    "description": "Get Binance top gainers (24h)",
+    "url": "https://www.binance.com/en/markets/gainersAndLosers?type=zone\u0026tradeType=spot",
+    "tags": [
+      "builtin",
+      "binance",
+      "crypto"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "binance-gainers",
+    "mcp_command_description": "Get Binance top gainers (24h)",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.binance.com/en/markets/gainersAndLosers?type=zone\u0026tradeType=spot"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('tr[class*=\"css\"]');\nvar list = [];\nitems.forEach(function(el, i) {\n  var cells = el.querySelectorAll('td');\n  if (cells.length \u003e= 3) {\n    var name = cells[0].textContent.trim();\n    var price = cells[1] ? cells[1].textContent.trim() : '';\n    var change = cells[2] ? cells[2].textContent.trim() : '';\n    if (name \u0026\u0026 name !== 'Name' \u0026\u0026 list.length \u003c 30) list.push({rank: list.length+1, name: name, price: price, change_24h: change});\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-ths-hot-rank",
+    "name": "ths-hot-rank",
+    "description": "同花顺热股排行榜",
+    "url": "https://eq.10jqka.com.cn/webpage/ths-hot-list/index.html?showStatusBar=true",
+    "tags": [
+      "builtin",
+      "ths",
+      "finance",
+      "stock"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "ths-hot-rank",
+    "mcp_command_description": "同花顺热股排行榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://eq.10jqka.com.cn/webpage/ths-hot-list/index.html?showStatusBar=true"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar cards = document.querySelectorAll('div.pt-22, div[class*=\"bgc-white\"]');\nvar results = [], seen = {};\ncards.forEach(function(card, idx) {\n  var row = card.querySelector('div.flex') || card;\n  var nameEl = row.querySelector('span.ellipsis') || row.querySelector('span[class*=\"name\"]');\n  var name = nameEl ? nameEl.textContent.replace(/\\s+/g,' ').trim() : '';\n  if (!name || seen[name]) return;\n  seen[name] = true;\n  var rankEl = row.querySelector('div.bold, div[class*=\"rank\"]');\n  var changeEl = row.querySelector('div.range, div[class*=\"change\"]');\n  var heatEl = row.querySelector('div.col4 \u003e span, span[class*=\"heat\"]');\n  results.push({rank: rankEl ? rankEl.textContent.trim() : String(idx+1), name: name, change: changeEl ? changeEl.textContent.trim() : '', heat: heatEl ? heatEl.textContent.trim() : ''});\n});\nreturn results.slice(0, 30);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-tdx-hot-rank",
+    "name": "tdx-hot-rank",
+    "description": "通达信热搜排行榜",
+    "url": "https://pul.tdx.com.cn/site/app/gzhbd/tdx-topsearch/page-main.html?pageName=page_topsearch\u0026tabClickIndex=0\u0026subtabIndex=0",
+    "tags": [
+      "builtin",
+      "tdx",
+      "finance",
+      "stock"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "tdx-hot-rank",
+    "mcp_command_description": "通达信热搜排行榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://pul.tdx.com.cn/site/app/gzhbd/tdx-topsearch/page-main.html?pageName=page_topsearch\u0026tabClickIndex=0\u0026subtabIndex=0"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar cells = document.querySelectorAll('div.top-cell[data-code]');\nvar results = [], seen = {};\ncells.forEach(function(cell, idx) {\n  var symbol = cell.getAttribute('data-code') || '';\n  var name = cell.getAttribute('data-name') || '';\n  if (!symbol || !name || seen[symbol]) return;\n  seen[symbol] = true;\n  var changeEl = cell.querySelector('div.top-zf');\n  var heatEl = cell.querySelector('div.hotN');\n  results.push({rank: idx+1, symbol: symbol, name: name, change: changeEl ? changeEl.textContent.trim() : '', heat: heatEl ? heatEl.textContent.trim() : ''});\n});\nreturn results.slice(0, 30);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-yahoo-finance-quote",
+    "name": "yahoo-finance-quote",
+    "description": "Yahoo Finance stock quote",
+    "url": "https://finance.yahoo.com/quote/",
+    "tags": [
+      "builtin",
+      "yahoo",
+      "finance",
+      "stock"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "yahoo-finance-quote",
+    "mcp_command_description": "Yahoo Finance stock quote",
+    "mcp_input_schema": {
+      "properties": {
+        "symbol": {
+          "description": "Stock ticker symbol (e.g. AAPL, TSLA, MSFT)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "symbol": ""
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://finance.yahoo.com/quote/${symbol}"
+      },
+      {
+        "type": "sleep",
+        "duration": 4000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\n(async function() {\n  try {\n    var sym = location.pathname.split('/quote/')[1]?.split('/')[0] || '';\n    var chartUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(sym) + '?interval=1d\u0026range=1d';\n    var resp = await fetch(chartUrl);\n    if (resp.ok) {\n      var d = await resp.json();\n      var meta = d?.chart?.result?.[0]?.meta || {};\n      var price = meta.regularMarketPrice;\n      var prevClose = meta.previousClose || meta.chartPreviousClose;\n      var change = price != null \u0026\u0026 prevClose != null ? (price - prevClose).toFixed(2) : null;\n      var changePct = change != null \u0026\u0026 prevClose ? ((change / prevClose) * 100).toFixed(2) + '%' : null;\n      return [{symbol: meta.symbol || sym, name: meta.shortName || meta.longName || sym, price: price, change: change, changePercent: changePct, high: meta.regularMarketDayHigh, low: meta.regularMarketDayLow, volume: meta.regularMarketVolume, currency: meta.currency, exchange: meta.exchangeName}];\n    }\n  } catch(e) {}\n  var priceEl = document.querySelector('[data-testid=\"qsp-price\"]');\n  var titleEl = document.querySelector('title');\n  if (priceEl) {\n    return [{symbol: location.pathname.split('/quote/')[1]?.split('/')[0] || '', name: titleEl ? titleEl.textContent.split('(')[0].trim() : '', price: priceEl.textContent.replace(/,/g,''), change: null, changePercent: null}];\n  }\n  return [{error: 'Could not fetch quote'}];\n})()\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-barchart-options",
+    "name": "barchart-options",
+    "description": "Barchart US stock options chain",
+    "url": "https://www.barchart.com/stocks/quotes/",
+    "tags": [
+      "builtin",
+      "barchart",
+      "finance",
+      "options"
+    ],
+    "group": "内置脚本",
+    "category": "finance",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "barchart-options",
+    "mcp_command_description": "Barchart US stock options chain",
+    "mcp_input_schema": {
+      "properties": {
+        "symbol": {
+          "description": "Stock ticker symbol (e.g. AAPL, TSLA)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "symbol": ""
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.barchart.com/stocks/quotes/${symbol}"
+      },
+      {
+        "type": "sleep",
+        "duration": 4000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\n(async function() {\n  var sym = location.pathname.split('/quotes/')[1]?.split('/')[0] || '';\n  var csrf = document.querySelector('meta[name=\"csrf-token\"]')?.content || '';\n  try {\n    var fields = 'strikePrice,bidPrice,askPrice,lastPrice,priceChange,volume,openInterest,volatility,delta,gamma,theta,vega,expirationDate,optionType,percentFromLast';\n    var url = '/proxies/core-api/v1/options/chain?symbol=' + encodeURIComponent(sym) + '\u0026fields=' + fields + '\u0026raw=1';\n    var resp = await fetch(url, {credentials:'include', headers:{'X-CSRF-TOKEN': csrf}});\n    if (resp.ok) {\n      var d = await resp.json();\n      var items = (d?.data || []).filter(function(i){return ((i.raw||i).optionType||'').toLowerCase()==='call';});\n      items.sort(function(a,b){return Math.abs((a.raw||a).percentFromLast||999)-Math.abs((b.raw||b).percentFromLast||999);});\n      return items.slice(0,20).map(function(i){var r=i.raw||i;return {strike:r.strikePrice,bid:r.bidPrice,ask:r.askPrice,last:r.lastPrice,volume:r.volume,openInterest:r.openInterest,iv:r.volatility,delta:r.delta,expiration:r.expirationDate};});\n    }\n  } catch(e) {}\n  return [];\n})()\n",
+        "variable_name": "result"
+      }
+    ]
+  }
+]

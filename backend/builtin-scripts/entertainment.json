@@ -1,0 +1,373 @@
+[
+  {
+    "id": "builtin-douban-movie-hot",
+    "name": "douban-movie-hot",
+    "description": "获取豆瓣热门电影",
+    "url": "https://movie.douban.com/chart",
+    "tags": [
+      "builtin",
+      "douban",
+      "电影"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "douban_movie_hot",
+    "mcp_command_description": "获取豆瓣热门电影",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://movie.douban.com/chart"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nconst items = document.querySelectorAll('.item');\nconst list = [];\nitems.forEach((el, i) =\u003e {\n  const titleEl = el.querySelector('.title a, .pl2 a');\n  const ratingEl = el.querySelector('.rating_nums');\n  const imgEl = el.querySelector('img');\n  if (titleEl) {\n    list.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim().replace(/\\\\s+/g, ' '),\n      rating: ratingEl ? ratingEl.textContent.trim() : '',\n      url: titleEl.href || '',\n      cover: imgEl ? imgEl.src : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-douban-top250",
+    "name": "douban-top250",
+    "description": "获取豆瓣电影 Top 250",
+    "url": "https://movie.douban.com/top250",
+    "tags": [
+      "builtin",
+      "douban",
+      "电影",
+      "Top250"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "douban_top250",
+    "mcp_command_description": "获取豆瓣电影 Top 250（前25部）",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://movie.douban.com/top250"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.item, ol.grid_view li');\nvar list = [];\nitems.forEach(function(el) {\n  var rankEl = el.querySelector('.pic em, em');\n  var titleEl = el.querySelector('.title, .hd a span:first-child');\n  var ratingEl = el.querySelector('.rating_num, [class*=\"rating_num\"]');\n  var linkEl = el.querySelector('a[href*=\"subject\"]');\n  if (titleEl) {\n    list.push({\n      rank: rankEl ? parseInt(rankEl.textContent) : list.length + 1,\n      title: titleEl.textContent.trim(),\n      rating: ratingEl ? ratingEl.textContent.trim() : '',\n      url: linkEl ? linkEl.href : '',\n    });\n  }\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-hupu-hot",
+    "name": "hupu-hot",
+    "description": "获取虎扑热帖",
+    "url": "https://bbs.hupu.com",
+    "tags": [
+      "builtin",
+      "hupu",
+      "体育",
+      "热帖"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "hupu_hot",
+    "mcp_command_description": "获取虎扑热帖",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://bbs.hupu.com"
+      },
+      {
+        "type": "sleep",
+        "duration": 2000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar html = document.documentElement.outerHTML;\nvar regex = /\u003ca[^\u003e]*href=\"\\/(\\d{7,})\\.html\"[^\u003e]*\u003e(?:\u003c[^\u003e]*\u003e)*([^\u003c]+)/g;\nvar list = [];\nvar match;\nvar seen = {};\nwhile ((match = regex.exec(html)) !== null) {\n  var tid = match[1];\n  var title = match[2].trim();\n  if (!title || seen[tid]) continue;\n  seen[tid] = true;\n  list.push({\n    rank: list.length + 1,\n    title: title,\n    url: 'https://bbs.hupu.com/' + tid + '.html',\n  });\n}\nreturn JSON.stringify(list.slice(0, 30));\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-imdb-trending",
+    "name": "imdb-trending",
+    "description": "获取 IMDB 热门电影",
+    "url": "https://www.imdb.com/chart/moviemeter/",
+    "tags": [
+      "builtin",
+      "imdb",
+      "电影",
+      "trending"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "imdb_trending",
+    "mcp_command_description": "获取 IMDB 热门电影",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.imdb.com/chart/moviemeter/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar scripts = document.querySelectorAll('script[type=\"application/ld+json\"]');\nfor (var s of scripts) {\n  try {\n    var json = JSON.parse(s.textContent);\n    if (json['@type'] === 'ItemList' \u0026\u0026 json.itemListElement) {\n      var list = json.itemListElement.slice(0, 25).map(function(el, i) {\n        var item = el.item || el;\n        return {\n          rank: el.position || i + 1,\n          title: item.name || '',\n          rating: item.aggregateRating ? item.aggregateRating.ratingValue : '',\n          genre: Array.isArray(item.genre) ? item.genre.join(', ') : (item.genre || ''),\n          url: item.url ? (item.url.startsWith('http') ? item.url : 'https://www.imdb.com' + item.url) : '',\n        };\n      });\n      return JSON.stringify(list);\n    }\n  } catch(e) {}\n}\nvar rows = document.querySelectorAll('.ipc-metadata-list-summary-item, li[class*=\"ipc-metadata-list\"]');\nvar fallback = [];\nrows.forEach(function(row, i) {\n  var titleEl = row.querySelector('h3, [class*=\"title\"]');\n  var ratingEl = row.querySelector('[class*=\"rating\"], [aria-label*=\"rating\"]');\n  if (titleEl \u0026\u0026 i \u003c 25) {\n    fallback.push({\n      rank: i + 1,\n      title: titleEl.textContent.trim().replace(/^\\d+\\.\\s*/, ''),\n      rating: ratingEl ? ratingEl.textContent.trim() : '',\n      url: '',\n    });\n  }\n});\nreturn JSON.stringify(fallback);\n",
+        "variable_name": "hot_list"
+      }
+    ]
+  },
+  {
+    "id": "builtin-steam-topsellers",
+    "name": "steam-topsellers",
+    "description": "Get Steam top sellers",
+    "url": "https://store.steampowered.com/search/?filter=topsellers",
+    "tags": [
+      "builtin",
+      "steam",
+      "games"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "steam-topsellers",
+    "mcp_command_description": "Get Steam top sellers",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://store.steampowered.com/search/?filter=topsellers"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('#search_resultsRows a');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('.title');\n  var p = el.querySelector('.discount_final_price, .search_price');\n  if (t \u0026\u0026 list.length \u003c 30) list.push({rank: list.length+1, name: t.textContent.trim(), url: el.href, price: p ? p.textContent.trim() : ''});\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-youtube-trending",
+    "name": "youtube-trending",
+    "description": "Get YouTube trending videos",
+    "url": "https://www.youtube.com/feed/trending",
+    "tags": [
+      "builtin",
+      "youtube",
+      "trending"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "youtube-trending",
+    "mcp_command_description": "Get YouTube trending videos",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.youtube.com/feed/trending"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('ytd-video-renderer, ytd-rich-item-renderer');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('#video-title');\n  var c = el.querySelector('#channel-name a, ytd-channel-name a');\n  var v = el.querySelector('#metadata-line span');\n  if (t \u0026\u0026 list.length \u003c 30) list.push({rank: list.length+1, title: t.textContent.trim(), url: t.href || '', channel: c ? c.textContent.trim() : '', views: v ? v.textContent.trim() : ''});\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-douban-book-hot",
+    "name": "douban-book-hot",
+    "description": "获取豆瓣热门图书",
+    "url": "https://book.douban.com/chart",
+    "tags": [
+      "builtin",
+      "douban",
+      "book"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "douban-book-hot",
+    "mcp_command_description": "获取豆瓣热门图书",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://book.douban.com/chart"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.chart-dashed-list li, .article .item');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('a.fleft, .title a, h2 a');\n  var r = el.querySelector('.rating_nums, [class*=\"rating\"]');\n  if (t \u0026\u0026 list.length \u003c 30) list.push({rank: list.length+1, title: t.textContent.trim(), url: t.href, rating: r ? r.textContent.trim() : ''});\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-douban-search",
+    "name": "douban-search",
+    "description": "搜索豆瓣电影",
+    "url": "https://search.douban.com/movie/subject_search?search_text=${keyword}",
+    "tags": [
+      "builtin",
+      "douban",
+      "搜索"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "douban_search",
+    "mcp_command_description": "搜索豆瓣电影",
+    "mcp_input_schema": {
+      "properties": {
+        "keyword": {
+          "description": "电影名称",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyword"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "keyword": ""
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://search.douban.com/movie/subject_search?search_text=${keyword}"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.item-root, .sc-bZQynM');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('.title-text, h3 a, a.title-text');\n  var r = el.querySelector('.rating_nums, [class*=\"rating\"]');\n  var meta = el.querySelector('.meta, [class*=\"meta\"]');\n  if (t \u0026\u0026 list.length \u003c 20) list.push({rank: list.length+1, title: t.textContent.trim(), url: t.href || '', rating: r ? r.textContent.trim() : '', info: meta ? meta.textContent.trim() : ''});\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-apple-podcasts-top",
+    "name": "apple-podcasts-top",
+    "description": "Apple Podcasts top chart",
+    "url": "https://rss.marketingtools.apple.com/api/v2/us/podcasts/top/25/podcasts.json",
+    "tags": [
+      "builtin",
+      "apple",
+      "podcasts"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "apple-podcasts-top",
+    "mcp_command_description": "Apple Podcasts top chart",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://rss.marketingtools.apple.com/api/v2/us/podcasts/top/25/podcasts.json"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\ntry {\n  var text = document.body?.innerText || document.querySelector('pre')?.textContent || '';\n  var data = JSON.parse(text);\n  var results = (data?.feed?.results || []).map(function(p, i) {\n    return {rank: i+1, title: p.name, author: p.artistName, id: p.id, url: p.url || ''};\n  });\n  return results.slice(0, 25);\n} catch(e) { return [{error: 'Failed to parse podcast data'}]; }\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-tiktok-explore",
+    "name": "tiktok-explore",
+    "description": "TikTok Explore trending videos",
+    "url": "https://www.tiktok.com/explore",
+    "tags": [
+      "builtin",
+      "tiktok",
+      "trending"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "tiktok-explore",
+    "mcp_command_description": "TikTok Explore trending videos",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.tiktok.com/explore"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar cards = document.querySelectorAll('[data-e2e=\"explore-item\"], [class*=\"DivItemContainer\"], [class*=\"video-feed-item\"]');\nvar results = [];\ncards.forEach(function(card, idx) {\n  var a = card.querySelector('a[href*=\"/video/\"]') || card.querySelector('a');\n  var desc = card.querySelector('[data-e2e=\"explore-item-desc\"], [class*=\"ItemDescription\"], p')?.textContent?.trim() || '';\n  var author = card.querySelector('[data-e2e=\"explore-item-user\"], [class*=\"Author\"], span[class*=\"user\"]')?.textContent?.trim() || '';\n  var views = card.querySelector('[class*=\"play\"], [class*=\"view\"]')?.textContent?.trim() || '';\n  var href = a ? a.getAttribute('href') : '';\n  if (href \u0026\u0026 !href.startsWith('http')) href = 'https://www.tiktok.com' + href;\n  if (desc || href) results.push({rank: idx+1, description: desc.slice(0,100), author: author, views: views, url: href});\n});\nreturn results.slice(0, 20);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-pixiv-ranking",
+    "name": "pixiv-ranking",
+    "description": "Pixiv illustration daily ranking",
+    "url": "https://www.pixiv.net/ranking.php?mode=daily",
+    "tags": [
+      "builtin",
+      "pixiv",
+      "illustration"
+    ],
+    "group": "内置脚本",
+    "category": "entertainment",
+    "can_fetch": true,
+    "requires_login": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "pixiv-ranking",
+    "mcp_command_description": "Pixiv illustration daily ranking",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://www.pixiv.net/ranking.php?mode=daily"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.ranking-item, [class*=\"rankingItem\"]');\nvar results = [];\nitems.forEach(function(item, idx) {\n  var titleEl = item.querySelector('.title, a[data-title], h2');\n  var title = titleEl ? (titleEl.getAttribute('data-title') || titleEl.textContent || '').trim() : '';\n  var userEl = item.querySelector('.user-name, [data-user-name]');\n  var user = userEl ? (userEl.getAttribute('data-user-name') || userEl.textContent || '').trim() : '';\n  var a = item.querySelector('a[href*=\"/artworks/\"]');\n  var href = a ? a.getAttribute('href') : '';\n  if (href \u0026\u0026 !href.startsWith('http')) href = 'https://www.pixiv.net' + href;\n  if (title || href) results.push({rank: idx+1, title: title, author: user, url: href});\n});\nreturn results.slice(0, 30);\n",
+        "variable_name": "result"
+      }
+    ]
+  }
+]

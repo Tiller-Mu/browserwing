@@ -1,0 +1,145 @@
+[
+  {
+    "id": "builtin-weread-ranking",
+    "name": "weread-ranking",
+    "description": "获取微信读书飙升榜",
+    "url": "https://weread.qq.com/web/category/rising",
+    "tags": [
+      "builtin",
+      "weread",
+      "读书"
+    ],
+    "group": "内置脚本",
+    "category": "reading",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "weread-ranking",
+    "mcp_command_description": "获取微信读书飙升榜",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://weread.qq.com/web/category/rising"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('.book_item, [class*=\"bookItem\"], .wr_bookList_item');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('.book_title, [class*=\"bookTitle\"], .wr_bookList_item_title');\n  var a = el.querySelector('.book_author, [class*=\"bookAuthor\"], .wr_bookList_item_author');\n  var link = el.querySelector('a');\n  if (t \u0026\u0026 list.length \u003c 30) list.push({rank: list.length+1, title: t.textContent.trim(), author: a ? a.textContent.trim() : '', url: link ? link.href : ''});\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-medium-trending",
+    "name": "medium-trending",
+    "description": "Get Medium trending articles",
+    "url": "https://medium.com/tag/technology/recommended",
+    "tags": [
+      "builtin",
+      "medium",
+      "reading"
+    ],
+    "group": "内置脚本",
+    "category": "reading",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "medium-trending",
+    "mcp_command_description": "Get Medium trending articles",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://medium.com/tag/technology/recommended"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar items = document.querySelectorAll('article');\nvar list = [];\nitems.forEach(function(el, i) {\n  var t = el.querySelector('h2, h3');\n  var a = el.querySelector('a[data-testid=\"authorName\"], a[rel=\"author\"]');\n  var link = el.querySelector('a[data-testid=\"postPreview\"]') || el.querySelector('h2 a, h3 a');\n  if (t \u0026\u0026 list.length \u003c 20) list.push({rank: list.length+1, title: t.textContent.trim(), author: a ? a.textContent.trim() : '', url: link ? link.href : ''});\n});\nreturn JSON.stringify(list);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-substack-feed",
+    "name": "substack-feed",
+    "description": "Substack popular articles",
+    "url": "https://substack.com/",
+    "tags": [
+      "builtin",
+      "substack",
+      "reading"
+    ],
+    "group": "内置脚本",
+    "category": "reading",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "substack-feed",
+    "mcp_command_description": "Substack popular articles",
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://substack.com/"
+      },
+      {
+        "type": "sleep",
+        "duration": 3000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\nvar cards = document.querySelectorAll('[class*=\"post-preview\"], [class*=\"PostPreview\"], article');\nvar results = [];\ncards.forEach(function(card, idx) {\n  var titleEl = card.querySelector('[class*=\"post-preview-title\"], h2, h3');\n  var title = titleEl ? titleEl.textContent.trim() : '';\n  var authorEl = card.querySelector('[class*=\"profile-hover\"], [class*=\"author\"], [class*=\"pub-name\"]');\n  var author = authorEl ? authorEl.textContent.trim() : '';\n  var a = card.querySelector('a[href*=\"/p/\"]') || card.querySelector('a');\n  var href = a ? a.getAttribute('href') : '';\n  var dateEl = card.querySelector('time, [class*=\"date\"]');\n  var date = dateEl ? (dateEl.getAttribute('datetime') || dateEl.textContent || '').trim() : '';\n  if (title) results.push({rank: idx+1, title: title, author: author, date: date.split('T')[0], url: href});\n});\nreturn results.slice(0, 20);\n",
+        "variable_name": "result"
+      }
+    ]
+  },
+  {
+    "id": "builtin-dictionary-lookup",
+    "name": "dictionary-lookup",
+    "description": "English dictionary word lookup",
+    "url": "https://api.dictionaryapi.dev/api/v2/entries/en/",
+    "tags": [
+      "builtin",
+      "dictionary",
+      "english"
+    ],
+    "group": "内置脚本",
+    "category": "reading",
+    "can_fetch": true,
+    "is_mcp_command": true,
+    "mcp_command_name": "dictionary-lookup",
+    "mcp_command_description": "English dictionary word lookup",
+    "mcp_input_schema": {
+      "properties": {
+        "word": {
+          "description": "English word to look up",
+          "type": "string"
+        }
+      },
+      "required": [
+        "word"
+      ],
+      "type": "object"
+    },
+    "variables": {
+      "word": ""
+    },
+    "actions": [
+      {
+        "type": "navigate",
+        "url": "https://api.dictionaryapi.dev/api/v2/entries/en/${word}"
+      },
+      {
+        "type": "sleep",
+        "duration": 4000
+      },
+      {
+        "type": "evaluate",
+        "js_code": "\ntry {\n  var text = document.body?.innerText || document.querySelector('pre')?.textContent || '';\n  var data = JSON.parse(text);\n  if (!Array.isArray(data)) return [{error: data?.message || 'Word not found'}];\n  return data.map(function(entry) {\n    var meanings = (entry.meanings || []).map(function(m) {\n      return {partOfSpeech: m.partOfSpeech, definitions: (m.definitions || []).slice(0,3).map(function(d){return d.definition;})};\n    });\n    return {word: entry.word, phonetic: entry.phonetic || '', phonetics: (entry.phonetics||[]).map(function(p){return p.text||'';}).filter(Boolean).join(', '), meanings: meanings};\n  });\n} catch(e) { return [{error: 'Failed to parse dictionary data'}]; }\n",
+        "variable_name": "result"
+      }
+    ]
+  }
+]
