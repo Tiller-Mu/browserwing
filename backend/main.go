@@ -90,14 +90,19 @@ func main() {
 		log.Fatalf("Failed to create database directory: %v", err)
 	}
 
-	// 初始化数据库
+	// 初始化 BoltDB (保留用于配置存储)
 	db, err := storage.NewBoltDB(cfg.Database.Path)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
+	log.Println("✓ BoltDB initialization successful")
 
-	log.Println("✓ Database initialization successful")
+	// 初始化 SQLite (用于测试平台核心业务数据)
+	if err := storage.InitSQLite(dbDir); err != nil {
+		log.Fatalf("Failed to initialize SQLite database: %v", err)
+	}
+	log.Println("✓ SQLite database initialization successful")
 
 	// 检查并更新系统提示词（自动升级未修改的prompt）
 	if err := db.CheckAndUpdateSystemPrompts(); err != nil {

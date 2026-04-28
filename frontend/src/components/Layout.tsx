@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
-import { Chrome, FileCode, Brain, Languages, MessageSquare, Sun, Moon, Settings, LogOut, Clock } from 'lucide-react'
+import { Chrome, FileCode, Brain, Languages, MessageSquare, Sun, Moon, Settings, LogOut, Clock, Folder } from 'lucide-react'
 import { useLanguage, LANGUAGES } from '../i18n'
 import { useState, useRef, useEffect } from 'react'
 import { useTheme } from '../contexts/ThemeContext'
@@ -28,6 +28,7 @@ export default function Layout() {
   }
 
   const navItems = [
+    { path: '/projects', labelKey: '项目管理', icon: Folder },
     { path: '/agent', labelKey: 'nav.agent', icon: MessageSquare },
     { path: '/browser', labelKey: 'nav.browser', icon: Chrome },
     { path: '/scripts', labelKey: 'nav.scripts', icon: FileCode },

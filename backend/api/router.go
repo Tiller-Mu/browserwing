@@ -69,6 +69,18 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			prompts.POST("/:id/reset", handler.ResetPrompt) // 重置系统提示词
 		}
 
+		// 项目管理相关 (Testing Platform)
+		projectHandlers := NewProjectHandlers()
+		projects := api.Group("/projects")
+		{
+			projects.GET("", projectHandlers.ListProjects)
+			projects.POST("", projectHandlers.CreateProject)
+			projects.DELETE("/:id", projectHandlers.DeleteProject)
+			projects.POST("/:id/versions", projectHandlers.CreateVersion)
+			projects.DELETE("/:id/versions/:vid", projectHandlers.DeleteVersion)
+			projects.POST("/:id/versions/:vid/clone", projectHandlers.CloneVersion)
+		}
+
 		// 浏览器相关
 		browserAPI := api.Group("/browser")
 		{
