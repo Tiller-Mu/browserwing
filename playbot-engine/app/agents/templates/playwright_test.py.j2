@@ -1,0 +1,46 @@
+import pytest
+from playwright.sync_api import Page, expect
+
+def test_{{ case_uid }}(page: Page):
+    """
+    标题: {{ case_title }}
+    描述: {{ case_description }}
+    """
+    # 初始化进入测试页
+    page.goto("{{ base_url }}")
+    
+    {% for step in steps %}
+    # {{ loop.index }}. {{ step.description }}
+    {% if mapping[step.target_id] %}
+    {% set locator = "page." ~ mapping[step.target_id] %}
+    {% if step.action == 'click' %}
+    {{ locator }}.click(force=True)
+    {% elif step.action == 'fill' %}
+    {{ locator }}.fill("{{ step.value if step.value else '' }}")
+    {% elif step.action == 'hover' %}
+    {{ locator }}.hover(force=True)
+    {% elif step.action == 'press' %}
+    {{ locator }}.press("{{ step.value }}")
+    {% elif step.action == 'check' %}
+    {{ locator }}.check(force=True)
+    {% elif step.action == 'uncheck' %}
+    {{ locator }}.uncheck(force=True)
+    {% elif step.action == 'clear' %}
+    {{ locator }}.clear()
+    {% elif step.action == 'expect_visible' %}
+    expect({{ locator }}).to_be_visible()
+    {% elif step.action == 'expect_hidden' %}
+    expect({{ locator }}).to_be_hidden()
+    {% elif step.action == 'expect_text' %}
+    expect({{ locator }}).to_contain_text("{{ step.value if step.value else '' }}")
+    {% elif step.action == 'expect_enabled' %}
+    expect({{ locator }}).to_be_enabled()
+    {% elif step.action == 'expect_disabled' %}
+    expect({{ locator }}).to_be_disabled()
+    {% endif %}
+    {% else %}
+    # ⚠️ 警告: 试图操作不存在的白名单元素 {{ step.target_id }}
+    pytest.fail("用例引用了不存在的元素白名单键值对")
+    {% endif %}
+    
+    {% endfor %}
