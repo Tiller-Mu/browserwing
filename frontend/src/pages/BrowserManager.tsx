@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api, Script, ScriptAction, BrowserConfig, BrowserInstance } from '../api/client'
 import { Power, PowerOff, Loader, ExternalLink, RefreshCw, Save, Video, Play, Settings, Cookie, Monitor } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { projectApi } from '../api/project'
 import Toast from '../components/Toast'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { useLanguage } from '../i18n'
@@ -22,10 +23,17 @@ interface RecordingStatus {
   actions?: ScriptAction[]
   count?: number
 }
-
 export default function BrowserManager() {
   const { t, language } = useLanguage()
   const navigate = useNavigate()
+  const location = useLocation()
+  
+  // Parse URL search params for page recording context
+  const searchParams = new URLSearchParams(location.search)
+  const projectId = searchParams.get('projectId')
+  const versionId = searchParams.get('versionId')
+  const pageId = searchParams.get('pageId')
+
   const [status, setStatus] = useState<BrowserStatus>({ is_running: false })
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({ is_recording: false })
   const [startingBrowser, setStartingBrowser] = useState(false)
@@ -427,16 +435,38 @@ export default function BrowserManager() {
 
     try {
       setSavingScript(true)
-      const response = await api.saveScript({
-        id: '',
-        name: scriptName,
-        description: scriptDescription,
-        url: recordingStatus.start_url || openUrl,
-        actions: recordedActions,
-      })
-      showMessage(t(response.data.message), 'success')
-      await cleanRecordingState()
-      await loadScripts()
+      
+      const isPageRecordingContext = projectId && versionId && pageId;
+      
+      if (isPageRecordingContext) {
+        // Save as a PageScript bounded to a TestPage
+        const response = await projectApi.savePageRecording(
+          Number(projectId),
+          Number(versionId),
+          Number(pageId),
+          {
+            name: scriptName,
+            action_trace: JSON.stringify(recordedActions),
+            dom_snapshot: "{}" // Placeholder for actual DOM snapshot if available later
+          }
+        );
+        showMessage(response.data.message, 'success');
+        await cleanRecordingState();
+        // Redirect back to the page manager after successful save
+        navigate(`/projects/${projectId}/versions/${versionId}/pages`);
+      } else {
+        // Legacy general Script save
+        const response = await api.saveScript({
+          id: '',
+          name: scriptName,
+          description: scriptDescription,
+          url: recordingStatus.start_url || openUrl,
+          actions: recordedActions,
+        })
+        showMessage(t(response.data.message), 'success')
+        await cleanRecordingState()
+        await loadScripts()
+      }
     } catch (err: any) {
       showMessage(t(err.response?.data?.error || 'browser.messages.scriptSaveError'), 'error')
     } finally {

@@ -77,8 +77,13 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			projects.POST("", projectHandlers.CreateProject)
 			projects.DELETE("/:id", projectHandlers.DeleteProject)
 			projects.POST("/:id/versions", projectHandlers.CreateVersion)
+			projects.PUT("/:id/versions/:vid", projectHandlers.UpdateVersion)
 			projects.DELETE("/:id/versions/:vid", projectHandlers.DeleteVersion)
 			projects.POST("/:id/versions/:vid/clone", projectHandlers.CloneVersion)
+			projects.GET("/:id/versions/:vid/pages", projectHandlers.ListPages)
+			projects.POST("/:id/versions/:vid/pages", projectHandlers.CreatePage)
+			projects.DELETE("/:id/versions/:vid/pages/:pid", projectHandlers.DeletePage)
+			projects.POST("/:id/versions/:vid/pages/:pid/recordings", projectHandlers.SavePageRecording)
 		}
 
 		// 浏览器相关

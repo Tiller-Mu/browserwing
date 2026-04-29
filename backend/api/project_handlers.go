@@ -29,7 +29,11 @@ func (h *ProjectHandlers) ListProjects(c *gin.Context) {
 }
 
 func (h *ProjectHandlers) CreateProject(c *gin.Context) {
-	var req models.Project
+	var req struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		BaseURL     string `json:"base_url"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 		return
@@ -40,20 +44,26 @@ func (h *ProjectHandlers) CreateProject(c *gin.Context) {
 		return
 	}
 
-	if err := storage.DB.Create(&req).Error; err != nil {
+	project := models.Project{
+		Name:        req.Name,
+		Description: req.Description,
+	}
+
+	if err := storage.DB.Create(&project).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	// 自动创建一个默认版本 v1.0.0
 	defaultVersion := models.ProjectVersion{
-		ProjectID:   req.ID,
+		ProjectID:   project.ID,
 		VersionName: "v1.0.0",
 		Description: "Default initial version",
+		BaseURL:     req.BaseURL,
 	}
 	storage.DB.Create(&defaultVersion)
 
-	c.JSON(http.StatusOK, req)
+	c.JSON(http.StatusOK, project)
 }
 
 func (h *ProjectHandlers) DeleteProject(c *gin.Context) {
@@ -97,6 +107,43 @@ func (h *ProjectHandlers) CreateVersion(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, req)
+}
+
+func (h *ProjectHandlers) UpdateVersion(c *gin.Context) {
+	vidStr := c.Param("vid")
+	versionID, err := strconv.ParseUint(vidStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Version ID"})
+		return
+	}
+
+	var req struct {
+		VersionName string `json:"version_name"`
+		Description string `json:"description"`
+		BaseURL     string `json:"base_url"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		return
+	}
+
+	var version models.ProjectVersion
+	if err := storage.DB.First(&version, versionID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
+		return
+	}
+
+	if strings.TrimSpace(req.VersionName) != "" {
+		version.VersionName = req.VersionName
+	}
+	version.Description = req.Description
+	version.BaseURL = req.BaseURL
+
+	if err := storage.DB.Save(&version).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, version)
 }
 
 func (h *ProjectHandlers) DeleteVersion(c *gin.Context) {
@@ -206,4 +253,102 @@ func (h *ProjectHandlers) CloneVersion(c *gin.Context) {
 
 	logger.Info(c.Request.Context(), "Successfully cloned version %d to new version %d (%s)", versionID, newVersion.ID, newVersion.VersionName)
 	c.JSON(http.StatusOK, newVersion)
+}
+
+// ---- TestPage Handlers ----
+
+func (h *ProjectHandlers) ListPages(c *gin.Context) {
+	vidStr := c.Param("vid")
+	versionID, err := strconv.ParseUint(vidStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Version ID"})
+		return
+	}
+
+	var pages []models.TestPage
+	// 预加载关联的 Scripts 和 TestCases 以便前端展示统计信息
+	if err := storage.DB.Preload("Scripts").Preload("TestCases").Where("version_id = ?", versionID).Order("created_at desc").Find(&pages).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, pages)
+}
+
+func (h *ProjectHandlers) CreatePage(c *gin.Context) {
+	vidStr := c.Param("vid")
+	versionID, err := strconv.ParseUint(vidStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Version ID"})
+		return
+	}
+
+	var req models.TestPage
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		return
+	}
+	req.VersionID = uint(versionID)
+
+	if strings.TrimSpace(req.Name) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Page name is required"})
+		return
+	}
+
+	if err := storage.DB.Create(&req).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, req)
+}
+
+func (h *ProjectHandlers) DeletePage(c *gin.Context) {
+	pidStr := c.Param("pid")
+	pageID, err := strconv.ParseUint(pidStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Page ID"})
+		return
+	}
+
+	// 级联删除会清理对应的 PageScript 和 TestCase
+	if err := storage.DB.Delete(&models.TestPage{}, pageID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Page deleted successfully"})
+}
+
+func (h *ProjectHandlers) SavePageRecording(c *gin.Context) {
+	pidStr := c.Param("pid")
+	pageID, err := strconv.ParseUint(pidStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Page ID"})
+		return
+	}
+
+	var req struct {
+		Name        string `json:"name"`
+		ActionTrace string `json:"action_trace"`
+		DOMSnapshot string `json:"dom_snapshot"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		return
+	}
+
+	// 删除此页面下已有的其他录制脚本，保证 1-to-1 的主流程（根据设计决策）
+	storage.DB.Where("page_id = ?", pageID).Delete(&models.PageScript{})
+
+	newScript := models.PageScript{
+		PageID:      uint(pageID),
+		Name:        req.Name,
+		ActionTrace: req.ActionTrace,
+		DOMSnapshot: req.DOMSnapshot,
+	}
+
+	if err := storage.DB.Create(&newScript).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "主流程录制保存成功", "script": newScript})
 }

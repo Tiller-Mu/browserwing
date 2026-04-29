@@ -29,11 +29,7 @@ export default function Layout() {
 
   const navItems = [
     { path: '/projects', labelKey: '项目管理', icon: Folder },
-    { path: '/agent', labelKey: 'nav.agent', icon: MessageSquare },
-    { path: '/browser', labelKey: 'nav.browser', icon: Chrome },
-    { path: '/scripts', labelKey: 'nav.scripts', icon: FileCode },
     { path: '/scheduled-tasks', labelKey: 'nav.scheduledTasks', icon: Clock },
-    { path: '/llm', labelKey: 'nav.llm', icon: Brain },
   ]
 
   // 检查是否启用认证并获取用户信息

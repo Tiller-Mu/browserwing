@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Folder, Plus, Trash2, GitBranch, Copy, ChevronDown, ChevronRight, Settings } from 'lucide-react'
+import { Folder, Plus, Trash2, GitBranch, Copy, ChevronDown, ChevronRight, Settings, ExternalLink } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { projectApi, Project, ProjectVersion } from '../api/project'
 import Toast from '../components/Toast'
 import { Modal } from '../components/Modal'
@@ -7,6 +8,7 @@ import { useLanguage } from '../i18n'
 
 export default function ProjectManager() {
   const { t } = useLanguage()
+  const navigate = useNavigate()
   
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
@@ -26,11 +28,17 @@ export default function ProjectManager() {
     show: false,
     projectId: 0
   })
+  const [showEditVersionModal, setShowEditVersionModal] = useState<{ show: boolean; projectId: number; version: ProjectVersion | null }>({
+    show: false,
+    projectId: 0,
+    version: null
+  })
 
   // Forms
   const [newProject, setNewProject] = useState({ name: '', description: '', base_url: '' })
   const [newVersionName, setNewVersionName] = useState('')
-  const [newEmptyVersion, setNewEmptyVersion] = useState({ version_name: '', description: '' })
+  const [newEmptyVersion, setNewEmptyVersion] = useState({ version_name: '', description: '', base_url: '' })
+  const [editVersionForm, setEditVersionForm] = useState({ version_name: '', description: '', base_url: '' })
 
   useEffect(() => {
     loadProjects()
@@ -96,10 +104,26 @@ export default function ProjectManager() {
       await projectApi.createVersion(showCreateVersionModal.projectId, newEmptyVersion)
       showToast('空版本分支创建成功', 'success')
       setShowCreateVersionModal({ show: false, projectId: 0 })
-      setNewEmptyVersion({ version_name: '', description: '' })
+      setNewEmptyVersion({ version_name: '', description: '', base_url: '' })
       loadProjects()
     } catch (error: any) {
-      showToast('空版本分支创建失败', 'error')
+      console.error('Create version failed:', error)
+      showToast('分支创建失败', 'error')
+    }
+  }
+
+  const handleEditVersion = async () => {
+    if (!showEditVersionModal.version || !editVersionForm.version_name.trim()) return
+
+    try {
+      await projectApi.updateVersion(showEditVersionModal.projectId, showEditVersionModal.version.id, editVersionForm)
+      showToast('版本更新成功', 'success')
+      setShowEditVersionModal({ show: false, projectId: 0, version: null })
+      setEditVersionForm({ version_name: '', description: '', base_url: '' })
+      loadProjects()
+    } catch (error: any) {
+      console.error('Update version failed:', error)
+      showToast('版本更新失败', 'error')
     }
   }
 
@@ -225,6 +249,16 @@ export default function ProjectManager() {
                             </span>
                             <div className="flex items-center gap-1">
                               <button
+                                onClick={() => {
+                                  setEditVersionForm({ version_name: version.version_name, description: version.description || '', base_url: version.base_url || '' });
+                                  setShowEditVersionModal({ show: true, projectId: project.id, version });
+                                }}
+                                className="p-1 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded transition-colors"
+                                title="编辑版本分支"
+                              >
+                                <Settings className="w-4 h-4" />
+                              </button>
+                              <button
                                 onClick={() => setShowCloneModal({ show: true, projectId: project.id, sourceVersion: version })}
                                 className="p-1 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded transition-colors"
                                 title="基于此版本克隆出新分支"
@@ -240,12 +274,20 @@ export default function ProjectManager() {
                               </button>
                             </div>
                           </div>
+                          {version.base_url && (
+                            <p className="text-xs text-indigo-600 dark:text-indigo-400 mt-1 flex items-center gap-1 font-mono break-all">
+                              <ExternalLink className="w-3 h-3" /> {version.base_url}
+                            </p>
+                          )}
                           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
                             {version.description || "无描述信息"}
                           </p>
                         </div>
                         <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700 flex justify-end">
-                           <button className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline">
+                           <button 
+                             onClick={() => navigate(`/projects/${project.id}/versions/${version.id}/pages`)}
+                             className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+                           >
                              进入录制与用例管理 →
                            </button>
                         </div>
@@ -383,6 +425,18 @@ export default function ProjectManager() {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              测试基准URL (Base URL)
+            </label>
+            <input
+              type="url"
+              value={newEmptyVersion.base_url}
+              onChange={(e) => setNewEmptyVersion({ ...newEmptyVersion, base_url: e.target.value })}
+              placeholder="例如：https://test-v2.example.com"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               版本描述
             </label>
             <textarea
@@ -406,6 +460,66 @@ export default function ProjectManager() {
               className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
             >
               确认新建
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* 编辑版本弹窗 */}
+      <Modal
+        isOpen={showEditVersionModal.show}
+        onClose={() => setShowEditVersionModal({ show: false, projectId: 0, version: null })}
+        title="编辑版本分支"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              版本名称 <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              value={editVersionForm.version_name}
+              onChange={(e) => setEditVersionForm({ ...editVersionForm, version_name: e.target.value })}
+              placeholder="例如：v2.0.0"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              测试基准URL (Base URL)
+            </label>
+            <input
+              type="url"
+              value={editVersionForm.base_url}
+              onChange={(e) => setEditVersionForm({ ...editVersionForm, base_url: e.target.value })}
+              placeholder="例如：https://test-v2.example.com"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              版本描述
+            </label>
+            <textarea
+              value={editVersionForm.description}
+              onChange={(e) => setEditVersionForm({ ...editVersionForm, description: e.target.value })}
+              rows={3}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900"
+            />
+          </div>
+          <div className="flex justify-end gap-3 mt-6 pt-4 border-t dark:border-gray-700">
+            <button
+              onClick={() => setShowEditVersionModal({ show: false, projectId: 0, version: null })}
+              className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              onClick={handleEditVersion}
+              disabled={!editVersionForm.version_name.trim()}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+            >
+              保存更改
             </button>
           </div>
         </div>

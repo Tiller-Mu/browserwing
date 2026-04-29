@@ -20,6 +20,9 @@ data/
 backend/config.local.toml
 frontend/.env.local
 
+# Chrome User Data
+backend/chrome_user_data/
+
 logs
 
 build

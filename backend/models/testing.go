@@ -11,7 +11,6 @@ type Project struct {
 	ID          uint             `gorm:"primaryKey" json:"id"`
 	Name        string           `gorm:"size:255;not null;unique" json:"name"`
 	Description string           `gorm:"type:text" json:"description"`
-	BaseURL     string           `gorm:"size:255" json:"base_url"`
 	CreatedAt   time.Time        `json:"created_at"`
 	UpdatedAt   time.Time        `json:"updated_at"`
 	Versions    []ProjectVersion `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
@@ -23,6 +22,7 @@ type ProjectVersion struct {
 	ProjectID   uint       `gorm:"index;not null" json:"project_id"`
 	VersionName string     `gorm:"size:100;not null" json:"version_name"`
 	Description string     `gorm:"type:text" json:"description"`
+	BaseURL     string     `gorm:"size:255" json:"base_url"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 	Pages       []TestPage `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE;" json:"pages,omitempty"`
