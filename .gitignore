@@ -11,36 +11,48 @@ Thumbs.db
 
 # Logs
 *.log
+/logs/
+/log/
 
 # Data
-data/
+/data/
 *.db
 
 # Config with secrets
 backend/config.local.toml
 frontend/.env.local
+/.env
+/.env.*
+!/.env.example
+/.npmrc
 
 # Chrome User Data
 backend/chrome_user_data/
 
-logs
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
 
-build
+# Node / frontend
+/node_modules/
+/.pnpm-store/
 
-dist
+# Build artifacts
+/build/
+/dist/
+/bin/
 
-bin
+# Test artifacts
+/test-results/
+/playwright-report/
 
-official
+/official/
+/test/
+/project_docs/
 
-test
-
-project_docs
-
-browserwing
+/browserwing
 !skills/browserwing/
-browserpilot
-
-RELEASE.md
-
-.npmrc
+/browserpilot
