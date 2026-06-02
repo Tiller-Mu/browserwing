@@ -70,7 +70,7 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 		}
 
 		// 项目管理相关 (Testing Platform)
-		projectHandlers := NewProjectHandlers()
+		projectHandlers := NewProjectHandlers(handler.db, handler.config)
 		projects := api.Group("/projects")
 		{
 			projects.GET("", projectHandlers.ListProjects)
@@ -84,6 +84,7 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			projects.POST("/:id/versions/:vid/pages", projectHandlers.CreatePage)
 			projects.DELETE("/:id/versions/:vid/pages/:pid", projectHandlers.DeletePage)
 			projects.POST("/:id/versions/:vid/pages/:pid/recordings", projectHandlers.SavePageRecording)
+			projects.POST("/:id/versions/:vid/pages/:pid/test-cases/generate", projectHandlers.GenerateTestCases)
 		}
 
 		// 浏览器相关
@@ -95,15 +96,15 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			browserAPI.POST("/open", handler.OpenBrowserPage)
 			browserAPI.POST("/cookies/save", handler.SaveBrowserCookies)
 			browserAPI.POST("/cookies/import", handler.ImportBrowserCookies)
-			browserAPI.POST("/cookies/delete", handler.DeleteCookie)                // 删除单个cookie（使用name+domain+path标识）
-			browserAPI.POST("/cookies/batch/delete", handler.BatchDeleteCookies)    // 批量删除cookies
+			browserAPI.POST("/cookies/delete", handler.DeleteCookie)             // 删除单个cookie（使用name+domain+path标识）
+			browserAPI.POST("/cookies/batch/delete", handler.BatchDeleteCookies) // 批量删除cookies
 
 			// 录制相关
 			browserAPI.POST("/record/start", handler.StartRecording)
 			browserAPI.POST("/record/stop", handler.StopRecording)
 			browserAPI.GET("/record/status", handler.GetRecordingStatus)
 			browserAPI.POST("/record/clear-state", handler.ClearInPageRecordingState)
-			
+
 			// 浏览器实例管理
 			browserAPI.POST("/instances", handler.CreateBrowserInstance)
 			browserAPI.GET("/instances", handler.ListBrowserInstances)
@@ -180,11 +181,11 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 		// 定时任务相关
 		scheduledTasks := api.Group("/scheduled-tasks")
 		{
-			scheduledTasks.GET("", handler.ListScheduledTasks)           // 列出定时任务
-			scheduledTasks.GET("/:id", handler.GetScheduledTask)         // 获取单个定时任务
-			scheduledTasks.POST("", handler.CreateScheduledTask)         // 创建定时任务
-			scheduledTasks.PUT("/:id", handler.UpdateScheduledTask)      // 更新定时任务
-			scheduledTasks.DELETE("/:id", handler.DeleteScheduledTask)   // 删除定时任务
+			scheduledTasks.GET("", handler.ListScheduledTasks)              // 列出定时任务
+			scheduledTasks.GET("/:id", handler.GetScheduledTask)            // 获取单个定时任务
+			scheduledTasks.POST("", handler.CreateScheduledTask)            // 创建定时任务
+			scheduledTasks.PUT("/:id", handler.UpdateScheduledTask)         // 更新定时任务
+			scheduledTasks.DELETE("/:id", handler.DeleteScheduledTask)      // 删除定时任务
 			scheduledTasks.POST("/:id/toggle", handler.ToggleScheduledTask) // 启用/禁用定时任务
 			scheduledTasks.POST("/:id/run", handler.RunScheduledTaskNow)    // 立即执行定时任务
 		}
@@ -287,25 +288,25 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			executorAPI.POST("/resize", handler.ExecutorResize)                   // 调整窗口大小
 
 			// 数据提取和获取
-			executorAPI.POST("/get-text", handler.ExecutorGetText)           // 获取元素文本
-			executorAPI.POST("/get-value", handler.ExecutorGetValue)         // 获取元素值
-			executorAPI.POST("/extract", handler.ExecutorExtract)            // 提取数据
-			executorAPI.GET("/page-info", handler.ExecutorGetPageInfo)       // 获取页面信息
-			executorAPI.POST("/page-info", handler.ExecutorGetPageInfo)      // 支持POST调用
-			executorAPI.GET("/page-content", handler.ExecutorGetPageContent) // 获取页面内容
+			executorAPI.POST("/get-text", handler.ExecutorGetText)            // 获取元素文本
+			executorAPI.POST("/get-value", handler.ExecutorGetValue)          // 获取元素值
+			executorAPI.POST("/extract", handler.ExecutorExtract)             // 提取数据
+			executorAPI.GET("/page-info", handler.ExecutorGetPageInfo)        // 获取页面信息
+			executorAPI.POST("/page-info", handler.ExecutorGetPageInfo)       // 支持POST调用
+			executorAPI.GET("/page-content", handler.ExecutorGetPageContent)  // 获取页面内容
 			executorAPI.POST("/page-content", handler.ExecutorGetPageContent) // 支持POST调用
-			executorAPI.GET("/page-text", handler.ExecutorGetPageText)       // 获取页面文本
-			executorAPI.POST("/page-text", handler.ExecutorGetPageText)      // 支持POST调用
+			executorAPI.GET("/page-text", handler.ExecutorGetPageText)        // 获取页面文本
+			executorAPI.POST("/page-text", handler.ExecutorGetPageText)       // 支持POST调用
 
 			// 可访问性快照和元素查找
-			executorAPI.GET("/snapshot", handler.ExecutorGetAccessibilitySnapshot)       // 获取可访问性快照
-			executorAPI.POST("/snapshot", handler.ExecutorGetAccessibilitySnapshot)      // 支持POST调用（兼容AI Agent）
-			executorAPI.GET("/semantic-tree", handler.ExecutorGetAccessibilitySnapshot)  // 兼容旧路由
-			executorAPI.POST("/semantic-tree", handler.ExecutorGetAccessibilitySnapshot) // 兼容旧路由（支持POST）
-			executorAPI.GET("/clickable-elements", handler.ExecutorGetClickableElements) // 获取可点击元素
+			executorAPI.GET("/snapshot", handler.ExecutorGetAccessibilitySnapshot)        // 获取可访问性快照
+			executorAPI.POST("/snapshot", handler.ExecutorGetAccessibilitySnapshot)       // 支持POST调用（兼容AI Agent）
+			executorAPI.GET("/semantic-tree", handler.ExecutorGetAccessibilitySnapshot)   // 兼容旧路由
+			executorAPI.POST("/semantic-tree", handler.ExecutorGetAccessibilitySnapshot)  // 兼容旧路由（支持POST）
+			executorAPI.GET("/clickable-elements", handler.ExecutorGetClickableElements)  // 获取可点击元素
 			executorAPI.POST("/clickable-elements", handler.ExecutorGetClickableElements) // 支持POST调用
-			executorAPI.GET("/input-elements", handler.ExecutorGetInputElements)         // 获取输入元素
-			executorAPI.POST("/input-elements", handler.ExecutorGetInputElements)        // 支持POST调用
+			executorAPI.GET("/input-elements", handler.ExecutorGetInputElements)          // 获取输入元素
+			executorAPI.POST("/input-elements", handler.ExecutorGetInputElements)         // 支持POST调用
 
 			// 高级功能
 			executorAPI.POST("/screenshot", handler.ExecutorScreenshot) // 截图
@@ -313,28 +314,28 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			executorAPI.POST("/batch", handler.ExecutorBatch)           // 批量执行操作
 
 			// 标签页管理和表单填写
-			executorAPI.POST("/tabs", handler.ExecutorTabs)           // 标签页管理（list, new, switch, close）
+			executorAPI.POST("/tabs", handler.ExecutorTabs)          // 标签页管理（list, new, switch, close）
 			executorAPI.POST("/fill-form", handler.ExecutorFillForm) // 批量填写表单
 
 			// 调试和监控
-			executorAPI.GET("/console-messages", handler.ExecutorConsoleMessages)     // 获取控制台消息
-			executorAPI.POST("/console-messages", handler.ExecutorConsoleMessages)    // 支持POST调用
-			executorAPI.GET("/network-requests", handler.ExecutorNetworkRequests)     // 获取网络请求
-			executorAPI.POST("/network-requests", handler.ExecutorNetworkRequests)    // 支持POST调用
-			executorAPI.POST("/handle-dialog", handler.ExecutorHandleDialog)          // 处理JavaScript对话框
-			executorAPI.POST("/file-upload", handler.ExecutorFileUpload)              // 文件上传
-			executorAPI.POST("/drag", handler.ExecutorDrag)                           // 拖拽元素
-			executorAPI.POST("/close-page", handler.ExecutorClosePage)                // 关闭当前页面
+			executorAPI.GET("/console-messages", handler.ExecutorConsoleMessages)  // 获取控制台消息
+			executorAPI.POST("/console-messages", handler.ExecutorConsoleMessages) // 支持POST调用
+			executorAPI.GET("/network-requests", handler.ExecutorNetworkRequests)  // 获取网络请求
+			executorAPI.POST("/network-requests", handler.ExecutorNetworkRequests) // 支持POST调用
+			executorAPI.POST("/handle-dialog", handler.ExecutorHandleDialog)       // 处理JavaScript对话框
+			executorAPI.POST("/file-upload", handler.ExecutorFileUpload)           // 文件上传
+			executorAPI.POST("/drag", handler.ExecutorDrag)                        // 拖拽元素
+			executorAPI.POST("/close-page", handler.ExecutorClosePage)             // 关闭当前页面
 		}
 
-	// Admin Skill 导出
-	admin := api.Group("/admin")
-	{
-		admin.GET("/export/skill", handler.ExportAdminSkill) // 导出 BrowserWing Admin SKILL.md
-	}
+		// Admin Skill 导出
+		admin := api.Group("/admin")
+		{
+			admin.GET("/export/skill", handler.ExportAdminSkill) // 导出 BrowserWing Admin SKILL.md
+		}
 
-	// AI 探索（自主生成脚本）
-	explore := api.Group("/ai-explore")
+		// AI 探索（自主生成脚本）
+		explore := api.Group("/ai-explore")
 		{
 			explore.POST("/start", handler.StartExploration)
 			explore.GET("/:id/stream", handler.StreamExploration)

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/browserwing/browserwing/config"
 	"github.com/browserwing/browserwing/models"
 	"github.com/browserwing/browserwing/pkg/logger"
 	"github.com/browserwing/browserwing/storage"
@@ -12,11 +13,17 @@ import (
 )
 
 // ProjectHandlers 包含了项目和版本相关的 API 处理器
-type ProjectHandlers struct{}
+type ProjectHandlers struct {
+	boltDB *storage.BoltDB
+	config *config.Config
+}
 
 // NewProjectHandlers 创建处理器实例
-func NewProjectHandlers() *ProjectHandlers {
-	return &ProjectHandlers{}
+func NewProjectHandlers(boltDB *storage.BoltDB, cfg *config.Config) *ProjectHandlers {
+	return &ProjectHandlers{
+		boltDB: boltDB,
+		config: cfg,
+	}
 }
 
 func (h *ProjectHandlers) ListProjects(c *gin.Context) {
@@ -207,7 +214,7 @@ func (h *ProjectHandlers) CloneVersion(c *gin.Context) {
 	// 2. 深度克隆 Pages
 	var pages []models.TestPage
 	tx.Where("version_id = ?", sourceVersion.ID).Find(&pages)
-	
+
 	for _, p := range pages {
 		newPage := models.TestPage{
 			VersionID:   newVersion.ID,
