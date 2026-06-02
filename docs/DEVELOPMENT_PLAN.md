@@ -32,7 +32,7 @@
 | P1 | 打通生成用例链路 | 已完成：页面主流程可以调用 Playbot 生成并保存 TestCase |
 | P2 | 用例管理 | 已完成：用例列表、详情、编辑、删除、状态管理 |
 | P3 | 用例执行 | 已完成：单用例执行、保存结果、展示报告 |
-| P4 | 自然语言修改 | 下一阶段：用户通过自然语言修改 Blueprint，并记录历史 |
+| P4 | 自然语言修改 | 设计草案待审核：用户通过自然语言生成修改建议，确认后应用并记录历史 |
 | P5 | 多用户和权限 | 项目数据归属、API 权限校验、用户隔离 |
 | P6 | 稳定化和发布 | 回归测试、文档、打包、发布检查 |
 
@@ -211,41 +211,41 @@ GET  /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/executions/:
 - 执行 artifact 的长期存储、清理和访问控制仍需稳定化阶段补齐。
 - 完整用户/租户隔离仍属于 P5。
 
-下一步：
+后续衔接：
 
-进入 P4。规划者先编写 P4 自然语言修改详细设计，明确 refine API、修改建议、确认应用、历史记录、失败不覆盖和前端展示契约。
+P3 的执行记录和报告可作为 P4 自然语言修改的可选上下文，但 P4 不自动执行失败修复，也不执行 `ScriptContent`。
 
 ## 七、P4：自然语言修改
 
+当前状态：设计草案待业务开发者和代码审核者 review。
+
+阶段设计：
+
+- `docs/P4_NATURAL_LANGUAGE_REFINEMENT_DESIGN.md`
+
 目标：
 
-用户用自然语言修改用例，Playbot 返回修改后的 Blueprint，用户确认后应用。
+用户用自然语言修改用例，Playbot 返回修改后的 Blueprint 建议，用户查看修改前后差异后再确认应用。
 
 ### 后端任务
 
-新增 refinement API：
+新增 Refinement API：
 
 ```text
 POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refine
 GET  /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements
+GET  /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/:rid
 POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/:rid/apply
+POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/:rid/discard
 ```
 
-请求参数：
+核心规则：
 
-```json
-{
-  "prompt": "增加密码为空的校验",
-  "apply": false
-}
-```
-
-保存内容：
-
-- 用户 prompt。
-- 修改前 Blueprint。
-- 修改后 Blueprint。
-- 是否应用。
+- `refine` 只生成并保存 `proposed` 建议，不覆盖 TestCase。
+- `apply` 必须二次确认建议仍未过期；如果 TestCase Blueprint 已被其他路径修改，返回冲突并保持数据不变。
+- `discard` 只放弃建议，不修改 TestCase。
+- 所有接口继续校验 project/version/page/testcase/refinement 完整层级归属。
+- `LLMRefinement` 需要结构性扩展，保存修改前 Blueprint、修改后 Blueprint、摘要、风险提示、状态和应用时间。
 
 ### Playbot 任务
 
@@ -254,8 +254,9 @@ POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/
 输入：
 
 - 当前 Blueprint。
-- 页面语义快照。
-- 主流程轨迹。
+- 可选页面语义快照。
+- 可选主流程轨迹。
+- 可选执行报告上下文。
 - 用户 prompt。
 
 输出：
@@ -263,6 +264,8 @@ POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/
 - 修改后的 Blueprint。
 - 修改说明。
 - 风险提示。
+
+没有主流程不应阻止 refine；手工创建的 TestCase 也可以自然语言修改。缺少页面上下文时应显式传递 warning，不静默伪造上下文。
 
 ### 前端任务
 
@@ -274,6 +277,9 @@ POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/
 - Blueprint diff。
 - 应用按钮。
 - 放弃按钮。
+- 历史列表。
+
+本地表单存在未保存修改时，不允许直接 refine 或 apply，避免后端根据旧 Blueprint 生成或应用建议。
 
 ### 验收
 
@@ -281,6 +287,7 @@ POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/
 - 未确认前不覆盖原用例。
 - 应用后 TestCase 更新。
 - Refinement 历史可查看。
+- 旧建议在 TestCase 已被修改后不能覆盖新内容。
 
 ## 八、P5：多用户和权限
 
