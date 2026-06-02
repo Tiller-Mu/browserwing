@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	sdkagent "github.com/Ingenimax/agent-sdk-go/pkg/agent"
@@ -20,6 +21,7 @@ import (
 	"github.com/browserwing/browserwing/models"
 	"github.com/browserwing/browserwing/pkg/logger"
 	"github.com/browserwing/browserwing/services/browser"
+	"github.com/browserwing/browserwing/services/testcase_executor"
 	"github.com/browserwing/browserwing/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/go-rod/rod/lib/proto"
@@ -42,11 +44,17 @@ type Handler struct {
 	executor       *executor2.Executor // Executor 实例
 	config         *config.Config
 	llmManager     *llm.Manager
-	mcpServer      MCPHTTPHandler // MCP 服务器（使用 interface{} 避免循环依赖）
-	agentManager   interface{}    // Agent 管理器（用于 LLM 配置更新后的热加载）
-	scheduler      interface{}    // 定时任务调度器
-	explorer       *browser.Explorer  // AI 探索器
+	mcpServer      MCPHTTPHandler    // MCP 服务器（使用 interface{} 避免循环依赖）
+	agentManager   interface{}       // Agent 管理器（用于 LLM 配置更新后的热加载）
+	scheduler      interface{}       // 定时任务调度器
+	explorer       *browser.Explorer // AI 探索器
 	versionInfo    VersionInfo
+	testCaseRunner *testCaseRunnerHolder
+}
+
+type testCaseRunnerHolder struct {
+	mu     sync.RWMutex
+	runner any
 }
 
 type VersionInfo struct {
@@ -61,14 +69,43 @@ func NewHandler(
 	cfg *config.Config,
 	llmMgr *llm.Manager,
 ) *Handler {
+	exec := executor2.NewExecutor(browserMgr)
 	return &Handler{
 		db:             db,
 		browserManager: browserMgr,
-		executor:       executor2.NewExecutor(browserMgr), // 初始化 Executor
+		executor:       exec, // 初始化 Executor
 		config:         cfg,
 		llmManager:     llmMgr,
 		mcpServer:      nil, // 将在主程序中设置
+		testCaseRunner: newTestCaseRunnerHolder(testcase_executor.New(exec)),
 	}
+}
+
+func newTestCaseRunnerHolder(runner any) *testCaseRunnerHolder {
+	return &testCaseRunnerHolder{runner: runner}
+}
+
+func (h *Handler) ensureTestCaseRunnerHolder() *testCaseRunnerHolder {
+	if h.testCaseRunner == nil {
+		h.testCaseRunner = newTestCaseRunnerHolder(testcase_executor.New(h.executor))
+	}
+	return h.testCaseRunner
+}
+
+func (h *Handler) SetTestCaseRunnerForTest(runner any) {
+	h.ensureTestCaseRunnerHolder().set(runner)
+}
+
+func (h *testCaseRunnerHolder) set(runner any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.runner = runner
+}
+
+func (h *testCaseRunnerHolder) get() any {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.runner
 }
 
 func (h *Handler) SetVersionInfo(version, buildTime, goVersion string) {

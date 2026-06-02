@@ -15,15 +15,21 @@ import (
 
 // ProjectHandlers 包含了项目和版本相关的 API 处理器
 type ProjectHandlers struct {
-	boltDB *storage.BoltDB
-	config *config.Config
+	boltDB         *storage.BoltDB
+	config         *config.Config
+	testCaseRunner *testCaseRunnerHolder
 }
 
 // NewProjectHandlers 创建处理器实例
-func NewProjectHandlers(boltDB *storage.BoltDB, cfg *config.Config) *ProjectHandlers {
+func NewProjectHandlers(boltDB *storage.BoltDB, cfg *config.Config, runnerHolder ...*testCaseRunnerHolder) *ProjectHandlers {
+	var holder *testCaseRunnerHolder
+	if len(runnerHolder) > 0 {
+		holder = runnerHolder[0]
+	}
 	return &ProjectHandlers{
-		boltDB: boltDB,
-		config: cfg,
+		boltDB:         boltDB,
+		config:         cfg,
+		testCaseRunner: holder,
 	}
 }
 

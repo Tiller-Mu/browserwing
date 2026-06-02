@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Save, Trash2 } from 'lucide-react';
-import { projectApi, type TestCaseDetail as TestCaseDetailType, type TestCaseStatus } from '../api/project';
+import { AlertCircle, ArrowLeft, CheckCircle2, Clock, PlayCircle, Save, Trash2, XCircle } from 'lucide-react';
+import {
+  projectApi,
+  type TestCaseDetail as TestCaseDetailType,
+  type TestCaseStatus,
+  type TestExecutionDetail,
+  type TestExecutionStatus,
+  type TestExecutionSummary
+} from '../api/project';
 import Toast from '../components/Toast';
 
 const statusLabels: Record<TestCaseStatus, string> = {
@@ -10,13 +17,30 @@ const statusLabels: Record<TestCaseStatus, string> = {
   archived: '归档'
 };
 
+const executionLabels: Record<TestExecutionStatus, string> = {
+  passed: '通过',
+  failed: '失败',
+  error: '异常'
+};
+
+const executionClasses: Record<TestExecutionStatus, string> = {
+  passed: 'text-emerald-700 bg-emerald-50 border-emerald-200 dark:text-emerald-300 dark:bg-emerald-900/20 dark:border-emerald-800',
+  failed: 'text-amber-700 bg-amber-50 border-amber-200 dark:text-amber-300 dark:bg-amber-900/20 dark:border-amber-800',
+  error: 'text-red-700 bg-red-50 border-red-200 dark:text-red-300 dark:bg-red-900/20 dark:border-red-800'
+};
+
 export default function TestCaseDetail() {
   const { projectId, versionId, pageId, testCaseId } = useParams();
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [executing, setExecuting] = useState(false);
   const [testCase, setTestCase] = useState<TestCaseDetailType | null>(null);
+  const [executions, setExecutions] = useState<TestExecutionSummary[]>([]);
+  const [selectedExecution, setSelectedExecution] = useState<TestExecutionDetail | null>(null);
+  const [executionLoading, setExecutionLoading] = useState(false);
+  const [executionError, setExecutionError] = useState('');
   const [form, setForm] = useState({
     title: '',
     description: '',
@@ -38,6 +62,7 @@ export default function TestCaseDetail() {
 
   useEffect(() => {
     loadTestCase();
+    loadExecutions();
   }, [ids]);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -55,6 +80,43 @@ export default function TestCaseDetail() {
       showToast(error.response?.data?.error || '读取测试用例失败', 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadExecutions = async (preferExecutionId?: number) => {
+    if (!ids) return;
+
+    try {
+      setExecutionLoading(true);
+      setExecutionError('');
+      const response = await projectApi.listTestCaseExecutions(ids.projectId, ids.versionId, ids.pageId, ids.testCaseId, 20);
+      const nextExecutions = response.data.executions || [];
+      setExecutions(nextExecutions);
+      const targetId = preferExecutionId || nextExecutions[0]?.id;
+      if (targetId) {
+        await loadExecutionDetail(targetId, false);
+      } else {
+        setSelectedExecution(null);
+      }
+    } catch (error: any) {
+      setExecutionError(error.response?.data?.error || '读取执行记录失败');
+    } finally {
+      setExecutionLoading(false);
+    }
+  };
+
+  const loadExecutionDetail = async (executionId: number, showLoading = true) => {
+    if (!ids) return;
+
+    try {
+      if (showLoading) setExecutionLoading(true);
+      setExecutionError('');
+      const response = await projectApi.getTestCaseExecution(ids.projectId, ids.versionId, ids.pageId, ids.testCaseId, executionId);
+      setSelectedExecution(response.data.execution);
+    } catch (error: any) {
+      setExecutionError(error.response?.data?.error || '读取执行报告失败');
+    } finally {
+      if (showLoading) setExecutionLoading(false);
     }
   };
 
@@ -87,7 +149,7 @@ export default function TestCaseDetail() {
   };
 
   const handleSave = async () => {
-    if (!ids) return;
+    if (!ids || executing) return;
     const title = form.title.trim();
     if (!title) {
       showToast('标题不能为空', 'error');
@@ -121,7 +183,7 @@ export default function TestCaseDetail() {
   };
 
   const handleDelete = async () => {
-    if (!ids || !window.confirm('确定要删除该测试用例吗？不可恢复！')) return;
+    if (!ids || executing || !window.confirm('确定要删除该测试用例吗？不可恢复！')) return;
 
     try {
       await projectApi.deleteTestCase(ids.projectId, ids.versionId, ids.pageId, ids.testCaseId);
@@ -130,6 +192,41 @@ export default function TestCaseDetail() {
     } catch (error: any) {
       showToast(error.response?.data?.error || '删除失败', 'error');
     }
+  };
+
+  const handleRun = async () => {
+    if (!ids || form.status !== 'active') return;
+
+    try {
+      setExecuting(true);
+      setExecutionError('');
+      const response = await projectApi.runTestCase(ids.projectId, ids.versionId, ids.pageId, ids.testCaseId, {
+        stop_on_failure: true,
+        capture_screenshot: true
+      });
+      const execution = response.data.execution;
+      setSelectedExecution(execution);
+      await loadExecutions(execution.id);
+      showToast(`执行完成：${executionLabels[execution.status]}`, execution.status === 'passed' ? 'success' : 'info');
+    } catch (error: any) {
+      const message = error.response?.data?.error || '执行失败';
+      setExecutionError(message);
+      showToast(message, 'error');
+    } finally {
+      setExecuting(false);
+    }
+  };
+
+  const formatDuration = (durationMs?: number) => {
+    if (!durationMs && durationMs !== 0) return '-';
+    if (durationMs < 1000) return `${durationMs} ms`;
+    return `${(durationMs / 1000).toFixed(2)} s`;
+  };
+
+  const executionIcon = (status: TestExecutionStatus) => {
+    if (status === 'passed') return <CheckCircle2 className="w-4 h-4" />;
+    if (status === 'failed') return <AlertCircle className="w-4 h-4" />;
+    return <XCircle className="w-4 h-4" />;
   };
 
   if (loading) {
@@ -175,14 +272,23 @@ export default function TestCaseDetail() {
           </div>
           <div className="flex items-center gap-2">
             <button
+              onClick={handleRun}
+              disabled={executing || saving || form.status !== 'active'}
+              title={form.status === 'active' ? '执行测试用例' : `当前状态为${statusLabels[form.status]}，不能执行`}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <PlayCircle className="w-4 h-4" /> {executing ? '执行中...' : '执行'}
+            </button>
+            <button
               onClick={handleDelete}
-              className="flex items-center gap-2 px-4 py-2 text-red-700 bg-red-50 dark:bg-red-900/30 dark:text-red-300 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors"
+              disabled={executing}
+              className="flex items-center gap-2 px-4 py-2 text-red-700 bg-red-50 dark:bg-red-900/30 dark:text-red-300 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Trash2 className="w-4 h-4" /> 删除
             </button>
             <button
               onClick={handleSave}
-              disabled={saving}
+              disabled={saving || executing}
               className="flex items-center gap-2 px-4 py-2 bg-gray-900 dark:bg-gray-700 text-white rounded-lg hover:bg-gray-800 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
             >
               <Save className="w-4 h-4" /> {saving ? '保存中...' : '保存'}
@@ -222,6 +328,144 @@ export default function TestCaseDetail() {
             rows={3}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900"
           />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6">
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">最近执行报告</h2>
+            </div>
+            {selectedExecution && (
+              <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full border text-sm font-medium ${executionClasses[selectedExecution.status]}`}>
+                {executionIcon(selectedExecution.status)}
+                {executionLabels[selectedExecution.status]}
+              </span>
+            )}
+          </div>
+
+          {executionLoading && !selectedExecution ? (
+            <div className="text-sm text-gray-500 dark:text-gray-400 py-8">读取执行报告中...</div>
+          ) : executionError ? (
+            <div className="text-sm text-red-600 dark:text-red-300 py-4">{executionError}</div>
+          ) : !selectedExecution ? (
+            <div className="text-sm text-gray-500 dark:text-gray-400 py-8">暂无执行记录。</div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+                  <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                    <Clock className="w-3.5 h-3.5" /> 耗时
+                  </div>
+                  <div className="text-base font-semibold text-gray-900 dark:text-gray-100 mt-1">
+                    {formatDuration(selectedExecution.duration_ms)}
+                  </div>
+                </div>
+                <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">失败步骤</div>
+                  <div className="text-base font-semibold text-gray-900 dark:text-gray-100 mt-1">
+                    {selectedExecution.report_data.summary?.failed_step_index ?? '-'}
+                  </div>
+                </div>
+                <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">最终 URL</div>
+                  <div className="text-sm text-gray-900 dark:text-gray-100 mt-1 truncate" title={selectedExecution.report_data.final_url || ''}>
+                    {selectedExecution.report_data.final_url || '-'}
+                  </div>
+                </div>
+              </div>
+
+              {selectedExecution.error_message && (
+                <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-300">
+                  {selectedExecution.error_message}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {(selectedExecution.report_data.steps || []).map((step) => (
+                  <div
+                    key={`${selectedExecution.id}-${step.index}`}
+                    className={`border rounded-lg p-3 ${
+                      step.status === 'passed'
+                        ? 'border-gray-200 dark:border-gray-700'
+                        : step.status === 'failed'
+                          ? 'border-amber-300 bg-amber-50/60 dark:border-amber-800 dark:bg-amber-900/10'
+                          : 'border-red-300 bg-red-50/60 dark:border-red-800 dark:bg-red-900/10'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-gray-100">
+                        <span>#{step.index}</span>
+                        <span>{step.action}</span>
+                        {step.description && <span className="text-gray-500 dark:text-gray-400">{step.description}</span>}
+                      </div>
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs ${executionClasses[step.status]}`}>
+                        {executionIcon(step.status)}
+                        {executionLabels[step.status]}
+                      </span>
+                    </div>
+                    <div className="mt-2 text-xs text-gray-500 dark:text-gray-400 flex flex-wrap gap-x-4 gap-y-1">
+                      <span>目标：{step.target_summary || '-'}</span>
+                      <span>耗时：{formatDuration(step.duration_ms)}</span>
+                    </div>
+                    {step.error && (
+                      <div className="mt-2 text-sm text-red-700 dark:text-red-300">{step.error}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {(selectedExecution.report_data.artifacts?.screenshots || []).length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-sm font-medium text-gray-700 dark:text-gray-300">截图</div>
+                  <div className="flex flex-wrap gap-2">
+                    {(selectedExecution.report_data.artifacts?.screenshots || []).map((path) => (
+                      <a
+                        key={path}
+                        href={path.startsWith('/') ? path : `/${path}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-sm text-indigo-600 dark:text-indigo-300 hover:underline"
+                      >
+                        {path}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">执行历史</h2>
+          <div className="mt-4 space-y-2">
+            {executions.length === 0 ? (
+              <div className="text-sm text-gray-500 dark:text-gray-400">暂无历史。</div>
+            ) : executions.map((execution) => (
+              <button
+                key={execution.id}
+                onClick={() => loadExecutionDetail(execution.id)}
+                className={`w-full text-left border rounded-lg p-3 transition-colors ${
+                  selectedExecution?.id === execution.id
+                    ? 'border-gray-900 dark:border-gray-300'
+                    : 'border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-gray-900 dark:text-gray-100">#{execution.id}</span>
+                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs ${executionClasses[execution.status]}`}>
+                    {executionIcon(execution.status)}
+                    {executionLabels[execution.status]}
+                  </span>
+                </div>
+                <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  {new Date(execution.created_at).toLocaleString()} / {formatDuration(execution.duration_ms)}
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

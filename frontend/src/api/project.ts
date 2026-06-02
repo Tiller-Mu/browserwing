@@ -62,6 +62,12 @@ export const projectApi = {
     client.put<{ test_case: TestCaseDetail }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}`, data),
   deleteTestCase: (projectId: number, versionId: number, pageId: number, testCaseId: number) =>
     client.delete<{ message: string }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}`),
+  runTestCase: (projectId: number, versionId: number, pageId: number, testCaseId: number, data: RunTestCaseRequest) =>
+    client.post<{ execution: TestExecutionDetail }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}/run`, data),
+  listTestCaseExecutions: (projectId: number, versionId: number, pageId: number, testCaseId: number, limit = 20) =>
+    client.get<ListTestCaseExecutionsResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}/executions`, { params: { limit } }),
+  getTestCaseExecution: (projectId: number, versionId: number, pageId: number, testCaseId: number, executionId: number) =>
+    client.get<{ execution: TestExecutionDetail }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}/executions/${executionId}`),
   generateTestCases: (projectId: number, versionId: number, pageId: number, data: GenerateTestCasesRequest) =>
     client.post<GenerateTestCasesResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/generate`, data)
 };
@@ -139,4 +145,66 @@ export interface GenerateTestCasesResponse {
   saved: boolean;
   generated_count: number;
   test_cases: TestCase[];
+}
+
+export type TestExecutionStatus = 'passed' | 'failed' | 'error';
+
+export interface RunTestCaseRequest {
+  browser_instance_id?: string;
+  headless?: boolean;
+  stop_on_failure?: boolean;
+  capture_screenshot?: boolean;
+}
+
+export interface TestExecutionSummary {
+  id: number;
+  test_case_id: number;
+  status: TestExecutionStatus;
+  error_message: string;
+  duration_ms: number;
+  created_at: string;
+}
+
+export interface ExecutionReportStep {
+  index: number;
+  action: string;
+  description?: string;
+  status: TestExecutionStatus;
+  started_at?: string;
+  ended_at?: string;
+  duration_ms?: number;
+  target_summary?: string;
+  error?: string;
+}
+
+export interface ExecutionReportData {
+  schema_version: number;
+  source: 'blueprint';
+  execution_url?: string;
+  initial_navigation?: {
+    mode: 'default' | 'explicit_step';
+    url?: string;
+    step_index: number | null;
+  };
+  duration_ms?: number;
+  summary?: {
+    total_steps: number;
+    passed_steps: number;
+    failed_steps: number;
+    failed_step_index: number | null;
+  };
+  steps?: ExecutionReportStep[];
+  artifacts?: {
+    screenshots?: string[];
+  };
+  final_url?: string;
+}
+
+export interface TestExecutionDetail extends TestExecutionSummary {
+  report_data: ExecutionReportData;
+}
+
+export interface ListTestCaseExecutionsResponse {
+  executions: TestExecutionSummary[];
+  count: number;
 }

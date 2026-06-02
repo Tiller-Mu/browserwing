@@ -70,7 +70,7 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 		}
 
 		// 项目管理相关 (Testing Platform)
-		projectHandlers := NewProjectHandlers(handler.db, handler.config)
+		projectHandlers := NewProjectHandlers(handler.db, handler.config, handler.ensureTestCaseRunnerHolder())
 		projects := api.Group("/projects")
 		{
 			projects.GET("", projectHandlers.ListProjects)
@@ -87,6 +87,9 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			projects.GET("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.ListTestCases)
 			projects.POST("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.CreateTestCase)
 			projects.POST("/:id/versions/:vid/pages/:pid/test-cases/generate", projectHandlers.GenerateTestCases)
+			projects.POST("/:id/versions/:vid/pages/:pid/test-cases/:tcid/run", projectHandlers.RunTestCase)
+			projects.GET("/:id/versions/:vid/pages/:pid/test-cases/:tcid/executions", projectHandlers.ListTestCaseExecutions)
+			projects.GET("/:id/versions/:vid/pages/:pid/test-cases/:tcid/executions/:eid", projectHandlers.GetTestCaseExecution)
 			projects.GET("/:id/versions/:vid/pages/:pid/test-cases/:tcid", projectHandlers.GetTestCase)
 			projects.PUT("/:id/versions/:vid/pages/:pid/test-cases/:tcid", projectHandlers.UpdateTestCase)
 			projects.DELETE("/:id/versions/:vid/pages/:pid/test-cases/:tcid", projectHandlers.DeleteTestCase)
