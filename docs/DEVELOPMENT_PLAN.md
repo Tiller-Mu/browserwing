@@ -30,8 +30,8 @@
 |------|------|----------|
 | P0 | 环境和仓库稳定 | 已完成：Git、pnpm、uv、依赖和忽略规则稳定 |
 | P1 | 打通生成用例链路 | 已完成：页面主流程可以调用 Playbot 生成并保存 TestCase |
-| P2 | 用例管理 | 下一阶段：用例列表、详情、编辑、删除、状态管理 |
-| P3 | 用例执行 | 单用例执行、保存结果、展示报告 |
+| P2 | 用例管理 | 已完成：用例列表、详情、编辑、删除、状态管理 |
+| P3 | 用例执行 | 下一阶段：单用例执行、保存结果、展示报告 |
 | P4 | 自然语言修改 | 用户通过自然语言修改 Blueprint，并记录历史 |
 | P5 | 多用户和权限 | 项目数据归属、API 权限校验、用户隔离 |
 | P6 | 稳定化和发布 | 回归测试、文档、打包、发布检查 |
@@ -97,117 +97,38 @@
 - P1 只完成生成和保存，不提供 TestCase 详情、编辑、删除和执行闭环；这些进入 P2/P3。
 - P1 已做项目、版本、页面层级校验，但完整用户/租户数据隔离仍属于 P5。
 
-下一步：
+后续衔接：
 
-进入 P2。规划者先编写 `docs/P2_TEST_CASE_MANAGEMENT_DESIGN.md`，明确 TestCase CRUD、详情页、编辑保存、删除、状态管理和列表刷新契约。
-
-### 后端任务
-
-1. 新增生成用例 API
-
-建议路由：
-
-```text
-POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/generate
-```
-
-请求参数：
-
-```json
-{
-  "mode": "append",
-  "llm_config_id": "optional",
-  "instruction": "optional"
-}
-```
-
-`mode` 支持：
-
-- `append`：追加新用例。
-- `replace`：清空旧用例后保存新用例。
-- `preview`：只返回结果，不保存。
-
-2. 新增 TestCase 保存逻辑
-
-将 Playbot 返回结果转换为 `models.TestCase`：
-
-- `Title` 对应用例标题。
-- `Description` 对应用例说明。
-- `Blueprint` 保存完整 JSON。
-- `ScriptContent` 先允许为空，后续阶段再生成。
-- `Status` 默认为 `active`。
-
-3. Playbot 调用路径配置化
-
-当前 `backend/services/playbot/service.go` 使用 `exec.CommandContext(ctx, "python", args...)`。需要改成从配置读取 Python 可执行文件路径。
-
-建议配置项：
-
-```text
-PLAYBOT_PYTHON=D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe
-PLAYBOT_ENGINE_DIR=D:\dpProject\browserwing\playbot-engine
-```
-
-4. 输入数据标准化
-
-传给 Playbot 的输入应包含：
-
-- `page_url`：版本 BaseURL + 页面 path。
-- `snapshot`：页面语义快照。
-- `intent_plan`：主流程 ActionTrace。
-- `page_description`：页面描述。
-- `instruction`：用户额外生成要求。
-
-5. 错误处理
-
-- 没有主流程时返回明确错误。
-- Playbot 执行失败时返回 stderr 摘要。
-- LLM 配置缺失时返回明确错误。
-- `preview` 模式不写数据库。
-
-### 前端任务
-
-1. 给“智能生成测试用例”按钮接入 API。
-
-2. 增加生成弹窗：
-
-- 生成模式：追加、覆盖、仅预览。
-- 额外说明输入框。
-- LLM 配置选择。
-
-3. 生成中状态：
-
-- 禁用按钮。
-- 展示进度或 loading。
-- 失败时展示错误。
-
-4. 生成后刷新页面用例列表。
-
-### Playbot 任务
-
-1. 确认 `cli.py` 输出稳定 JSON。
-
-2. 确认生成结果字段和 Go 侧保存逻辑一致。
-
-3. 如果返回字段不稳定，增加兼容转换层。
-
-### 验收
-
-- 有主流程的页面可以生成测试用例。
-- 生成结果保存到数据库。
-- 前端页面显示用例数量增加。
-- 没有主流程时提示用户先录制。
-- Playbot 失败不会破坏已有用例。
+P1 已收尾，后续生成入口和保存规则继续作为 P2/P3 的上游契约。
 
 ## 五、P2：用例管理
+
+当前状态：已完成。
+
+阶段提交：
+
+- `1f3dc23 docs: add p2 test case management design`
+- `f7f1afb test: add P2 test case management contract tests`
+- `55a7547 feat: add P2 test case management`
 
 目标：
 
 用户可以进入用例详情页，查看、编辑、删除测试用例。
 
-### 后端任务
+已交付：
 
-新增 TestCase API：
+- 新增 TestCase 列表、创建、详情、更新、删除 API。
+- 所有 TestCase 管理接口都校验 project、version、page、testcase 完整层级归属。
+- 列表接口返回轻量 summary，不返回大体积 `Blueprint` 和 `ScriptContent`。
+- 详情接口返回可编辑的 TestCase 资产，`Blueprint` 以结构化 JSON 对象返回；腐坏 Blueprint 返回错误，不静默伪造空对象。
+- 手工创建 TestCase 不依赖主流程录制或 Playbot，`status` 默认 `active`。
+- `active` 用例必须有非空 `steps`；`draft` 允许保存不完整草稿。
+- 更新接口支持标题、描述、`Blueprint`、`ScriptContent`、`Status` 的部分更新，并把标题和描述同步归一化到 Blueprint 顶层。
+- 更新失败不污染既有 TestCase，删除只删除目标用例，不影响同页或其他页面用例。
+- 前端新增 TestCase 详情页，支持从页面用例列表进入，编辑 JSON Blueprint、脚本内容、状态，并执行保存和删除。
+- P2 契约记录已沉淀到 `docs/CONTRACT_RECORDS.md`。
+
+阶段 API：
 
 ```text
 GET    /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases
@@ -217,46 +138,21 @@ PUT    /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid
 DELETE /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid
 ```
 
-更新内容：
+阶段验证：
 
-- 标题。
-- 描述。
-- Blueprint。
-- ScriptContent。
-- Status。
+- 后端契约红测覆盖 TestCase 列表摘要、详情读取、手工创建、状态校验、部分更新、失败不变更、删除隔离和层级校验。
+- 前端实现已提供真实详情页和管理入口，没有引入 P3/P4 的假执行、假报告或假自然语言修改入口。
+- 代码审核已完成，P2 已由规划者收尾。
 
-校验要求：
+遗留风险：
 
-- 用例必须属于指定 page。
-- page 必须属于指定 version。
-- version 必须属于指定 project。
-- 后续多用户阶段再补用户归属校验。
+- P2 的 TestCase `status` 只表示资产管理状态，执行结果状态仍留给 P3 的 `TestExecution`。
+- 当前前端 Blueprint 编辑仍以 JSON 文本为主，结构化步骤编辑器可在后续体验优化中补充。
+- 完整用户/租户隔离仍属于 P5；P2 只保证项目、版本、页面、用例层级一致。
 
-### 前端任务
+下一步：
 
-1. 新增用例详情页。
-
-建议路由：
-
-```text
-/projects/:projectId/versions/:versionId/pages/:pageId/test-cases/:testCaseId
-```
-
-2. 页面结构：
-
-- 顶部：标题、状态、返回按钮、保存按钮、执行按钮。
-- 标签页：Blueprint、脚本、执行记录、修改历史。
-- Blueprint 用 JSON 编辑器或结构化步骤列表展示。
-- ScriptContent 用代码编辑器或 textarea 展示。
-
-3. 页面列表中的用例卡片点击进入详情页。
-
-### 验收
-
-- 可以打开用例详情。
-- 可以修改标题、描述、Blueprint、脚本。
-- 保存后刷新仍保留。
-- 删除用例后列表更新。
+进入 P3。规划者先编写 `docs/P3_TEST_CASE_EXECUTION_DESIGN.md`，明确单用例执行、执行记录、结果状态、报告数据、失败分类和前端展示契约。
 
 ## 六、P3：用例执行
 
