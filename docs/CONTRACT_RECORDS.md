@@ -159,3 +159,89 @@ P2 的 TestCase 资产状态只允许 `active`、`draft`、`archived`。`passed`
 
 验证：
 `TestDeleteTestCaseRemovesOnlyTargetAndRequiresHierarchy` 覆盖该契约。
+
+## P3：用例执行
+
+### 执行层级和执行前校验
+
+契约：
+TestCase 执行、执行记录列表和执行记录详情都必须校验 project、version、page、testcase 完整层级归属；执行详情还必须校验 execution 属于当前 TestCase。只有 `active` TestCase 可以执行。层级不匹配、非 active 状态、腐坏 Blueprint、缺少可执行 steps、未知 action、缺少必需字段、超出 timeout 限制等执行前失败，不得调用 runner，也不得创建 TestExecution。
+
+依据：
+来自 `docs/P3_TEST_CASE_EXECUTION_DESIGN.md` 的 P3 执行前校验契约，以及 P1/P2 已确认的层级归属规则。执行记录代表真实运行，执行尚未开始的资产错误不应制造历史记录。
+
+当前/历史问题：
+P3 之前没有 TestCase 执行 API；如果执行接口只按 testcase_id 或 execution_id 操作，会破坏项目/版本/页面隔离。如果把草稿或不可执行 Blueprint 也落成执行记录，会污染报告历史。
+
+验证：
+`TestRunTestCaseRequiresHierarchyBeforeExecutionValidation`、`TestRunTestCaseRejectsNonActiveAndInvalidBlueprintWithoutExecution` 和 `TestRunTestCaseBlueprintSchemaRejectsInvalidStepsWithoutExecution` 覆盖该契约。
+
+### Blueprint 执行事实源
+
+契约：
+P3 首版只解释执行 Blueprint，不直接执行 `ScriptContent`，也不把 `ScriptContent` 当作隐藏 fallback。Blueprint 必须包含非空 steps，并且 step action 只允许 `navigate`、`click`、`fill`、`select`、`wait`、`expect_visible`、`expect_text`。`target_hint` 是 `target` 的兼容别名。`wait.duration_ms` 最大 30000，step `timeout_ms` 最大 60000。
+
+依据：
+来自核心需求中“Blueprint 是事实来源”和 P3 设计中“脚本执行安全边界后置”的决策。`ScriptContent` 可以作为资产保存和展示，但不能在没有沙箱、权限和审计设计时执行。
+
+当前/历史问题：
+如果 Blueprint 不可执行时静默切到脚本，会引入第二套事实源并绕过 P3 红测；如果未知 action 被跳过，会让执行结果看似 passed 但实际漏跑步骤。
+
+验证：
+`TestRunTestCaseRejectsNonActiveAndInvalidBlueprintWithoutExecution` 覆盖 ScriptContent 不作为 fallback；`TestRunTestCaseBlueprintSchemaRejectsInvalidStepsWithoutExecution` 覆盖 action、target、value、duration 和 timeout 校验。
+
+### 导航和定位归一化
+
+契约：
+默认执行 URL 来自 `ProjectVersion.BaseURL` + `TestPage.Path`。如果第一条 step 不是 `navigate`，runner 先执行默认页面 URL 导航，并在 ReportData 中记录 `initial_navigation.mode = "default"`、`step_index = null`。如果第一条 step 是 `navigate`，runner 跳过默认导航，只执行显式 navigate，并记录 `initial_navigation.mode = "explicit_step"`、`step_index = 0`。定位转换中，target 同时提供 `role` 和 `text` 时必须优先使用 `role + text`，缺少 role 时才退回纯 `text`。
+
+依据：
+来自 P3 设计 review 后补充的执行顺序和定位优先级约束。该约束避免双导航，也避免 target 同时有 role/text 时退化成不精确的纯文本定位。
+
+当前/历史问题：
+如果实现先默认导航再执行首步 navigate，会产生双导航；如果纯 text 先于 role+text，会降低定位精度并让 role 约束失效。
+
+验证：
+`TestRunTestCaseBlueprintCompatibilityAndNavigationReport` 覆盖默认导航、显式首步 navigate、`target_hint` 兼容和 role+text 定位优先。
+
+### 执行状态和资产状态分离
+
+契约：
+只要执行已经开始，runner 返回 `passed`、`failed` 或 `error` 都必须保存为 TestExecution，并返回执行报告。断言失败保存 `failed`，运行时或浏览器动作异常保存 `error`，全部步骤通过保存 `passed`。执行结果不得修改 TestCase.Status；TestCase.Status 仍只表示 `active`、`draft`、`archived` 资产状态。
+
+依据：
+来自 P2 状态边界和 P3 执行状态设计。测试资产是否可维护和一次执行是否通过是两类事实，不能共用字段。
+
+当前/历史问题：
+如果执行结果写回 TestCase.Status，会让一次失败覆盖资产管理状态，也会让多次执行历史互相覆盖。
+
+验证：
+`TestRunTestCasePersistsExecutionStatusesAndKeepsTestCaseStatusActive` 覆盖 passed、failed、error 保存和 TestCase.Status 不变。
+
+### 执行报告和历史读取
+
+契约：
+TestExecution.ReportData 是执行报告事实源，保存为 JSON 字符串，详情响应必须解析为 JSON object。报告至少包含 `source = "blueprint"`、`execution_url`、`initial_navigation`、`summary`、`steps`、`final_url`，失败步骤要保留错误摘要。执行记录列表只返回 summary，不返回完整 `report_data`；列表只包含当前 TestCase 的记录，按 `created_at desc, id desc` 排序，默认 20 条，最多 50 条。腐坏 ReportData 读取详情时返回 `500`，不得静默返回空报告。
+
+依据：
+来自 P3 设计中“报告可诊断、列表轻量、详情为报告事实源”的约束，以及 P2 列表/详情边界。
+
+当前/历史问题：
+如果列表泄露完整 report_data，会让扫描接口承担报告详情职责；如果腐坏报告静默兜底，会掩盖执行历史损坏。
+
+验证：
+`TestListTestCaseExecutionsScopesSortsAndOmitsReportData`、`TestGetTestCaseExecutionRequiresHierarchyAndParsesReportData` 和 `TestGetTestCaseExecutionRejectsCorruptReportData` 覆盖该契约。
+
+### 前端执行入口
+
+契约：
+TestCase 详情页提供真实执行入口，只允许 active 用例执行；执行中禁用保存、删除和再次执行；执行完成后刷新执行历史和最近报告。前端展示执行状态、耗时、错误信息、步骤状态、失败步骤和截图链接。页面用例卡片最近执行状态不属于 P3 必交付，不能用 TestCase.Status 伪造执行结果。
+
+依据：
+来自 P3 设计和实现后的前端行为。P3 的前端闭环聚焦 TestCase 详情页，不提前做页面列表 latest_execution summary。
+
+当前/历史问题：
+P2 详情页没有执行入口；如果 P3 在页面卡片上伪造最近执行状态，会混淆资产状态和执行状态。
+
+验证：
+P3 代码审核确认 `frontend/src/pages/TestCaseDetail.tsx` 已接入执行 API、执行历史和报告展示；页面用例卡片 latest_execution 后置。

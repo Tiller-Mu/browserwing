@@ -31,8 +31,8 @@
 | P0 | 环境和仓库稳定 | 已完成：Git、pnpm、uv、依赖和忽略规则稳定 |
 | P1 | 打通生成用例链路 | 已完成：页面主流程可以调用 Playbot 生成并保存 TestCase |
 | P2 | 用例管理 | 已完成：用例列表、详情、编辑、删除、状态管理 |
-| P3 | 用例执行 | 下一阶段：单用例执行、保存结果、展示报告 |
-| P4 | 自然语言修改 | 用户通过自然语言修改 Blueprint，并记录历史 |
+| P3 | 用例执行 | 已完成：单用例执行、保存结果、展示报告 |
+| P4 | 自然语言修改 | 下一阶段：用户通过自然语言修改 Blueprint，并记录历史 |
 | P5 | 多用户和权限 | 项目数据归属、API 权限校验、用户隔离 |
 | P6 | 稳定化和发布 | 回归测试、文档、打包、发布检查 |
 
@@ -150,13 +150,20 @@ DELETE /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid
 - 当前前端 Blueprint 编辑仍以 JSON 文本为主，结构化步骤编辑器可在后续体验优化中补充。
 - 完整用户/租户隔离仍属于 P5；P2 只保证项目、版本、页面、用例层级一致。
 
-下一步：
+后续衔接：
 
-进入 P3。规划者先编写 `docs/P3_TEST_CASE_EXECUTION_DESIGN.md`，明确单用例执行、执行记录、结果状态、报告数据、失败分类和前端展示契约。
+P2 的 TestCase 资产管理契约已经作为 P3 执行输入继续沿用。
 
 ## 六、P3：用例执行
 
-当前状态：设计已提交，待业务开发者 review 设计可行性，再交给用例编写者写契约红测。
+当前状态：已完成。
+
+阶段提交：
+
+- `03afc26 docs: add p3 test case execution design`
+- `9267811 docs: refine p3 execution design review findings`
+- `ee68c89 test: add P3 test case execution contract tests`
+- `430af9c feat: add P3 test case execution`
 
 阶段设计：
 
@@ -166,19 +173,24 @@ DELETE /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid
 
 用户可以执行单个测试用例并查看结果。
 
-### 执行策略
+已交付：
 
-P3 首版只解释执行 Blueprint，不直接执行 `ScriptContent`。`ScriptContent` 继续作为可编辑资产保存和展示，但不能作为隐藏 fallback。
+- 新增 TestCase 执行 API、执行记录列表 API 和执行记录详情 API。
+- 执行前继续校验 project、version、page、testcase 完整层级归属。
+- 只有 `active` TestCase 可以执行；`draft`、`archived` 和不可执行 Blueprint 在执行前拒绝，不创建 TestExecution。
+- P3 首版只解释执行 Blueprint，不直接执行 `ScriptContent`，也不把 `ScriptContent` 当隐藏 fallback。
+- 支持 `navigate`、`click`、`fill`、`select`、`wait`、`expect_visible`、`expect_text` 首版动作。
+- 支持 `target` / `target_hint`，并按 RefID、role+text、recorded selector、CSS、XPath、label、placeholder、text 等定位线索归一化。
+- 明确默认页面导航和首步 `navigate` 的优先关系，并在报告中记录 `initial_navigation`。
+- 执行结果保存为 `TestExecution`，状态只允许 `passed`、`failed`、`error`。
+- `TestCase.Status` 不因执行结果变化，仍只表示资产状态。
+- 执行记录列表按 `created_at desc, id desc` 排序，默认 20 条，最多 50 条，列表不返回完整 `report_data`。
+- 执行记录详情返回 parsed `report_data`，腐坏报告返回错误，不静默伪造空报告。
+- 前端 TestCase 详情页新增执行按钮、执行中状态、执行历史、最近报告、步骤状态、错误信息和截图链接。
+- 页面用例卡片最近执行状态后置，没有在 P3 用 TestCase.Status 伪造执行结果。
+- P3 契约记录已沉淀到 `docs/CONTRACT_RECORDS.md`。
 
-原因：
-
-- Blueprint 是 TestCase 的结构化事实来源。
-- 直接运行脚本涉及沙箱、权限、文件访问和审计边界，需后续单独设计。
-- Blueprint 无法执行时应返回明确错误，而不是悄悄切到另一套事实源。
-
-### 后端任务
-
-新增执行 API：
+阶段 API：
 
 ```text
 POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/run
@@ -186,59 +198,22 @@ GET  /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/executions
 GET  /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/executions/:eid
 ```
 
-执行记录保存：
+阶段验证：
 
-- `Status`：passed、failed、error。
-- `ErrorMessage`。
-- `DurationMs`。
-- `ReportData`：JSON 字符串，包含步骤日志、截图路径、最终页面 URL。
+- 后端契约红测覆盖执行层级校验、非 active 拒绝、不可执行 Blueprint 拒绝、无 ScriptContent fallback、执行状态保存、TestCase.Status 不变、默认/显式导航、role+text 定位优先、执行列表隔离排序、详情解析和腐坏报告错误。
+- P3 实现和代码审核已完成。
 
-### 执行引擎任务
+遗留风险：
 
-1. 定义 Blueprint step 到 BrowserWing action 的转换。
+- P3 只完成单用例执行；页面/版本批量执行、队列、取消、并发控制仍未实现。
+- 直接执行 `ScriptContent` 仍属于安全敏感能力，后续必须单独设计沙箱、权限、文件访问和审计边界。
+- Blueprint schema 目前是首版执行最小集，后续 Playbot 生成输出还需要继续收敛。
+- 执行 artifact 的长期存储、清理和访问控制仍需稳定化阶段补齐。
+- 完整用户/租户隔离仍属于 P5。
 
-2. 支持基础动作：
+下一步：
 
-- navigate。
-- click。
-- fill。
-- select。
-- wait。
-- expect_visible。
-- expect_text。
-
-3. 支持定位策略：
-
-- recorded_selector。
-- role + text。
-- placeholder。
-- label。
-- CSS selector。
-- XPath。
-
-4. 执行失败时保存失败步骤。
-
-### 前端任务
-
-1. 用例详情页增加执行按钮。
-
-2. 执行后展示：
-
-- 状态。
-- 耗时。
-- 错误信息。
-- 步骤日志。
-- 截图链接。
-
-3. 页面用例卡片最近执行状态后置到 P3 之后；P3 不用 TestCase.Status 伪造执行结果。
-
-### 验收
-
-- 单个用例可执行。
-- 执行成功保存 passed。
-- 断言失败保存 failed。
-- 执行异常保存 error。
-- 前端能看到最近执行结果。
+进入 P4。规划者先编写 P4 自然语言修改详细设计，明确 refine API、修改建议、确认应用、历史记录、失败不覆盖和前端展示契约。
 
 ## 七、P4：自然语言修改
 
