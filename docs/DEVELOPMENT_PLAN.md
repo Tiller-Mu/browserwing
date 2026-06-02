@@ -156,19 +156,25 @@ DELETE /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid
 
 ## 六、P3：用例执行
 
+当前状态：设计已提交，待业务开发者 review 设计可行性，再交给用例编写者写契约红测。
+
+阶段设计：
+
+- `docs/P3_TEST_CASE_EXECUTION_DESIGN.md`
+
 目标：
 
 用户可以执行单个测试用例并查看结果。
 
 ### 执行策略
 
-优先级：
+P3 首版只解释执行 Blueprint，不直接执行 `ScriptContent`。`ScriptContent` 继续作为可编辑资产保存和展示，但不能作为隐藏 fallback。
 
-1. 如果 `ScriptContent` 存在，执行脚本。
-2. 如果只有 `Blueprint`，通过执行引擎解释 Blueprint。
-3. 如果两者都无法执行，返回明确错误。
+原因：
 
-首版建议先实现 Blueprint 解释执行，避免直接运行任意 Python 脚本带来的安全和环境复杂度。
+- Blueprint 是 TestCase 的结构化事实来源。
+- 直接运行脚本涉及沙箱、权限、文件访问和审计边界，需后续单独设计。
+- Blueprint 无法执行时应返回明确错误，而不是悄悄切到另一套事实源。
 
 ### 后端任务
 
@@ -177,7 +183,7 @@ DELETE /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid
 ```text
 POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/run
 GET  /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/executions
-GET  /api/v1/test-executions/:executionId
+GET  /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/executions/:eid
 ```
 
 执行记录保存：
