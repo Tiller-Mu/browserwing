@@ -128,9 +128,10 @@ P3 默认顺序执行，不并发。
 
 规则：
 
-- 执行开始时先导航到页面执行 URL。
-- 执行 URL 由 `ProjectVersion.BaseURL` + `TestPage.Path` 得到。
-- 如果 Blueprint 第一条 step 是 `navigate`，则以该 step 的 URL 为准，并在报告中记录这是显式导航。
+- 默认执行 URL 由 `ProjectVersion.BaseURL` + `TestPage.Path` 得到。
+- 如果 Blueprint 第一条 step 不是 `navigate`，runner 先执行一次默认页面 URL 导航，再从 step 0 开始执行；这次默认导航属于执行准备动作，不计入 Blueprint steps，但要写入报告。
+- 如果 Blueprint 第一条 step 是 `navigate`，runner 必须跳过默认页面 URL 导航，由该 step 完成初始导航；该 step 仍按 index 0 计入步骤报告。
+- 首步 `navigate` 的 URL 优先级高于默认执行 URL。未传 `url` 时才回退到默认执行 URL。
 - 默认 `stop_on_failure = true`，遇到第一条失败或异常步骤后停止后续步骤。
 - 请求可以传 `stop_on_failure = false`，但 P3 前端默认使用 true；红测以默认 true 为主。
 - 每一步都记录开始时间、结束时间、耗时、状态和错误摘要。
@@ -146,6 +147,11 @@ P3 默认顺序执行，不并发。
   "schema_version": 1,
   "source": "blueprint",
   "execution_url": "https://example.com/login",
+  "initial_navigation": {
+    "mode": "default",
+    "url": "https://example.com/login",
+    "step_index": null
+  },
   "browser_instance_id": "",
   "started_at": "2026-06-02T00:00:00Z",
   "ended_at": "2026-06-02T00:00:03Z",
@@ -195,6 +201,7 @@ P3 默认顺序执行，不并发。
 - 不保存 LLM API Key、认证 token 或浏览器 Cookie。
 - 输入值默认不写入报告；如确需展示，只记录长度或脱敏摘要。
 - 截图路径可保存，截图文件由现有 executor screenshot 能力或后续 artifact helper 生成。
+- `initial_navigation.mode` 只能是 `default` 或 `explicit_step`；`default` 的 `step_index` 为 null，`explicit_step` 的 `step_index` 为 0。
 
 ### 7. 最近执行结果
 
@@ -366,14 +373,15 @@ P3 首版支持以下 action：
 5. `xpath`
 6. `label`
 7. `placeholder`
-8. `text`
-9. `role + text`
+8. `role + text`
+9. `text`
 
 规则：
 
 - `xpath` 可加 `xpath:` 前缀，也可直接传 XPath。
 - `selector` 和 `css` 可加 `css:` 前缀，也可直接传 CSS selector。
 - 当前 executor 已支持 RefID、CSS、XPath、文本、aria-label、placeholder 等定位方式；P3 不应另写第二套浏览器查找逻辑。
+- 当 target 同时提供 `role` 和 `text` 时，必须优先使用二者组合；只有缺少 role 或组合定位不可构造时，才退回纯 `text`。
 - 如果 target 同时给出多个线索，报告中只记录被采用的 `target_summary`，不泄露完整 selector 列表。
 
 ## 六、API 契约
@@ -663,9 +671,10 @@ getTestCaseExecution(projectId, versionId, pageId, testCaseId, executionId)
 
 ### 页面管理页
 
-P3 可选补充页面用例卡片最近执行状态：
+页面用例卡片最近执行状态后置到 P3 之后，不作为 P3 必交付：
 
-- 如果后端列表暂不返回最近执行结果，前端不伪造。
+- P3 前端只要求在 TestCase 详情页展示最近执行结果和执行历史。
+- 如果后端列表暂不返回最近执行结果，页面管理页不展示 latest_execution，也不伪造。
 - 不应把 TestCase.Status 当作最近执行状态。
 - 后续如要展示，应由后端 summary 明确返回 `latest_execution`。
 
@@ -691,6 +700,9 @@ P3 可选补充页面用例卡片最近执行状态：
    - 期望：缺少 steps、空 steps、未知 action、缺少必需 target/value 返回 `400`。
    - 期望：校验失败不创建 TestExecution。
    - 期望：`target_hint` 可以作为 `target` 兼容字段。
+   - 期望：第一条 step 不是 `navigate` 时，runner 先执行默认页面 URL 导航，并在 ReportData 中记录 `initial_navigation.mode = "default"`。
+   - 期望：第一条 step 是 `navigate` 时，runner 跳过默认页面 URL 导航，只执行该显式 navigate，并在 ReportData 中记录 `initial_navigation.mode = "explicit_step"`。
+   - 期望：target 同时提供 `role` 和 `text` 时，定位转换优先选择 `role + text`，缺少 role 时才退回纯 `text`。
 4. 执行成功保存 passed。
    - 使用 fake runner 返回 passed。
    - 期望：接口返回 `200`。

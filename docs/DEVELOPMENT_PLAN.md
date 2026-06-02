@@ -230,7 +230,7 @@ GET  /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/executions/:
 - 步骤日志。
 - 截图链接。
 
-3. 用例列表展示最近执行状态。
+3. 页面用例卡片最近执行状态后置到 P3 之后；P3 不用 TestCase.Status 伪造执行结果。
 
 ### 验收
 
