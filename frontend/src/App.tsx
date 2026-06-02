@@ -2,7 +2,6 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { ThemeProvider } from './contexts/ThemeContext'
 import Layout from './components/Layout'
-import Dashboard from './pages/Dashboard'
 import BrowserManager from './pages/BrowserManager'
 import BrowserInstanceManager from './pages/BrowserInstanceManager'
 import CookieManager from './pages/CookieManager'
@@ -17,6 +16,7 @@ import Settings from './pages/Settings'
 import ScheduledTaskManager from './pages/ScheduledTaskManager'
 import ProjectManager from './pages/ProjectManager'
 import TestPageManager from './pages/TestPageManager'
+import TestCaseDetail from './pages/TestCaseDetail'
 import { checkAuth } from './api/client'
 
 // 受保护的路由组件
@@ -81,6 +81,7 @@ function App() {
           <Route path="cookies" element={<CookieManager />} />
           <Route path="projects" element={<ProjectManager />} />
           <Route path="projects/:projectId/versions/:versionId/pages" element={<TestPageManager />} />
+          <Route path="projects/:projectId/versions/:versionId/pages/:pageId/test-cases/:testCaseId" element={<TestCaseDetail />} />
           <Route path="scripts" element={<ScriptManager />} />
           <Route path="scheduled-tasks" element={<ScheduledTaskManager />} />
           <Route path="llm" element={<LLMManager />} />
@@ -96,4 +97,3 @@ function App() {
 }
 
 export default App
-

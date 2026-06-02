@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Bot, ExternalLink, FileText, ListChecks, Plus, Trash2, Video } from 'lucide-react';
+import { ArrowLeft, Bot, ExternalLink, FilePlus, FileText, ListChecks, Plus, Trash2, Video } from 'lucide-react';
 import { api, type LLMConfig } from '../api/client';
-import { projectApi, type TestCase, type TestPage } from '../api/project';
+import { projectApi, type TestCase, type TestCaseStatus, type TestPage } from '../api/project';
 import { Modal } from '../components/Modal';
 import Toast from '../components/Toast';
 
@@ -12,6 +12,18 @@ const generateModeLabels: Record<GenerateMode, string> = {
   append: '追加',
   replace: '覆盖',
   preview: '预览'
+};
+
+const testCaseStatusLabels: Record<TestCaseStatus, string> = {
+  active: '启用',
+  draft: '草稿',
+  archived: '归档'
+};
+
+const testCaseStatusClass: Record<TestCaseStatus, string> = {
+  active: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+  draft: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+  archived: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
 };
 
 export default function TestPageManager() {
@@ -25,8 +37,11 @@ export default function TestPageManager() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCreateCaseModal, setShowCreateCaseModal] = useState(false);
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [newPage, setNewPage] = useState({ name: '', path: '', description: '' });
+  const [createCasePage, setCreateCasePage] = useState<TestPage | null>(null);
+  const [newCase, setNewCase] = useState({ title: '', description: '' });
   const [generateTargetPage, setGenerateTargetPage] = useState<TestPage | null>(null);
   const [generateForm, setGenerateForm] = useState({
     mode: 'append' as GenerateMode,
@@ -101,6 +116,41 @@ export default function TestPageManager() {
     navigate(`/browser?projectId=${projectId}&versionId=${versionId}&pageId=${pageId}`);
   };
 
+  const navigateToTestCase = (pageId: number, testCaseId: number) => {
+    navigate(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}`);
+  };
+
+  const openCreateTestCaseModal = (page: TestPage) => {
+    setCreateCasePage(page);
+    setNewCase({ title: '', description: '' });
+    setShowCreateCaseModal(true);
+  };
+
+  const handleCreateTestCase = async () => {
+    if (!createCasePage || !projectId || !versionId) return;
+
+    const title = newCase.title.trim();
+    if (!title) return;
+
+    try {
+      const response = await projectApi.createTestCase(Number(projectId), Number(versionId), createCasePage.id, {
+        title,
+        description: newCase.description,
+        status: 'draft',
+        blueprint: {
+          title,
+          description: newCase.description,
+          steps: []
+        },
+        script_content: ''
+      });
+      setShowCreateCaseModal(false);
+      navigateToTestCase(createCasePage.id, response.data.test_case.id);
+    } catch (error: any) {
+      showToast(error.response?.data?.error || '创建测试用例失败', 'error');
+    }
+  };
+
   const openGenerateModal = (page: TestPage) => {
     setGenerateTargetPage(page);
     setGenerateForm({ mode: 'append', llm_config_id: '', instruction: '' });
@@ -140,12 +190,21 @@ export default function TestPageManager() {
     }
   };
 
-  const renderGenerateButton = (page: TestPage, label = '智能生成测试用例') => (
+  const renderGenerateButton = (page: TestPage, label = '智能生成') => (
     <button
       onClick={() => openGenerateModal(page)}
-      className="px-4 py-2 bg-gray-900 dark:bg-gray-700 text-white rounded-lg shadow-sm hover:bg-gray-800 dark:hover:bg-gray-600 transition-colors flex items-center gap-2 text-sm"
+      className="px-3 py-2 bg-gray-900 dark:bg-gray-700 text-white rounded-lg shadow-sm hover:bg-gray-800 dark:hover:bg-gray-600 transition-colors flex items-center gap-2 text-sm"
     >
       <Bot className="w-4 h-4" /> {label}
+    </button>
+  );
+
+  const renderCreateCaseButton = (page: TestPage) => (
+    <button
+      onClick={() => openCreateTestCaseModal(page)}
+      className="px-3 py-2 bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors flex items-center gap-2 text-sm"
+    >
+      <FilePlus className="w-4 h-4" /> 新建用例
     </button>
   );
 
@@ -190,7 +249,8 @@ export default function TestPageManager() {
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           {pages.map((page) => {
             const hasMainScript = Boolean(page.scripts && page.scripts.length > 0);
-            const casesCount = page.test_cases ? page.test_cases.length : 0;
+            const testCases = page.test_cases || [];
+            const casesCount = testCases.length;
 
             return (
               <div key={page.id} className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
@@ -230,84 +290,83 @@ export default function TestPageManager() {
                 </div>
 
                 <div className="p-5 flex-1 flex flex-col bg-white dark:bg-gray-800">
-                  {!hasMainScript ? (
-                    <div className="flex-1 flex flex-col items-center justify-center text-center py-6 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-lg">
-                      <div className="w-12 h-12 bg-gray-50 dark:bg-gray-900 rounded-full flex items-center justify-center mb-3">
-                        <Video className="w-6 h-6 text-gray-400" />
-                      </div>
-                      <h4 className="text-gray-900 dark:text-gray-100 font-medium mb-1">缺少主流程录制</h4>
-                      <p className="text-sm text-gray-500 dark:text-gray-400 mb-4 max-w-xs">
-                        大模型需要一条您亲自操作的正向主流程录制轨迹，作为基准来推导异常用例。
-                      </p>
+                  <div className={`mb-5 rounded-lg p-4 border ${
+                    hasMainScript
+                      ? 'bg-indigo-50/50 dark:bg-indigo-900/10 border-indigo-100 dark:border-indigo-900/30'
+                      : 'bg-gray-50 dark:bg-gray-900/50 border-gray-200 dark:border-gray-700'
+                  }`}>
+                    <div className="flex items-center justify-between mb-2 gap-3">
+                      <h4 className={`font-medium text-sm flex items-center gap-2 ${
+                        hasMainScript ? 'text-indigo-900 dark:text-indigo-300' : 'text-gray-900 dark:text-gray-100'
+                      }`}>
+                        <Video className="w-4 h-4 text-indigo-500" />
+                        {hasMainScript ? '主流程录制轨迹' : '缺少主流程录制'}
+                      </h4>
                       <button
                         onClick={() => navigateToRecord(page.id)}
-                        className="px-4 py-2 bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400 rounded-lg font-medium hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors flex items-center gap-2"
+                        className="text-xs text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 font-medium flex items-center gap-1 transition-colors"
                       >
-                        <Video className="w-4 h-4" /> 立即去录制
+                        <Video className="w-3.5 h-3.5" /> {hasMainScript ? '重新录制' : '立即录制'}
                       </button>
                     </div>
+                    {hasMainScript ? (
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="text-gray-600 dark:text-gray-400 min-w-0">
+                          已绑定脚本: <span className="font-semibold text-gray-900 dark:text-gray-100">{page.scripts?.[0]?.name || '未命名脚本'}</span>
+                        </span>
+                        <span className="text-gray-500 dark:text-gray-500 text-xs shrink-0">
+                          {page.scripts?.[0]?.updated_at ? new Date(page.scripts[0].updated_at).toLocaleString() : ''}
+                        </span>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        手工维护用例不要求主流程；智能生成前需要先录制一条正向主流程。
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 mb-4">
+                    <h4 className="font-medium text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                      <ListChecks className="w-4 h-4 text-indigo-500" /> 测试用例 ({casesCount})
+                    </h4>
+                    <div className="flex items-center gap-2">
+                      {renderCreateCaseButton(page)}
+                      {hasMainScript && renderGenerateButton(page)}
+                    </div>
+                  </div>
+
+                  {casesCount === 0 ? (
+                    <div className="flex-1 bg-gray-50 dark:bg-gray-900/50 rounded-lg p-6 flex flex-col items-center justify-center text-center">
+                      <FilePlus className="w-10 h-10 text-gray-400 mb-3" />
+                      <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                        暂无测试用例。
+                      </p>
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        {renderCreateCaseButton(page)}
+                        {hasMainScript && renderGenerateButton(page, '智能生成测试用例')}
+                      </div>
+                    </div>
                   ) : (
-                    <div className="flex-1 flex flex-col">
-                      <div className="mb-6 bg-indigo-50/50 dark:bg-indigo-900/10 rounded-lg p-4 border border-indigo-100 dark:border-indigo-900/30">
-                        <div className="flex items-center justify-between mb-2 gap-3">
-                          <h4 className="font-medium text-sm text-indigo-900 dark:text-indigo-300 flex items-center gap-2">
-                            <Video className="w-4 h-4 text-indigo-500" /> 主流程录制轨迹
-                          </h4>
-                          <button
-                            onClick={() => navigateToRecord(page.id)}
-                            className="text-xs text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 font-medium flex items-center gap-1 transition-colors"
-                          >
-                            <Video className="w-3.5 h-3.5" /> 重新录制
-                          </button>
-                        </div>
-                        <div className="flex items-center justify-between gap-3 text-sm">
-                          <span className="text-gray-600 dark:text-gray-400 min-w-0">
-                            已绑定脚本: <span className="font-semibold text-gray-900 dark:text-gray-100">{page.scripts?.[0]?.name || '未命名脚本'}</span>
-                          </span>
-                          <span className="text-gray-500 dark:text-gray-500 text-xs shrink-0">
-                            {page.scripts?.[0]?.updated_at ? new Date(page.scripts[0].updated_at).toLocaleString() : ''}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between gap-3 mb-4">
-                        <h4 className="font-medium text-gray-900 dark:text-gray-100 flex items-center gap-2">
-                          <ListChecks className="w-4 h-4 text-indigo-500" /> 衍生测试用例 ({casesCount})
-                        </h4>
-                        {casesCount > 0 && renderGenerateButton(page, '智能生成')}
-                      </div>
-
-                      {casesCount === 0 ? (
-                        <div className="flex-1 bg-gray-50 dark:bg-gray-900/50 rounded-lg p-6 flex flex-col items-center justify-center text-center">
-                          <Bot className="w-10 h-10 text-gray-400 mb-3" />
-                          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                            主流程已就绪，可以召唤 AI 进行用例裂变了！
+                    <div className="space-y-3 flex-1 overflow-y-auto max-h-[300px] pr-2">
+                      {testCases.map((tc) => (
+                        <button
+                          key={tc.id}
+                          onClick={() => navigateToTestCase(page.id, tc.id)}
+                          className="w-full text-left p-3 border border-gray-100 dark:border-gray-700 rounded-lg hover:border-indigo-200 dark:hover:border-indigo-800 transition-colors group"
+                        >
+                          <div className="flex justify-between items-start gap-3 mb-1">
+                            <span className="font-medium text-sm text-gray-900 dark:text-gray-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                              {tc.title}
+                            </span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${testCaseStatusClass[tc.status] || testCaseStatusClass.draft}`}>
+                              {testCaseStatusLabels[tc.status] || tc.status}
+                            </span>
+                          </div>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-1">
+                            {tc.description}
                           </p>
-                          {renderGenerateButton(page)}
-                        </div>
-                      ) : (
-                        <div className="space-y-3 flex-1 overflow-y-auto max-h-[300px] pr-2">
-                          {page.test_cases?.map((tc: any) => (
-                            <div key={tc.id} className="p-3 border border-gray-100 dark:border-gray-700 rounded-lg hover:border-indigo-200 dark:hover:border-indigo-800 transition-colors cursor-pointer group">
-                              <div className="flex justify-between items-start gap-3 mb-1">
-                                <span className="font-medium text-sm text-gray-900 dark:text-gray-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                                  {tc.title}
-                                </span>
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
-                                  tc.status === 'passed' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
-                                  tc.status === 'failed' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' :
-                                  'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
-                                }`}>
-                                  {tc.status || '未执行'}
-                                </span>
-                              </div>
-                              <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-1">
-                                {tc.description}
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                        </button>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -372,6 +431,51 @@ export default function TestPageManager() {
               className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
             >
               保存
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showCreateCaseModal}
+        onClose={() => setShowCreateCaseModal(false)}
+        title={`新建测试用例${createCasePage ? `：${createCasePage.name}` : ''}`}
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              用例标题 <span className="text-red-500">*</span>
+            </label>
+            <input
+              value={newCase.title}
+              onChange={(e) => setNewCase({ ...newCase, title: e.target.value })}
+              placeholder="例如：密码为空时提示必填"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">业务描述</label>
+            <textarea
+              value={newCase.description}
+              onChange={(e) => setNewCase({ ...newCase, description: e.target.value })}
+              rows={3}
+              placeholder="描述这个用例验证的业务场景"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900"
+            />
+          </div>
+          <div className="flex justify-end gap-3 mt-6 pt-4 border-t dark:border-gray-700">
+            <button
+              onClick={() => setShowCreateCaseModal(false)}
+              className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              onClick={handleCreateTestCase}
+              disabled={!newCase.title.trim()}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+            >
+              创建草稿
             </button>
           </div>
         </div>

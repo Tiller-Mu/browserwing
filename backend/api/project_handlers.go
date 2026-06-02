@@ -10,6 +10,7 @@ import (
 	"github.com/browserwing/browserwing/pkg/logger"
 	"github.com/browserwing/browserwing/storage"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // ProjectHandlers 包含了项目和版本相关的 API 处理器
@@ -274,7 +275,9 @@ func (h *ProjectHandlers) ListPages(c *gin.Context) {
 
 	var pages []models.TestPage
 	// 预加载关联的 Scripts 和 TestCases 以便前端展示统计信息
-	if err := storage.DB.Preload("Scripts").Preload("TestCases").Where("version_id = ?", versionID).Order("created_at desc").Find(&pages).Error; err != nil {
+	if err := storage.DB.Preload("Scripts").Preload("TestCases", func(db *gorm.DB) *gorm.DB {
+		return db.Select("id", "page_id", "title", "description", "status", "created_at", "updated_at").Order("updated_at desc, id desc")
+	}).Where("version_id = ?", versionID).Order("created_at desc").Find(&pages).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

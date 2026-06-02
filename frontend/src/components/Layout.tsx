@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
-import { Chrome, FileCode, Brain, Languages, MessageSquare, Sun, Moon, Settings, LogOut, Clock, Folder } from 'lucide-react'
+import { Languages, Sun, Moon, Settings, LogOut, Clock, Folder } from 'lucide-react'
 import { useLanguage, LANGUAGES } from '../i18n'
 import { useState, useRef, useEffect } from 'react'
 import { useTheme } from '../contexts/ThemeContext'

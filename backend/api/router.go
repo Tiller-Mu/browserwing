@@ -84,7 +84,12 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			projects.POST("/:id/versions/:vid/pages", projectHandlers.CreatePage)
 			projects.DELETE("/:id/versions/:vid/pages/:pid", projectHandlers.DeletePage)
 			projects.POST("/:id/versions/:vid/pages/:pid/recordings", projectHandlers.SavePageRecording)
+			projects.GET("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.ListTestCases)
+			projects.POST("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.CreateTestCase)
 			projects.POST("/:id/versions/:vid/pages/:pid/test-cases/generate", projectHandlers.GenerateTestCases)
+			projects.GET("/:id/versions/:vid/pages/:pid/test-cases/:tcid", projectHandlers.GetTestCase)
+			projects.PUT("/:id/versions/:vid/pages/:pid/test-cases/:tcid", projectHandlers.UpdateTestCase)
+			projects.DELETE("/:id/versions/:vid/pages/:pid/test-cases/:tcid", projectHandlers.DeleteTestCase)
 		}
 
 		// 浏览器相关
