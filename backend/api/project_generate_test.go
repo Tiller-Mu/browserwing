@@ -271,6 +271,7 @@ type testCaseSnapshot struct {
 type generateContractEnv struct {
 	db         *gorm.DB
 	router     *gin.Engine
+	handler    *Handler
 	tmpDir     string
 	callsFile  string
 	stdoutFile string
@@ -331,6 +332,7 @@ func newGenerateContractEnv(t *testing.T) *generateContractEnv {
 	env := &generateContractEnv{
 		db:         db,
 		router:     SetupRouter(handler, nil, nil, false, false),
+		handler:    handler,
 		tmpDir:     tmpDir,
 		callsFile:  filepath.Join(tmpDir, "playbot-calls.txt"),
 		stdoutFile: filepath.Join(tmpDir, "playbot-stdout.json"),
