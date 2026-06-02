@@ -32,8 +32,8 @@
 | P1 | 打通生成用例链路 | 已完成：页面主流程可以调用 Playbot 生成并保存 TestCase |
 | P2 | 用例管理 | 已完成：用例列表、详情、编辑、删除、状态管理 |
 | P3 | 用例执行 | 已完成：单用例执行、保存结果、展示报告 |
-| P4 | 自然语言修改 | 设计草案待审核：用户通过自然语言生成修改建议，确认后应用并记录历史 |
-| P5 | 多用户和权限 | 项目数据归属、API 权限校验、用户隔离 |
+| P4 | 自然语言修改 | 已完成：自然语言生成修改建议，确认后应用并记录历史 |
+| P5 | 多用户和权限 | 下一阶段：项目数据归属、API 权限校验、用户隔离 |
 | P6 | 稳定化和发布 | 回归测试、文档、打包、发布检查 |
 
 ## 三、P0：环境和仓库稳定
@@ -217,7 +217,13 @@ P3 的执行记录和报告可作为 P4 自然语言修改的可选上下文，�
 
 ## 七、P4：自然语言修改
 
-当前状态：设计草案待业务开发者和代码审核者 review。
+当前状态：已完成。
+
+阶段提交：
+
+- `72334be docs: add p4 refinement design`
+- `29047e7 test: add P4 refinement contract tests`
+- `64d10de feat: add P4 test case refinement`
 
 阶段设计：
 
@@ -227,9 +233,25 @@ P3 的执行记录和报告可作为 P4 自然语言修改的可选上下文，�
 
 用户用自然语言修改用例，Playbot 返回修改后的 Blueprint 建议，用户查看修改前后差异后再确认应用。
 
-### 后端任务
+已交付：
 
-新增 Refinement API：
+- 新增 TestCase Refinement API，支持生成建议、列表、详情、应用和放弃。
+- `refine` 只生成 `proposed` 修改建议，不覆盖 TestCase。
+- `LLMRefinement` 已扩展，保存用户 prompt、修改前 Blueprint、修改后 Blueprint、摘要、风险提示、状态和应用时间。
+- 所有 Refinement API 都校验 project、version、page、testcase、refinement 完整层级归属。
+- 显式传入 execution 上下文时，执行记录必须属于当前 TestCase；腐坏执行报告会拒绝 refine。
+- 没有主流程录制不阻止自然语言修改；缺少或腐坏页面上下文会作为 warning 传给 Playbot，不静默伪造上下文。
+- Playbot refine 输出必须是合法 JSON，包含合法 `refined_blueprint`、非空 summary 和风险提示字段；非法输出不创建 Refinement，也不修改 TestCase。
+- `apply` 只允许应用 `proposed` 建议，并通过修改前 Blueprint 快照防止旧建议覆盖新内容。
+- `apply` 成功后更新 TestCase 标题、描述和 Blueprint；`ScriptContent` 和 `Status` 保持不变。
+- `description` 允许同步为空字符串，支持自然语言清空描述。
+- `discard` 只标记建议为 `discarded`，不修改 TestCase。
+- Playbot CLI 新增 `--mode refine`，Go service 复用既有 Python/engine 路径解析、LLM 配置读取和 API Key 脱敏。
+- 前端 TestCase 详情页新增自然语言修改面板，支持 prompt、可选执行报告上下文、建议详情、修改前后对比、应用、放弃和历史列表。
+- 前端在本地表单存在未保存修改时阻止 refine/apply，避免后端基于旧 Blueprint 生成或应用建议。
+- P4 契约记录已沉淀到 `docs/CONTRACT_RECORDS.md`。
+
+阶段 API：
 
 ```text
 POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refine
@@ -239,55 +261,23 @@ POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/
 POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/:rid/discard
 ```
 
-核心规则：
+阶段验证：
 
-- `refine` 只生成并保存 `proposed` 建议，不覆盖 TestCase。
-- `apply` 必须二次确认建议仍未过期；如果 TestCase Blueprint 已被其他路径修改，返回冲突并保持数据不变。
-- `discard` 只放弃建议，不修改 TestCase。
-- 所有接口继续校验 project/version/page/testcase/refinement 完整层级归属。
-- `LLMRefinement` 需要结构性扩展，保存修改前 Blueprint、修改后 Blueprint、摘要、风险提示、状态和应用时间。
+- 后端契约红测覆盖层级和 prompt 校验、refine 不覆盖原用例、无主流程仍可 refine、execution 上下文归属、Playbot 非法输出拒绝、历史列表摘要、详情解析、应用成功、清空描述、stale apply、非 proposed 拒绝、discard、事务保护和 LLM 配置复用。
+- 验证命令已通过：`go test ./...`、`pnpm run type-check`、`pnpm run build`、`D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; print('ok')"`。
+- 代码审核已通过，P4 已由规划者收尾。
 
-### Playbot 任务
+遗留风险：
 
-新增 refine 能力：
+- P4 只完成单用例自然语言修改；批量失败自修复、一键从失败报告生成修复建议和队列化修复后置。
+- `ScriptContent` 仍不参与自然语言修改和执行，不提供脚本自动更新。
+- P4 只记录自然语言修改历史，手工编辑审计仍未补齐。
+- 页面语义快照质量仍影响 Playbot 修改质量，缺少主流程时只能通过 warning 告知风险。
+- 完整用户/租户隔离仍属于 P5。
 
-输入：
+下一步：
 
-- 当前 Blueprint。
-- 可选页面语义快照。
-- 可选主流程轨迹。
-- 可选执行报告上下文。
-- 用户 prompt。
-
-输出：
-
-- 修改后的 Blueprint。
-- 修改说明。
-- 风险提示。
-
-没有主流程不应阻止 refine；手工创建的 TestCase 也可以自然语言修改。缺少页面上下文时应显式传递 warning，不静默伪造上下文。
-
-### 前端任务
-
-1. 用例详情页增加自然语言修改面板。
-
-2. 展示修改建议：
-
-- 修改摘要。
-- Blueprint diff。
-- 应用按钮。
-- 放弃按钮。
-- 历史列表。
-
-本地表单存在未保存修改时，不允许直接 refine 或 apply，避免后端根据旧 Blueprint 生成或应用建议。
-
-### 验收
-
-- 用户输入自然语言后能得到修改建议。
-- 未确认前不覆盖原用例。
-- 应用后 TestCase 更新。
-- Refinement 历史可查看。
-- 旧建议在 TestCase 已被修改后不能覆盖新内容。
+进入 P5。规划者先编写 P5 多用户和权限详细设计，明确项目归属、成员角色、API 权限校验、越权红测和前端权限展示口径。
 
 ## 八、P5：多用户和权限
 

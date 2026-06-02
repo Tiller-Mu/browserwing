@@ -245,3 +245,89 @@ P2 详情页没有执行入口；如果 P3 在页面卡片上伪造最近执行�
 
 验证：
 P3 代码审核确认 `frontend/src/pages/TestCaseDetail.tsx` 已接入执行 API、执行历史和报告展示；页面用例卡片 latest_execution 后置。
+
+## P4：自然语言修改
+
+### Refinement 层级和输入边界
+
+契约：
+TestCase Refinement 的生成、列表、详情、应用和放弃接口都必须校验 project、version、page、testcase、refinement 完整层级归属。`refine` 请求的 prompt 必须非空；显式传入 execution 上下文时，execution 必须属于当前 TestCase，且 ReportData 必须是合法 JSON。层级错配、prompt 为空或 execution 上下文不合法时不得调用 Playbot，也不得创建 LLMRefinement。
+
+依据：
+来自 `docs/P4_NATURAL_LANGUAGE_REFINEMENT_DESIGN.md` 的 P4 层级归属、prompt 和 execution 上下文契约。P4 管理的是核心测试资产的修改建议，必须继承 P1-P3 的结构隔离规则。
+
+当前/历史问题：
+P4 之前没有自然语言修改 API；如果只凭 `tcid`、`rid` 或 `execution_id` 操作，会允许跨页面、跨用例读取或应用修改建议，造成测试资产污染。
+
+验证：
+`TestRefineTestCaseRequiresHierarchyAndPrompt`、`TestRefineTestCaseAllowsMissingMainFlowAndRequiresOwnedExecutionContext`、`TestListTestCaseRefinementsScopesSortsAndOmitsBlueprints` 和 `TestGetTestCaseRefinementRequiresHierarchyAndParsesBlueprints` 覆盖该契约。
+
+### 建议生成不覆盖原用例
+
+契约：
+`refine` 只调用 Playbot 生成修改建议，并保存为 `Status = proposed` 的 LLMRefinement。它必须保存用户 prompt、修改前 Blueprint、修改后 Blueprint、summary 和 risk_notes，但不得修改 TestCase 的 Title、Description、Blueprint、ScriptContent 或 Status。
+
+依据：
+来自核心需求中“用户可以选择应用或放弃”和 P4 设计中“修改建议和应用必须分离”的要求。LLM 输出不能直接覆盖核心测试资产。
+
+当前/历史问题：
+如果自然语言修改接口一步覆盖 TestCase，用户无法比较修改前后 Blueprint，也无法阻止错误 LLM 输出破坏既有用例。
+
+验证：
+`TestRefineTestCaseCreatesProposedSuggestionWithoutMutatingTestCase` 覆盖生成建议不修改 TestCase；前端实现中 `refine` 成功后只展示建议，不写入编辑表单。
+
+### Playbot refine 输出和上下文
+
+契约：
+P4 调用 Playbot refine 时，至少传入当前 Blueprint、页面 URL、页面描述和用户 prompt；主流程录制和页面快照是可选上下文。没有 PageScript 不阻止 refine，但必须显式传 `context_warnings`，不得伪造空主流程。Playbot stdout 必须是合法 JSON，并包含合法 `refined_blueprint`、非空 summary、risk_notes 和 error 字段。非法 JSON、`error` 非空、缺少 refined_blueprint、summary 为空、active 用例 refined Blueprint 缺少非空 steps 或 title/description 不符合规则时，不创建 LLMRefinement，也不修改 TestCase。
+
+依据：
+来自 `docs/P4_NATURAL_LANGUAGE_REFINEMENT_DESIGN.md` 的 Playbot 输入输出契约，以及 P1 已确认的 LLM 配置和 Playbot stdout/stderr 边界。
+
+当前/历史问题：
+如果缺少主流程时直接拒绝 refine，会让手工创建用例无法自然语言维护；如果后端接受非法 LLM 输出，会把不可应用或不可执行的修改建议固化到历史里。
+
+验证：
+`TestRefineTestCaseAllowsMissingMainFlowAndRequiresOwnedExecutionContext` 覆盖无主流程 warning 和 execution report 传递；`TestRefineTestCaseRejectsInvalidPlaybotOutputWithoutSaving` 覆盖非法 Playbot 输出拒绝保存。
+
+### Refinement 历史列表和详情
+
+契约：
+Refinement 列表只返回当前 TestCase 下的轻量摘要，按 `created_at desc, id desc` 排序，不返回完整 OriginalBlueprint 和 RefinedBlueprint。Refinement 详情返回 parsed `original_blueprint` 和 `refined_blueprint`；腐坏 Blueprint 详情读取返回错误，不静默伪造空对象。
+
+依据：
+来自 P4 设计中“列表用于扫描、详情用于比较”的边界，也延续 P2/P3 对列表和详情事实源的分离方式。
+
+当前/历史问题：
+如果列表泄露完整 Blueprint，会让扫描接口承担详情职责；如果腐坏 Blueprint 被静默兜底，会掩盖修改历史损坏并影响后续应用判断。
+
+验证：
+`TestListTestCaseRefinementsScopesSortsAndOmitsBlueprints` 覆盖列表隔离、排序和摘要字段；`TestGetTestCaseRefinementRequiresHierarchyAndParsesBlueprints` 覆盖详情解析、层级和腐坏数据错误。
+
+### 应用、过期防护和放弃
+
+契约：
+只有 `proposed` Refinement 可以应用或放弃。应用时必须比较当前 TestCase Blueprint 与 LLMRefinement.OriginalBlueprint 的规范化 JSON；如果不等价，返回 `409` 并保持 TestCase 和 Refinement 不变。应用成功只更新 TestCase 的 Title、Description 和 Blueprint，保留 ScriptContent 和 Status，并把 Refinement 标记为 `applied`、写入 AppliedAt。`description` 可以被同步为空字符串。放弃只把 Refinement 标记为 `discarded`，不修改 TestCase；applied 或 discarded 不能再次应用。
+
+依据：
+来自 P4 设计中“用户确认应用”“旧建议不能覆盖新内容”和 P2/P3 已确认的 TestCase 状态与 ScriptContent 边界。自然语言修改只作用于 Blueprint 事实源，不引入脚本 fallback。
+
+当前/历史问题：
+如果旧建议能在 TestCase 已被手工编辑后继续应用，会覆盖用户后续保存的新 Blueprint；如果 apply 失败后部分写入，会造成 TestCase 与 Refinement 状态不一致。
+
+验证：
+`TestApplyProposedRefinementUpdatesCaseAndMarksApplied`、`TestApplyRefinementAllowsEmptyDescription`、`TestApplyRefinementRejectsStaleOrNonProposedWithoutMutating`、`TestDiscardRefinementDoesNotMutateCaseAndBlocksApply` 和 `TestApplyRefinementValidationFailureKeepsTransactionAtomic` 覆盖应用、清空描述、过期冲突、非 proposed 拒绝、放弃和事务保护。
+
+### LLM 配置和前端入口
+
+契约：
+P4 refine 必须复用既有 BoltDB LLM 配置读取链路；默认配置和指定配置都必须是启用且字段完整的配置。缺失、禁用或字段不完整时返回明确错误，不调用 Playbot，并且响应和日志不得泄露 API Key。前端 TestCase 详情页提供真实自然语言修改入口；有未保存本地编辑时必须阻止 refine 和 apply，避免后端基于旧 Blueprint 生成或应用建议。
+
+依据：
+来自 P1 已确认的 LLM 配置事实源和 P4 前端设计。P4 不新增第二套 LLM 配置，也不允许前端绕过 apply API 直接用 P2 更新接口写入 refined Blueprint。
+
+当前/历史问题：
+如果 P4 另建 LLM 配置来源，会产生密钥管理和模型选择分裂；如果前端在本地未保存状态下发起 refine/apply，会让用户以为修改基于当前屏幕内容，实际基于后端旧 Blueprint。
+
+验证：
+`TestRefineTestCaseReusesExistingLLMConfigSelection` 覆盖 LLM 配置复用和密钥不泄露；P4 代码审核确认 `frontend/src/pages/TestCaseDetail.tsx` 已接入自然语言修改、历史展示、应用/放弃和未保存编辑拦截。
