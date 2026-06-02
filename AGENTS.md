@@ -9,6 +9,7 @@
 - `docs/CORE_REQUIREMENTS.md`：产品主线、核心业务对象和业务边界。
 - `docs/DEVELOPMENT_PLAN.md`：阶段拆分、交付顺序和当前开发重点。
 - `docs/CONTRACT_WORKFLOW.md`：契约红测、业务修复、代码审核和契约记录细则。
+- `docs/CONTRACT_RECORDS.md`：已确认并沉淀的阶段业务契约记录。
 - `docs/TESTING.md`：现有测试入口和人工验收说明。
 
 ## 项目主线

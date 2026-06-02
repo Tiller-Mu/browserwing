@@ -28,9 +28,9 @@
 
 | 阶段 | 目标 | 交付结果 |
 |------|------|----------|
-| P0 | 环境和仓库稳定 | Git、pnpm、uv、依赖和忽略规则稳定 |
-| P1 | 打通生成用例链路 | 页面主流程可以调用 Playbot 生成并保存 TestCase |
-| P2 | 用例管理 | 用例列表、详情、编辑、删除、状态管理 |
+| P0 | 环境和仓库稳定 | 已完成：Git、pnpm、uv、依赖和忽略规则稳定 |
+| P1 | 打通生成用例链路 | 已完成：页面主流程可以调用 Playbot 生成并保存 TestCase |
+| P2 | 用例管理 | 下一阶段：用例列表、详情、编辑、删除、状态管理 |
 | P3 | 用例执行 | 单用例执行、保存结果、展示报告 |
 | P4 | 自然语言修改 | 用户通过自然语言修改 Blueprint，并记录历史 |
 | P5 | 多用户和权限 | 项目数据归属、API 权限校验、用户隔离 |
@@ -61,9 +61,45 @@
 
 ## 四、P1：生成用例链路
 
+当前状态：已完成。
+
+阶段提交：
+
+- `b734ea6 docs: add p1 test case generation design`
+- `f186921 test: add P1 test case generation contracts`
+- `f4db0ab feat: implement P1 test case generation`
+
 目标：
 
 用户在业务页面上点击“智能生成测试用例”，系统读取该页面主流程录制和语义快照，调用 Playbot，保存生成的 TestCase。
+
+已交付：
+
+- 新增生成接口 `POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/generate`。
+- 支持 `append`、`replace`、`preview` 三种生成模式。
+- 生成前校验 project/version/page 层级归属。
+- 没有主流程、录制 JSON 非法、LLM 配置缺失、Playbot 失败或输出非法时返回明确错误。
+- Playbot 成功后将结构化 Blueprint 保存为 `TestCase`，P1 阶段 `ScriptContent` 允许为空。
+- `preview` 不写数据库，`append` 追加，`replace` 通过事务覆盖。
+- Playbot Python 路径和 engine 目录通过配置或环境变量解析，不再硬编码 `python`。
+- 前端“智能生成测试用例”按钮已接入生成弹窗，支持模式选择、LLM 配置选择、额外说明、loading、错误提示和结果刷新。
+- P1 契约记录已沉淀到 `docs/CONTRACT_RECORDS.md`。
+
+阶段验证：
+
+- 后端契约红测覆盖：无主流程拒绝生成、preview 不落库、append 追加、replace 覆盖和失败回滚、Playbot 失败不破坏旧用例、层级不匹配拒绝、非法 Playbot 输出拒绝保存。
+- Playbot service 单元测试覆盖显式无效 `PLAYBOT_ENGINE_DIR` 不应静默回退。
+- 代码审核已完成，P1 可以进入规划者收尾状态。
+
+遗留风险：
+
+- 当前录制页保存的 `dom_snapshot` 仍可能是弱快照，生成质量更多依赖 ActionTrace；高质量语义快照增强后续单独处理。
+- P1 只完成生成和保存，不提供 TestCase 详情、编辑、删除和执行闭环；这些进入 P2/P3。
+- P1 已做项目、版本、页面层级校验，但完整用户/租户数据隔离仍属于 P5。
+
+下一步：
+
+进入 P2。规划者先编写 `docs/P2_TEST_CASE_MANAGEMENT_DESIGN.md`，明确 TestCase CRUD、详情页、编辑保存、删除、状态管理和列表刷新契约。
 
 ### 后端任务
 
