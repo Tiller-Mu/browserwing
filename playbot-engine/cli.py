@@ -3,13 +3,23 @@ import asyncio
 import json
 import os
 import sys
+from typing import Any, Dict, Optional
 
 # 将当前目录加入 PYTHONPATH，以便导入 app.xxx
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from pydantic import BaseModel, Field
+
 from app.core.config import settings
 from app.agents import TestCaseAgent, AgentConfig, TestCaseInput
 from app.services.llm_service import llm_chat_stream, get_langchain_chat_model
+
+
+class RefineOutput(BaseModel):
+    refined_blueprint: Dict[str, Any] = Field(..., description="修改后的 TestCase Blueprint JSON object")
+    summary: str = Field(..., description="本次修改摘要")
+    risk_notes: str = Field(default="", description="需要用户确认的风险提示")
+    error: Optional[str] = Field(default=None, description="失败原因，成功时为空")
 
 async def streaming_llm_caller(messages):
     buffer = []
@@ -51,12 +61,46 @@ async def structured_wrapper(messages, target_schema):
 async def log_callback(level: str, message: str):
     print(f"[{level.upper()}] {message}", file=sys.stderr, flush=True)
 
+
+async def refine_blueprint(job_data: Dict[str, Any]) -> Dict[str, Any]:
+    current_blueprint = job_data.get("current_blueprint") or {}
+    user_prompt = job_data.get("user_prompt") or ""
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是 Web 测试用例 Blueprint 修改助手。只基于用户要求修改 current_blueprint，"
+                "保持输出为可维护的 JSON object，不生成脚本，不改变用例状态。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "page_url": job_data.get("page_url"),
+                    "page_description": job_data.get("page_description"),
+                    "current_blueprint": current_blueprint,
+                    "user_prompt": user_prompt,
+                    "snapshot": job_data.get("snapshot"),
+                    "intent_plan": job_data.get("intent_plan"),
+                    "execution_report": job_data.get("execution_report"),
+                    "context_warnings": job_data.get("context_warnings") or [],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        },
+    ]
+    result = await structured_wrapper(messages, RefineOutput)
+    return result.model_dump()
+
 async def main():
     parser = argparse.ArgumentParser(description="Playbot Engine CLI")
     parser.add_argument("--input", required=True, help="Path to input JSON file containing intent_plan and snapshot")
     parser.add_argument("--llm-endpoint", default="https://api.deepseek.com/v1", help="LLM API Endpoint")
     parser.add_argument("--llm-api-key", required=True, help="LLM API Key")
     parser.add_argument("--llm-model", default="deepseek-coder", help="LLM Model name")
+    parser.add_argument("--mode", choices=["generate", "refine"], default="generate", help="CLI mode")
     
     args = parser.parse_args()
 
@@ -67,6 +111,11 @@ async def main():
 
     with open(args.input, "r", encoding="utf-8") as f:
         job_data = json.load(f)
+
+    if args.mode == "refine":
+        result = await refine_blueprint(job_data)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
 
     # Browserwing 将页面快照放在 "snapshot"，轨迹放在 "intent_plan"
     page_url = job_data.get("page_url", "http://localhost")

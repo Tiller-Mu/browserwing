@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { AlertCircle, ArrowLeft, CheckCircle2, Clock, PlayCircle, Save, Trash2, XCircle } from 'lucide-react';
+import { AlertCircle, ArrowLeft, CheckCircle2, Clock, PlayCircle, Save, Sparkles, Trash2, XCircle } from 'lucide-react';
 import {
   projectApi,
+  type TestCaseRefinementDetail,
+  type TestCaseRefinementStatus,
+  type TestCaseRefinementSummary,
   type TestCaseDetail as TestCaseDetailType,
   type TestCaseStatus,
   type TestExecutionDetail,
@@ -29,6 +32,18 @@ const executionClasses: Record<TestExecutionStatus, string> = {
   error: 'text-red-700 bg-red-50 border-red-200 dark:text-red-300 dark:bg-red-900/20 dark:border-red-800'
 };
 
+const refinementLabels: Record<TestCaseRefinementStatus, string> = {
+  proposed: '待应用',
+  applied: '已应用',
+  discarded: '已放弃'
+};
+
+const refinementClasses: Record<TestCaseRefinementStatus, string> = {
+  proposed: 'text-indigo-700 bg-indigo-50 border-indigo-200 dark:text-indigo-300 dark:bg-indigo-900/20 dark:border-indigo-800',
+  applied: 'text-emerald-700 bg-emerald-50 border-emerald-200 dark:text-emerald-300 dark:bg-emerald-900/20 dark:border-emerald-800',
+  discarded: 'text-gray-700 bg-gray-50 border-gray-200 dark:text-gray-300 dark:bg-gray-900/20 dark:border-gray-700'
+};
+
 export default function TestCaseDetail() {
   const { projectId, versionId, pageId, testCaseId } = useParams();
   const navigate = useNavigate();
@@ -41,6 +56,13 @@ export default function TestCaseDetail() {
   const [selectedExecution, setSelectedExecution] = useState<TestExecutionDetail | null>(null);
   const [executionLoading, setExecutionLoading] = useState(false);
   const [executionError, setExecutionError] = useState('');
+  const [refinePrompt, setRefinePrompt] = useState('');
+  const [useExecutionContext, setUseExecutionContext] = useState(false);
+  const [refining, setRefining] = useState(false);
+  const [refinementBusy, setRefinementBusy] = useState(false);
+  const [refinements, setRefinements] = useState<TestCaseRefinementSummary[]>([]);
+  const [selectedRefinement, setSelectedRefinement] = useState<TestCaseRefinementDetail | null>(null);
+  const [refinementError, setRefinementError] = useState('');
   const [form, setForm] = useState({
     title: '',
     description: '',
@@ -63,6 +85,7 @@ export default function TestCaseDetail() {
   useEffect(() => {
     loadTestCase();
     loadExecutions();
+    loadRefinements();
   }, [ids]);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -120,6 +143,37 @@ export default function TestCaseDetail() {
     }
   };
 
+  const loadRefinements = async (preferRefinementId?: number) => {
+    if (!ids) return;
+
+    try {
+      setRefinementError('');
+      const response = await projectApi.listTestCaseRefinements(ids.projectId, ids.versionId, ids.pageId, ids.testCaseId);
+      const nextRefinements = response.data.refinements || [];
+      setRefinements(nextRefinements);
+      const target = preferRefinementId || nextRefinements.find((item) => item.status === 'proposed')?.id || nextRefinements[0]?.id;
+      if (target) {
+        await loadRefinementDetail(target);
+      } else {
+        setSelectedRefinement(null);
+      }
+    } catch (error: any) {
+      setRefinementError(error.response?.data?.error || '读取修改历史失败');
+    }
+  };
+
+  const loadRefinementDetail = async (refinementId: number) => {
+    if (!ids) return;
+
+    try {
+      setRefinementError('');
+      const response = await projectApi.getTestCaseRefinement(ids.projectId, ids.versionId, ids.pageId, ids.testCaseId, refinementId);
+      setSelectedRefinement(response.data.refinement);
+    } catch (error: any) {
+      setRefinementError(error.response?.data?.error || '读取修改建议失败');
+    }
+  };
+
   const applyServerTestCase = (next: TestCaseDetailType) => {
     setTestCase(next);
     setForm({
@@ -129,6 +183,23 @@ export default function TestCaseDetail() {
       blueprintText: JSON.stringify(next.blueprint, null, 2),
       script_content: next.script_content || ''
     });
+  };
+
+  const hasUnsavedChanges = () => {
+    if (!testCase) return false;
+    return (
+      form.title !== testCase.title ||
+      form.description !== (testCase.description || '') ||
+      form.status !== testCase.status ||
+      form.script_content !== (testCase.script_content || '') ||
+      form.blueprintText !== JSON.stringify(testCase.blueprint, null, 2)
+    );
+  };
+
+  const blockWhenUnsaved = () => {
+    if (!hasUnsavedChanges()) return false;
+    showToast('请先保存当前编辑内容', 'error');
+    return true;
   };
 
   const parseBlueprint = () => {
@@ -217,6 +288,83 @@ export default function TestCaseDetail() {
     }
   };
 
+  const handleRefine = async () => {
+    if (!ids || !refinePrompt.trim()) {
+      showToast('请输入修改要求', 'error');
+      return;
+    }
+    if (blockWhenUnsaved()) return;
+
+    try {
+      setRefining(true);
+      setRefinementError('');
+      const response = await projectApi.refineTestCase(ids.projectId, ids.versionId, ids.pageId, ids.testCaseId, {
+        prompt: refinePrompt.trim(),
+        execution_id: useExecutionContext ? selectedExecution?.id : undefined
+      });
+      const refinement = response.data.refinement;
+      setSelectedRefinement(refinement);
+      await loadRefinements(refinement.id);
+      showToast('修改建议已生成', 'success');
+    } catch (error: any) {
+      const message = error.response?.data?.error || '生成修改建议失败';
+      setRefinementError(message);
+      showToast(message, 'error');
+    } finally {
+      setRefining(false);
+    }
+  };
+
+  const handleApplyRefinement = async () => {
+    if (!ids || !selectedRefinement || selectedRefinement.status !== 'proposed') return;
+    if (blockWhenUnsaved()) return;
+
+    try {
+      setRefinementBusy(true);
+      setRefinementError('');
+      const response = await projectApi.applyTestCaseRefinement(
+        ids.projectId,
+        ids.versionId,
+        ids.pageId,
+        ids.testCaseId,
+        selectedRefinement.id
+      );
+      applyServerTestCase(response.data.test_case);
+      await loadRefinements(selectedRefinement.id);
+      showToast('修改建议已应用', 'success');
+    } catch (error: any) {
+      const message = error.response?.data?.error || '应用修改建议失败';
+      setRefinementError(message);
+      showToast(message, 'error');
+    } finally {
+      setRefinementBusy(false);
+    }
+  };
+
+  const handleDiscardRefinement = async () => {
+    if (!ids || !selectedRefinement || selectedRefinement.status !== 'proposed') return;
+
+    try {
+      setRefinementBusy(true);
+      setRefinementError('');
+      await projectApi.discardTestCaseRefinement(
+        ids.projectId,
+        ids.versionId,
+        ids.pageId,
+        ids.testCaseId,
+        selectedRefinement.id
+      );
+      await loadRefinements(selectedRefinement.id);
+      showToast('修改建议已放弃', 'success');
+    } catch (error: any) {
+      const message = error.response?.data?.error || '放弃修改建议失败';
+      setRefinementError(message);
+      showToast(message, 'error');
+    } finally {
+      setRefinementBusy(false);
+    }
+  };
+
   const formatDuration = (durationMs?: number) => {
     if (!durationMs && durationMs !== 0) return '-';
     if (durationMs < 1000) return `${durationMs} ms`;
@@ -273,7 +421,7 @@ export default function TestCaseDetail() {
           <div className="flex items-center gap-2">
             <button
               onClick={handleRun}
-              disabled={executing || saving || form.status !== 'active'}
+              disabled={executing || saving || refining || refinementBusy || form.status !== 'active'}
               title={form.status === 'active' ? '执行测试用例' : `当前状态为${statusLabels[form.status]}，不能执行`}
               className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -281,14 +429,14 @@ export default function TestCaseDetail() {
             </button>
             <button
               onClick={handleDelete}
-              disabled={executing}
+              disabled={executing || refining || refinementBusy}
               className="flex items-center gap-2 px-4 py-2 text-red-700 bg-red-50 dark:bg-red-900/30 dark:text-red-300 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Trash2 className="w-4 h-4" /> 删除
             </button>
             <button
               onClick={handleSave}
-              disabled={saving || executing}
+              disabled={saving || executing || refining || refinementBusy}
               className="flex items-center gap-2 px-4 py-2 bg-gray-900 dark:bg-gray-700 text-white rounded-lg hover:bg-gray-800 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
             >
               <Save className="w-4 h-4" /> {saving ? '保存中...' : '保存'}
@@ -328,6 +476,132 @@ export default function TestCaseDetail() {
             rows={3}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900"
           />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6">
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">自然语言修改</h2>
+            {selectedRefinement && (
+              <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full border text-sm font-medium ${refinementClasses[selectedRefinement.status]}`}>
+                {refinementLabels[selectedRefinement.status]}
+              </span>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <textarea
+              value={refinePrompt}
+              onChange={(e) => setRefinePrompt(e.target.value)}
+              rows={3}
+              placeholder="例如：增加密码为空时的错误提示校验"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900"
+            />
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+                <input
+                  type="checkbox"
+                  checked={useExecutionContext}
+                  disabled={!selectedExecution}
+                  onChange={(e) => setUseExecutionContext(e.target.checked)}
+                  className="rounded border-gray-300 text-gray-900 focus:ring-gray-900"
+                />
+                引用当前执行报告
+              </label>
+              <button
+                onClick={handleRefine}
+                disabled={refining || refinementBusy || executing || saving || !refinePrompt.trim()}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Sparkles className="w-4 h-4" /> {refining ? '生成中...' : '生成建议'}
+              </button>
+            </div>
+          </div>
+
+          {refinementError && (
+            <div className="text-sm text-red-600 dark:text-red-300">{refinementError}</div>
+          )}
+
+          {!selectedRefinement ? (
+            <div className="text-sm text-gray-500 dark:text-gray-400 py-4">暂无修改建议。</div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">摘要</div>
+                  <div className="text-sm text-gray-900 dark:text-gray-100 mt-1">{selectedRefinement.summary || '-'}</div>
+                </div>
+                <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">风险提示</div>
+                  <div className="text-sm text-gray-900 dark:text-gray-100 mt-1">{selectedRefinement.risk_notes || '-'}</div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div>
+                  <div className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">修改前</div>
+                  <pre className="min-h-[220px] max-h-[360px] overflow-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 text-xs text-gray-800 dark:text-gray-100">
+                    {JSON.stringify(selectedRefinement.original_blueprint, null, 2)}
+                  </pre>
+                </div>
+                <div>
+                  <div className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">修改后</div>
+                  <pre className="min-h-[220px] max-h-[360px] overflow-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 text-xs text-gray-800 dark:text-gray-100">
+                    {JSON.stringify(selectedRefinement.refined_blueprint, null, 2)}
+                  </pre>
+                </div>
+              </div>
+
+              {selectedRefinement.status === 'proposed' && (
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={handleDiscardRefinement}
+                    disabled={refinementBusy || refining || executing || saving}
+                    className="px-4 py-2 text-gray-700 bg-gray-100 dark:bg-gray-700 dark:text-gray-100 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+                  >
+                    放弃
+                  </button>
+                  <button
+                    onClick={handleApplyRefinement}
+                    disabled={refinementBusy || refining || executing || saving}
+                    className="px-4 py-2 bg-gray-900 dark:bg-gray-700 text-white rounded-lg hover:bg-gray-800 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+                  >
+                    {refinementBusy ? '处理中...' : '应用'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">修改历史</h2>
+          <div className="mt-4 space-y-2">
+            {refinements.length === 0 ? (
+              <div className="text-sm text-gray-500 dark:text-gray-400">暂无历史。</div>
+            ) : refinements.map((refinement) => (
+              <button
+                key={refinement.id}
+                onClick={() => loadRefinementDetail(refinement.id)}
+                className={`w-full text-left border rounded-lg p-3 transition-colors ${
+                  selectedRefinement?.id === refinement.id
+                    ? 'border-gray-900 dark:border-gray-300'
+                    : 'border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{refinement.user_prompt}</span>
+                  <span className={`shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs ${refinementClasses[refinement.status]}`}>
+                    {refinementLabels[refinement.status]}
+                  </span>
+                </div>
+                <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  {new Date(refinement.created_at).toLocaleString()}
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

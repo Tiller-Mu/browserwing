@@ -68,6 +68,16 @@ export const projectApi = {
     client.get<ListTestCaseExecutionsResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}/executions`, { params: { limit } }),
   getTestCaseExecution: (projectId: number, versionId: number, pageId: number, testCaseId: number, executionId: number) =>
     client.get<{ execution: TestExecutionDetail }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}/executions/${executionId}`),
+  refineTestCase: (projectId: number, versionId: number, pageId: number, testCaseId: number, data: RefineTestCaseRequest) =>
+    client.post<{ refinement: TestCaseRefinementDetail }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}/refine`, data),
+  listTestCaseRefinements: (projectId: number, versionId: number, pageId: number, testCaseId: number) =>
+    client.get<ListTestCaseRefinementsResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}/refinements`),
+  getTestCaseRefinement: (projectId: number, versionId: number, pageId: number, testCaseId: number, refinementId: number) =>
+    client.get<{ refinement: TestCaseRefinementDetail }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}/refinements/${refinementId}`),
+  applyTestCaseRefinement: (projectId: number, versionId: number, pageId: number, testCaseId: number, refinementId: number) =>
+    client.post<{ test_case: TestCaseDetail; refinement: TestCaseRefinementStatusResponse }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}/refinements/${refinementId}/apply`, {}),
+  discardTestCaseRefinement: (projectId: number, versionId: number, pageId: number, testCaseId: number, refinementId: number) =>
+    client.post<{ refinement: TestCaseRefinementStatusResponse }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}/refinements/${refinementId}/discard`, {}),
   generateTestCases: (projectId: number, versionId: number, pageId: number, data: GenerateTestCasesRequest) =>
     client.post<GenerateTestCasesResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/generate`, data)
 };
@@ -206,5 +216,42 @@ export interface TestExecutionDetail extends TestExecutionSummary {
 
 export interface ListTestCaseExecutionsResponse {
   executions: TestExecutionSummary[];
+  count: number;
+}
+
+export type TestCaseRefinementStatus = 'proposed' | 'applied' | 'discarded';
+
+export interface RefineTestCaseRequest {
+  prompt: string;
+  llm_config_id?: string;
+  execution_id?: number;
+}
+
+export interface TestCaseRefinementSummary {
+  id: number;
+  test_case_id: number;
+  user_prompt: string;
+  summary: string;
+  risk_notes: string;
+  status: TestCaseRefinementStatus;
+  applied_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TestCaseRefinementDetail extends TestCaseRefinementSummary {
+  original_blueprint: Record<string, any>;
+  refined_blueprint: Record<string, any>;
+}
+
+export interface TestCaseRefinementStatusResponse {
+  id: number;
+  test_case_id: number;
+  status: TestCaseRefinementStatus;
+  applied_at: string | null;
+}
+
+export interface ListTestCaseRefinementsResponse {
+  refinements: TestCaseRefinementSummary[];
   count: number;
 }

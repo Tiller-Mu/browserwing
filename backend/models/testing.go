@@ -58,7 +58,7 @@ type TestCase struct {
 	PageID         uint            `gorm:"index;not null" json:"page_id"`
 	Title          string          `gorm:"size:255;not null" json:"title"`
 	Description    string          `gorm:"type:text" json:"description"`
-	Blueprint      string          `gorm:"type:text" json:"blueprint"` // 固化的 JSON 格式执行大纲
+	Blueprint      string          `gorm:"type:text" json:"blueprint"`      // 固化的 JSON 格式执行大纲
 	ScriptContent  string          `gorm:"type:text" json:"script_content"` // 如果有需要，可以保存生成的 Python Playwright 物理代码
 	Status         string          `gorm:"size:50;default:'active'" json:"status"`
 	CreatedAt      time.Time       `json:"created_at"`
@@ -69,11 +69,17 @@ type TestCase struct {
 
 // LLMRefinement 记录大模型对测试用例的二次干预与调优记录
 type LLMRefinement struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`
-	TestCaseID       uint      `gorm:"index;not null" json:"test_case_id"`
-	UserPrompt       string    `gorm:"type:text" json:"user_prompt"`       // 测试人员输入的指导方向（如："增加密码为空的校验"）
-	RefinedBlueprint string    `gorm:"type:text" json:"refined_blueprint"` // 大模型优化后的 JSON 大纲
-	CreatedAt        time.Time `json:"created_at"`
+	ID                uint       `gorm:"primaryKey" json:"id"`
+	TestCaseID        uint       `gorm:"index;not null" json:"test_case_id"`
+	UserPrompt        string     `gorm:"type:text" json:"user_prompt"`        // 测试人员输入的指导方向（如："增加密码为空的校验"）
+	OriginalBlueprint string     `gorm:"type:text" json:"original_blueprint"` // 生成建议时的 Blueprint 快照
+	RefinedBlueprint  string     `gorm:"type:text" json:"refined_blueprint"`  // 大模型优化后的 JSON 大纲
+	Summary           string     `gorm:"type:text" json:"summary"`
+	RiskNotes         string     `gorm:"type:text" json:"risk_notes"`
+	Status            string     `gorm:"size:50;default:'proposed';index" json:"status"`
+	AppliedAt         *time.Time `json:"applied_at"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 // TestExecution 记录单次测试执行的报告结果
