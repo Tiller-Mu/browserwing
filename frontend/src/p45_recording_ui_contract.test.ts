@@ -1,10 +1,12 @@
 import type { TestPage } from './api/project';
+import BrowserManager, { p45BrowserManagerContract } from './pages/BrowserManager';
 import {
-  buildP45AuthStateSummary,
-  buildP45PageManagementView,
-  buildP45SaveRecordingPayload,
-  createP45RecordingController,
+	buildP45AuthStateSummary,
+	buildP45PageManagementView,
+	buildP45SaveRecordingPayload,
+	createP45RecordingController,
 } from './pages/p45RecordingUiContract';
+import TestPageManager, { p45TestPageManagerContract } from './pages/TestPageManager';
 
 type P45RecordingKind = 'login_flow' | 'business_flow';
 type P45AuthContext = 'clean' | 'project_saved';
@@ -50,11 +52,21 @@ interface P45PageManagementView {
 interface P45StartRecordingCall {
 	projectId: number;
 	versionId: number;
-  pageId: number;
+	pageId: number;
   payload: {
     recording_kind: P45RecordingKind;
     auth_context: P45AuthContext;
-  };
+	};
+}
+
+interface P45TestPageManagerPageContract {
+	buildAuthStateSummary: typeof buildP45AuthStateSummary;
+	buildPageManagementView: typeof buildP45PageManagementView;
+	createRecordingController: typeof createP45RecordingController;
+}
+
+interface P45BrowserManagerPageContract {
+	buildSaveRecordingPayload: typeof buildP45SaveRecordingPayload;
 }
 
 const projectId = 31;
@@ -66,12 +78,37 @@ const page: TestPage = {
   path: '/orders',
   description: '核心业务页面',
   created_at: '2026-06-03T08:00:00Z',
-  updated_at: '2026-06-03T08:00:00Z',
+	updated_at: '2026-06-03T08:00:00Z',
 };
 
+assertComponent(TestPageManager, 'TestPageManager');
+assertComponent(BrowserManager, 'BrowserManager');
+const pageManagerContract: P45TestPageManagerPageContract = p45TestPageManagerContract;
+assertSameReference(
+	pageManagerContract.buildAuthStateSummary,
+	buildP45AuthStateSummary,
+	'TestPageManager should consume the P4.5 auth-state summary helper',
+);
+assertSameReference(
+	pageManagerContract.buildPageManagementView,
+	buildP45PageManagementView,
+	'TestPageManager should consume the P4.5 page management view helper',
+);
+assertSameReference(
+	pageManagerContract.createRecordingController,
+	createP45RecordingController,
+	'TestPageManager should consume the P4.5 recording controller helper',
+);
+const browserManagerContract: P45BrowserManagerPageContract = p45BrowserManagerContract;
+assertSameReference(
+	browserManagerContract.buildSaveRecordingPayload,
+	buildP45SaveRecordingPayload,
+	'BrowserManager should consume the P4.5 save-recording payload helper',
+);
+
 const authState: P45ProjectAuthStateSummary = {
-  id: 64,
-  status: 'active',
+	id: 64,
+	status: 'active',
   cookie_count: 2,
   origin_count: 1,
   origins: ['https://example.invalid'],
@@ -200,14 +237,20 @@ function assertHasAction(
 }
 
 function assertPresent<T>(value: T | null | undefined, message: string): asserts value is T {
-  if (value == null) {
-    throw new Error(message);
-  }
+	if (value == null) {
+		throw new Error(message);
+	}
+}
+
+function assertComponent(value: unknown, name: string) {
+	if (typeof value !== 'function') {
+		throw new Error(`${name} should remain a renderable React component`);
+	}
 }
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
-  if (actual !== expected) {
-    throw new Error(`${message}; got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+	if (actual !== expected) {
+		throw new Error(`${message}; got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
   }
 }
 
@@ -222,11 +265,17 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string) {
   const expectedJSON = JSON.stringify(expected);
   if (actualJSON !== expectedJSON) {
     throw new Error(`${message}; got ${actualJSON}, want ${expectedJSON}`);
-  }
+	}
+}
+
+function assertSameReference<T>(actual: T, expected: T, message: string) {
+	if (actual !== expected) {
+		throw new Error(message);
+	}
 }
 
 function assertOmitsSecrets(value: unknown, label: string) {
-  const serialized = JSON.stringify(value);
+	const serialized = JSON.stringify(value);
   for (const secret of ['secret-cookie-value', 'secret-local-token', 'secret-session-token']) {
     if (serialized.includes(secret)) {
       throw new Error(`${label} leaked ${secret}`);
