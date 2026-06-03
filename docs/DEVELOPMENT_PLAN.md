@@ -33,7 +33,8 @@
 | P2 | 用例管理 | 已完成：用例列表、详情、编辑、删除、状态管理 |
 | P3 | 用例执行 | 已完成：单用例执行、保存结果、展示报告 |
 | P4 | 自然语言修改 | 已完成：自然语言生成修改建议，确认后应用并记录历史 |
-| P5 | 多用户和权限 | 下一阶段：项目数据归属、API 权限校验、用户隔离 |
+| P4.5 | 录制体验和项目登录态 | 当前规划：页面列表、短录制流程、完整登录态、清洁会话 |
+| P5 | 多用户和权限 | 后续阶段：项目数据归属、API 权限校验、用户隔离 |
 | P6 | 稳定化和发布 | 回归测试、文档、打包、发布检查 |
 
 ## 三、P0：环境和仓库稳定
@@ -277,9 +278,48 @@ POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/
 
 下一步：
 
-进入 P5。规划者先编写 P5 多用户和权限详细设计，明确项目归属、成员角色、API 权限校验、越权红测和前端权限展示口径。
+进入 P4.5。规划者先编写并定稿 P4.5 录制体验与项目登录态详细设计，明确页面列表、短录制流程、项目登录态、清洁会话、执行登录态恢复和红测口径。
 
-## 八、P5：多用户和权限
+## 八、P4.5：录制体验和项目登录态
+
+当前状态：规划中。
+
+阶段设计：
+
+- `docs/P4_5_RECORDING_EXPERIENCE_AND_AUTH_STATE_DESIGN.md`
+
+目标：
+
+压缩“创建页面 -> 进入录制 -> 打开浏览器 -> 录制 -> 保存 -> 生成用例”的人工路径，同时补齐项目登录态。用户可以保存项目版本的登录状态，后续录制登录后的业务流程和执行测试用例时显式复用；录制登录流程时必须使用干净会话，不得被已保存登录态跳过登录页。
+
+计划交付：
+
+- 页面管理从大卡片改为列表模式，适合页面数量变多后的扫描和批量操作。
+- 页面行内提供录制登录流程、录制业务流程、更新登录态、智能生成、新建用例、查看用例和删除入口。
+- 新增项目版本默认登录态，覆盖 Cookie、localStorage、sessionStorage，并只返回摘要给前端。
+- 页面录制模式从通用浏览器页收敛出短流程，只展示项目页面录制需要的操作。
+- 新增 `clean` 和 `project_saved` 两种会话模式；项目页面录制和 TestCase 执行不得无条件加载全局 `browser` Cookie Store。
+- PageScript 保存录制元数据，TestCase Blueprint 顶层保存 `auth_context`。
+- 执行 TestCase 时在首次导航前按 `auth_context` 恢复项目登录态；只有显式 `project_saved` 且缺少登录态时才执行前失败且不创建 TestExecution。
+- Playbot 只接收非敏感会话口径，不接收 Cookie、localStorage、sessionStorage 明文。
+
+协作顺序：
+
+1. 规划者定稿 P4.5 设计。
+2. 业务开发者 review 设计可行性。
+3. 用例编写者先写契约红测，覆盖登录态捕获、清洁会话、项目登录态恢复、录制元数据、Blueprint `auth_context`、执行前校验和前端列表入口。
+4. 代码审核者先审红测。
+5. 业务开发者按通过审核的红测实现。
+6. 代码审核者复核实现并运行验证。
+7. 规划者收尾并沉淀契约记录。
+
+遗留风险：
+
+- P4.5 首要保证 Cookie、localStorage、sessionStorage；IndexedDB、CacheStorage 和 Service Worker Cache 的完整恢复仍可能需要后续稳定化扩展。
+- 登录态是敏感资产，P4.5 必须保证 API、日志、Playbot 输入和执行报告不泄露明文；发布前仍应补齐加密存储和审计。
+- 如果底层浏览器控制仍只有全局 profile，开发实现需要先补隔离上下文，否则干净会话契约不成立。
+
+## 九、P5：多用户和权限
 
 目标：
 
@@ -320,7 +360,7 @@ POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/
 - editor 可以编辑和执行。
 - owner/admin 可以管理成员。
 
-## 九、P6：稳定化和发布
+## 十、P6：稳定化和发布
 
 目标：
 
@@ -361,6 +401,8 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 - 创建项目。
 - 创建版本。
 - 创建页面。
+- 保存项目登录态。
+- 用干净会话录制登录流程。
 - 录制主流程。
 - 生成用例。
 - 编辑用例。
@@ -380,7 +422,7 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 - Playbot 环境配置说明。
 - API 文档。
 
-## 十、建议开发顺序
+## 十一、建议开发顺序
 
 第一轮：
 
@@ -426,6 +468,16 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 
 第五轮：
 
+1. 规划者编写并定稿 P4.5 录制体验和项目登录态详细设计。
+2. 业务开发者 review P4.5 设计可行性，重点反馈浏览器隔离、Storage 捕获和恢复、敏感存储风险。
+3. 用例编写者先写登录态捕获、清洁会话、项目登录态恢复、录制元数据、Blueprint `auth_context` 和前端列表入口红测。
+4. 代码审核者审核红测，确认没有固化当前全局 Cookie Store 或偶然实现。
+5. 业务开发者实现页面列表、短录制模式、项目登录态 API、录制元数据和执行登录态恢复。
+6. 代码审核者复核并跑相关验证。
+7. 规划者更新计划、契约记录和遗留风险。
+
+第六轮：
+
 1. 规划者编写 P5 多用户权限详细设计。
 2. 业务开发者 review P5 设计可行性。
 3. 用例编写者写项目归属、越权访问、角色权限的契约用例。
@@ -434,13 +486,13 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 6. 代码审核者复核并跑相关验证。
 7. 规划者更新计划、契约记录和遗留风险。
 
-第六轮：
+第七轮：
 
 1. 用例编写者补全跨栈回归用例和人工验收清单。
 2. 业务开发者修复前端 type-check、构建、Playbot 依赖和发布文档问题。
 3. 代码审核者做发布前最终 review 和标准入口验证。
 
-## 十一、当前已知风险
+## 十二、当前已知风险
 
 ### Playbot 生成结果不稳定
 
@@ -466,6 +518,14 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 - 脚本执行放到受控环境。
 - 不允许脚本访问越权项目数据。
 
+### 登录态串用或泄露
+
+应对：
+
+- 项目录制和 TestCase 执行显式区分 `clean` 和 `project_saved`。
+- 登录态摘要可以展示，Cookie 和 Storage value 不进入前端、日志、Playbot 输入和执行报告。
+- 显式 `project_saved` 缺少项目登录态时执行前失败，不静默降级。
+
 ### 多用户改造影响面大
 
 应对：
@@ -482,7 +542,7 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 - 补足 TestCase、Execution、Refinement 类型。
 - 每阶段跑 type-check。
 
-## 十二、阶段完成定义
+## 十三、阶段完成定义
 
 每个阶段完成时必须满足：
 
