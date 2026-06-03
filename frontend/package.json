@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "type-check": "node ./p45_recording_ui_contract.test.mjs && tsc --noEmit",
+    "type-check": "tsc --noEmit",
+    "test:p45-contract": "tsx src/p45_recording_ui_contract.test.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
