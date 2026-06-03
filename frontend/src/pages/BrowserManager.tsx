@@ -226,7 +226,8 @@ export default function BrowserManager() {
       // 更新输入框的值
       setOpenUrl(targetUrl)
     } catch (err: any) {
-      showMessage(t(err.response?.data?.error || 'browser.messages.openError'), 'error')
+      const detail = err.response?.data?.detail
+      showMessage(detail ? `${t(err.response?.data?.error || 'browser.messages.openError')}: ${detail}` : t(err.response?.data?.error || 'browser.messages.openError'), 'error')
     } finally {
       setOpeningPage(false)
     }
@@ -402,7 +403,8 @@ export default function BrowserManager() {
       showMessage(t(response.data.message), 'success')
       await loadRecordingStatus()
     } catch (err: any) {
-      showMessage(t(err.response?.data?.error || 'browser.messages.recordStartError'), 'error')
+      const detail = err.response?.data?.detail
+      showMessage(detail ? `${t(err.response?.data?.error || 'browser.messages.recordStartError')}: ${detail}` : t(err.response?.data?.error || 'browser.messages.recordStartError'), 'error')
     } finally {
       setRecordingLoading(false)
     }

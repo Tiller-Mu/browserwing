@@ -7,6 +7,8 @@ import { CURRENT_VERSION, fetchLatestVersion, hasNewVersion, isVersionDismissed,
 import VersionUpdateDialog from './VersionUpdateDialog'
 import { logout, checkAuth, getAppVersion } from '../api/client'
 
+const ENABLE_VERSION_UPDATE_CHECK = import.meta.env.VITE_ENABLE_VERSION_UPDATE_CHECK === 'true'
+
 export default function Layout() {
   const location = useLocation()
   const navigate = useNavigate()
@@ -80,9 +82,9 @@ export default function Layout() {
       })
   }, [])
 
-  // 检查版本更新（只在后端真实版本加载完成后才比对）
+  // 版本检查链路保留；自动远程检查按产品要求默认关闭。
   useEffect(() => {
-    if (!backendVersionLoaded) return
+    if (!ENABLE_VERSION_UPDATE_CHECK || !backendVersionLoaded) return
 
     const checkVersion = async () => {
       const versionInfo = await fetchLatestVersion()
@@ -93,11 +95,9 @@ export default function Layout() {
 
       if (localClean === remoteClean) return
 
-      if (hasNewVersion(localClean, remoteClean)) {
-        if (!isVersionDismissed(versionInfo.version)) {
-          setLatestVersionInfo(versionInfo)
-          setShowUpdateDialog(true)
-        }
+      if (hasNewVersion(localClean, remoteClean) && !isVersionDismissed(versionInfo.version)) {
+        setLatestVersionInfo(versionInfo)
+        setShowUpdateDialog(true)
       }
     }
     const timer = setTimeout(checkVersion, 3000)

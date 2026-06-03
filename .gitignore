@@ -28,6 +28,8 @@ frontend/.env.local
 
 # Chrome User Data
 backend/chrome_user_data/
+backend/edge_user_data/
+backend/edge_user_data*/
 
 # Python
 __pycache__/

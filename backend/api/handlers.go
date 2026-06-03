@@ -125,7 +125,10 @@ func (h *Handler) GetVersionInfo(c *gin.Context) {
 // StartBrowser 启动浏览器
 func (h *Handler) StartBrowser(c *gin.Context) {
 	if h.browserManager.IsRunning() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "error.browserAlreadyRunning"})
+		c.JSON(http.StatusOK, gin.H{
+			"message": "success.browserStarted",
+			"status":  h.browserManager.Status(),
+		})
 		return
 	}
 
@@ -200,7 +203,7 @@ func (h *Handler) OpenBrowserPage(c *gin.Context) {
 	}
 
 	if err := h.browserManager.OpenPage(req.URL, req.Language, req.InstanceID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "error.openPageFailed"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "error.openPageFailed", "detail": err.Error()})
 		return
 	}
 
@@ -482,7 +485,7 @@ func (h *Handler) StartRecording(c *gin.Context) {
 	}
 
 	if err := h.browserManager.StartRecording(c.Request.Context(), req.InstanceID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "error.startRecordingFailed"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "error.startRecordingFailed", "detail": err.Error()})
 		return
 	}
 

@@ -422,14 +422,24 @@ func initDefaultBrowserInstance(db *storage.BoltDB, cfg *config.Config) error {
 	} else {
 
 		// 获取默认浏览器路径（参考 config.go 的逻辑）
+		homeDir, _ := os.UserHomeDir()
 		commonPaths := []string{
 			"/usr/bin/google-chrome",
 			"/usr/bin/chromium-browser",
 			"/usr/bin/chromium",
 			"/usr/bin/google-chrome-stable",
 			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
 			"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
 			"C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+			"C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+			"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+		}
+		if homeDir != "" {
+			commonPaths = append(commonPaths,
+				filepath.Join(homeDir, "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join(homeDir, "AppData", "Local", "Microsoft", "Edge", "Application", "msedge.exe"),
+			)
 		}
 
 		for _, path := range commonPaths {
@@ -447,7 +457,6 @@ func initDefaultBrowserInstance(db *storage.BoltDB, cfg *config.Config) error {
 		}
 
 		// 设置默认用户数据目录
-		homeDir, _ := os.UserHomeDir()
 		if homeDir != "" {
 			userDataDir = filepath.Join(homeDir, ".browserwing", "default-profile")
 		}
@@ -466,7 +475,6 @@ func initDefaultBrowserInstance(db *storage.BoltDB, cfg *config.Config) error {
 		Headless:    &headless,
 		LaunchArgs: []string{
 			"disable-blink-features=AutomationControlled",
-			"excludeSwitches=enable-automation",
 			"no-first-run",
 			"no-default-browser-check",
 			"window-size=1920,1080",

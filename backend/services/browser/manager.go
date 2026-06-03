@@ -37,6 +37,75 @@ var floatButtonScript string
 //go:embed scripts/xhr_interceptor.js
 var xhrInterceptorScriptForManager string
 
+func commonChromiumBinaryPaths() []string {
+	paths := []string{
+		"/usr/bin/google-chrome",
+		"/usr/bin/chromium-browser",
+		"/usr/bin/chromium",
+		"/usr/bin/google-chrome-stable",
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+		"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+		"C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+		"C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+		"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+	}
+
+	if homeDir, err := os.UserHomeDir(); err == nil && homeDir != "" {
+		paths = append(paths,
+			filepath.Join(homeDir, "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe"),
+			filepath.Join(homeDir, "AppData", "Local", "Microsoft", "Edge", "Application", "msedge.exe"),
+		)
+	}
+
+	return paths
+}
+
+func findLocalChromiumBinary() string {
+	for _, path := range commonChromiumBinaryPaths() {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
+func isBrowserBinaryNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "can't find a browser binary")
+}
+
+func isEdgeBinary(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	return base == "msedge" || base == "msedge.exe"
+}
+
+func shouldUseEdgeDefaultUserDataDir(binPath, userDataDir string) bool {
+	if !isEdgeBinary(binPath) {
+		return false
+	}
+	normalized := strings.ToLower(filepath.Clean(userDataDir))
+	return normalized == "chrome_user_data" || normalized == filepath.Clean("./chrome_user_data")
+}
+
+func applyChromiumLaunchArg(l *launcher.Launcher, arg string) *launcher.Launcher {
+	arg = strings.TrimSpace(strings.TrimPrefix(arg, "--"))
+	if arg == "" {
+		return l
+	}
+
+	parts := strings.SplitN(arg, "=", 2)
+	name := parts[0]
+	switch name {
+	case "excludeSwitches", "useAutomationExtension":
+		return l
+	}
+
+	if len(parts) == 2 {
+		return l.Set(flags.Flag(name), parts[1])
+	}
+	return l.Set(flags.Flag(name))
+}
+
 // parseProxyURL 解析代理 URL，提取认证信息和地址
 // 输入: http://user:pass@host:port 或 socks5://user:pass@host:port
 // 返回: (proxyAddr, username, password, error)
@@ -226,7 +295,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	defer m.mu.Unlock()
 
 	if m.isRunning {
-		return fmt.Errorf("browser is already running")
+		return nil
 	}
 
 	logger.Info(ctx, "Starting browser...")
@@ -296,6 +365,9 @@ func (m *Manager) Start(ctx context.Context) error {
 			Headless(headless).
 			Devtools(false).
 			Leakless(false)
+		if !headless {
+			l = l.Delete("no-startup-window").StartURL("about:blank")
+		}
 
 		// NoSandbox 配置
 		if defaultConfig.NoSandbox != nil && *defaultConfig.NoSandbox {
@@ -331,28 +403,30 @@ func (m *Manager) Start(ctx context.Context) error {
 
 		// 应用默认配置的启动参数
 		for _, arg := range defaultConfig.LaunchArgs {
-			// 移除前导的--如果存在
-			arg = strings.TrimPrefix(arg, "--")
-
-			// 检查是否是key=value格式
-			if strings.Contains(arg, "=") {
-				parts := strings.SplitN(arg, "=", 2)
-				l = l.Set(flags.Flag(parts[0]), parts[1])
-			} else {
-				// 单个flag
-				l = l.Set(flags.Flag(arg))
-			}
+			l = applyChromiumLaunchArg(l, arg)
 		}
 
 		// 设置浏览器路径
+		binPath := ""
 		if m.config.Browser != nil && m.config.Browser.BinPath != "" {
-			l = l.Bin(m.config.Browser.BinPath)
-			logger.Info(ctx, fmt.Sprintf("Using browser path: %s", m.config.Browser.BinPath))
+			binPath = m.config.Browser.BinPath
+		} else {
+			binPath = findLocalChromiumBinary()
+		}
+		if binPath != "" {
+			l = l.Bin(binPath)
+			logger.Info(ctx, fmt.Sprintf("Using browser path: %s", binPath))
+		} else {
+			logger.Warn(ctx, "No local Chrome/Edge path found, launcher may attempt to download Chromium")
 		}
 
 		// 设置用户数据目录 - 关键：这会保存登录状态
 		if m.config.Browser != nil && m.config.Browser.UserDataDir != "" {
 			userDataDir := m.config.Browser.UserDataDir
+			if shouldUseEdgeDefaultUserDataDir(binPath, userDataDir) {
+				userDataDir = "./edge_user_data"
+				logger.Info(ctx, "Using Edge-specific user data directory: %s", userDataDir)
+			}
 
 			// 确保目录存在
 			if err := os.MkdirAll(userDataDir, 0o755); err != nil {
@@ -399,6 +473,10 @@ func (m *Manager) Start(ctx context.Context) error {
 		var err error
 		url, err = l.Launch()
 		if err != nil {
+			if isBrowserBinaryNotFound(err) {
+				logger.Error(ctx, "Failed to find local Chrome/Edge browser: %v", err)
+				return fmt.Errorf("failed to find local Chrome/Edge browser binary; configure browser.bin_path: %w", err)
+			}
 			logger.Error(ctx, "Failed to start browser: %v, attempting to kill orphaned processes and retry...", err)
 
 			// 杀死残留的 Chrome 进程并清理锁文件
@@ -526,6 +604,14 @@ func (m *Manager) Start(ctx context.Context) error {
 		logger.Warn(ctx, "Failed to grant clipboard permissions: %v", err)
 	} else {
 		logger.Info(ctx, "✓ Clipboard permissions granted (read/write)")
+	}
+
+	if err := checkBrowserConnection(browser); err != nil {
+		if m.launcher != nil {
+			m.launcher.Kill()
+			m.launcher = nil
+		}
+		return fmt.Errorf("browser connection closed after launch: %w", err)
 	}
 
 	m.browser = browser
@@ -760,12 +846,12 @@ func (m *Manager) setPageWindow(page *rod.Page) {
 	ctx := context.Background()
 
 	const (
-		defaultWindowWidth   = 1400
-		defaultWindowHeight  = 900
-		defaultViewportWidth = 1280
+		defaultWindowWidth    = 1400
+		defaultWindowHeight   = 900
+		defaultViewportWidth  = 1280
 		defaultViewportHeight = 800
-		minScreenWidth       = 1024
-		minScreenHeight      = 768
+		minScreenWidth        = 1024
+		minScreenHeight       = 768
 	)
 
 	var windowWidth, windowHeight int
@@ -827,6 +913,11 @@ func (m *Manager) OpenPage(url string, language string, instanceID string, norec
 		if r := recover(); r != nil {
 			ctx := context.Background()
 			logger.Error(ctx, "Panic in OpenPage: %v", r)
+			if instanceID != "" {
+				m.mu.Lock()
+				m.clearInstanceRuntimeLocked(ctx, instanceID)
+				m.mu.Unlock()
+			}
 			err = fmt.Errorf("failed to open page: browser connection may be closed (panic: %v)", r)
 		}
 	}()
@@ -868,8 +959,29 @@ func (m *Manager) OpenPage(url string, language string, instanceID string, norec
 	// 检查浏览器连接是否仍然有效
 	ctx := context.Background()
 	if err := checkBrowserConnection(browser); err != nil {
-		logger.Error(ctx, "Browser connection check failed: %v", err)
-		return fmt.Errorf("browser connection is closed or invalid: %w", err)
+		logger.Warn(ctx, "Browser connection check failed, restarting instance %s: %v", instanceID, err)
+
+		m.mu.Lock()
+		m.clearInstanceRuntimeLocked(ctx, instanceID)
+		if restartErr := m.startInstanceInternal(ctx, instanceID); restartErr != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("browser connection is closed and restart failed: %w", restartErr)
+		}
+		browser, _, instance, err = m.getInstanceBrowser(instanceID)
+		if err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		if instance != nil {
+			instanceID = instance.ID
+		}
+		config = m.getConfigForURL(url)
+		m.mu.Unlock()
+
+		if err := checkBrowserConnection(browser); err != nil {
+			logger.Error(ctx, "Browser connection check failed after restart: %v", err)
+			return fmt.Errorf("browser connection is closed after restart: %w", err)
+		}
 	}
 
 	logger.Info(ctx, fmt.Sprintf("URL: %s, using configuration: %s, language: %s", url, config.Name, language))
@@ -883,10 +995,44 @@ func (m *Manager) OpenPage(url string, language string, instanceID string, norec
 	}
 
 	if useStealth {
-		page = stealth.MustPage(browser)
-		logger.Info(ctx, "Using Stealth mode")
+		page, err = stealth.Page(browser)
+		if err != nil {
+			logger.Warn(ctx, "Failed to create stealth page, restarting instance %s and retrying stealth mode: %v", instanceID, err)
+			m.mu.Lock()
+			m.clearInstanceRuntimeLocked(ctx, instanceID)
+			if restartErr := m.startInstanceInternal(ctx, instanceID); restartErr != nil {
+				m.mu.Unlock()
+				return fmt.Errorf("failed to create stealth page and restart browser: %w", restartErr)
+			}
+			browser, _, instance, err = m.getInstanceBrowser(instanceID)
+			if err != nil {
+				m.mu.Unlock()
+				return err
+			}
+			if instance != nil {
+				instanceID = instance.ID
+			}
+			m.mu.Unlock()
+
+			page, err = stealth.Page(browser)
+			if err != nil {
+				m.mu.Lock()
+				m.clearInstanceRuntimeLocked(ctx, instanceID)
+				m.mu.Unlock()
+				return fmt.Errorf("failed to create stealth page after browser restart: %w", err)
+			}
+			logger.Info(ctx, "Using Stealth mode after browser restart")
+		} else {
+			logger.Info(ctx, "Using Stealth mode")
+		}
 	} else {
-		page = browser.MustPage()
+		page, err = browser.Page(proto.TargetCreateTarget{})
+		if err != nil {
+			m.mu.Lock()
+			m.clearInstanceRuntimeLocked(ctx, instanceID)
+			m.mu.Unlock()
+			return fmt.Errorf("failed to create page: %w", err)
+		}
 		logger.Info(ctx, "Not using Stealth mode")
 	}
 
@@ -897,9 +1043,14 @@ func (m *Manager) OpenPage(url string, language string, instanceID string, norec
 	if userAgent == "" {
 		userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
 	}
-	page = page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
+	if err := page.SetUserAgent(&proto.NetworkSetUserAgentOverride{
 		UserAgent: userAgent,
-	})
+	}); err != nil {
+		m.mu.Lock()
+		m.clearInstanceRuntimeLocked(ctx, instanceID)
+		m.mu.Unlock()
+		return fmt.Errorf("failed to set user agent: %w", err)
+	}
 
 	// 导航到目标 URL（设置60秒超时）- 这是耗时操作，不持有锁
 	if err := page.Timeout(60 * time.Second).Navigate(url); err != nil {
@@ -1067,6 +1218,12 @@ func (m *Manager) StartRecording(ctx context.Context, instanceID string) error {
 	// 获取当前页面URL
 	info, err := activePage.Info()
 	if err != nil {
+		if instanceID == "" {
+			instanceID = m.currentInstanceID
+		}
+		if instanceID != "" {
+			m.clearInstanceRuntimeLocked(ctx, instanceID)
+		}
 		return fmt.Errorf("failed to get page info: %w", err)
 	}
 
@@ -1579,7 +1736,6 @@ func (m *Manager) getDefaultBrowserConfig() *models.BrowserConfig {
 
 	launchArgs := []string{
 		"disable-blink-features=AutomationControlled",
-		"excludeSwitches=enable-automation",
 		"no-first-run",
 		"no-default-browser-check",
 		"window-size=1920,1080",
@@ -1676,7 +1832,7 @@ func (m *Manager) cleanupSingletonLock(ctx context.Context, userDataDir string) 
 		"SingletonLock",
 		"SingletonCookie",
 		"SingletonSocket",
-		"lockfile",          // Windows Chrome lock file
+		"lockfile",           // Windows Chrome lock file
 		"DevToolsActivePort", // Stale debug port info (prevents reconnection confusion)
 	}
 
@@ -1992,6 +2148,34 @@ func (m *Manager) StartInstance(ctx context.Context, instanceID string) error {
 	return m.startInstanceInternal(ctx, instanceID)
 }
 
+func (m *Manager) clearInstanceRuntimeLocked(ctx context.Context, instanceID string) {
+	runtime, exists := m.instances[instanceID]
+	if !exists || runtime == nil {
+		return
+	}
+
+	if runtime.launcher != nil {
+		runtime.launcher.Kill()
+	}
+	if runtime.instance != nil {
+		runtime.instance.IsActive = false
+		runtime.instance.UpdatedAt = time.Now()
+		if err := m.db.SaveBrowserInstance(runtime.instance); err != nil {
+			logger.Warn(ctx, "Failed to update instance status after connection reset: %v", err)
+		}
+	}
+
+	delete(m.instances, instanceID)
+	if m.currentInstanceID == instanceID {
+		m.currentInstanceID = ""
+		m.browser = nil
+		m.launcher = nil
+		m.isRunning = false
+		m.activePage = nil
+		m.startTime = time.Time{}
+	}
+}
+
 // startInstanceInternal 内部启动函数，调用者必须已持有锁
 func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) error {
 	// 空 instanceID 回退：优先使用当前实例，否则查找默认实例
@@ -2010,7 +2194,13 @@ func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) 
 
 	// 检查实例是否已启动
 	if runtime, exists := m.instances[instanceID]; exists && runtime != nil {
-		return fmt.Errorf("instance %s is already running", instanceID)
+		m.currentInstanceID = instanceID
+		m.browser = runtime.browser
+		m.launcher = runtime.launcher
+		m.isRunning = true
+		m.startTime = runtime.startTime
+		m.activePage = runtime.activePage
+		return nil
 	}
 
 	// 从数据库加载实例配置
@@ -2086,6 +2276,9 @@ func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) 
 			Headless(headless).
 			Devtools(false).
 			Leakless(false)
+		if !headless {
+			l = l.Delete("no-startup-window").StartURL("about:blank")
+		}
 
 		// NoSandbox 配置：优先使用实例配置，否则回退到默认配置
 		noSandbox := instance.NoSandbox
@@ -2123,7 +2316,6 @@ func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) 
 			// 使用默认启动参数
 			launchArgs = []string{
 				"disable-blink-features=AutomationControlled",
-				"excludeSwitches=enable-automation",
 				"no-first-run",
 				"no-default-browser-check",
 				"window-size=1920,1080",
@@ -2145,36 +2337,17 @@ func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) 
 		}
 
 		for _, arg := range launchArgs {
-			arg = strings.TrimPrefix(arg, "--")
-			if strings.Contains(arg, "=") {
-				parts := strings.SplitN(arg, "=", 2)
-				l = l.Set(flags.Flag(parts[0]), parts[1])
-			} else {
-				l = l.Set(flags.Flag(arg))
-			}
+			l = applyChromiumLaunchArg(l, arg)
 		}
 
 		// 设置浏览器路径
 		binPath := instance.BinPath
 		if binPath == "" {
-			// 如果没有指定路径，尝试查找系统中的 Chrome
-			logger.Info(ctx, "BinPath not specified, searching for system Chrome...")
-			commonPaths := []string{
-				"/usr/bin/google-chrome",
-				"/usr/bin/chromium-browser",
-				"/usr/bin/chromium",
-				"/usr/bin/google-chrome-stable",
-				"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-				"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-				"C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-			}
-
-			for _, path := range commonPaths {
-				if _, err := os.Stat(path); err == nil {
-					binPath = path
-					logger.Info(ctx, "Found Chrome at: %s", binPath)
-					break
-				}
+			// 如果没有指定路径，尝试查找系统中的 Chrome/Edge
+			logger.Info(ctx, "BinPath not specified, searching for local Chrome/Edge...")
+			binPath = findLocalChromiumBinary()
+			if binPath != "" {
+				logger.Info(ctx, "Found local Chrome/Edge at: %s", binPath)
 			}
 
 			// 如果配置文件中有指定路径，优先使用
@@ -2193,6 +2366,10 @@ func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) 
 
 		// 设置用户数据目录
 		if instance.UserDataDir != "" {
+			if shouldUseEdgeDefaultUserDataDir(binPath, instance.UserDataDir) {
+				instance.UserDataDir = "./edge_user_data"
+				logger.Info(ctx, "Using Edge-specific user data directory: %s", instance.UserDataDir)
+			}
 			if err := os.MkdirAll(instance.UserDataDir, 0o755); err != nil {
 				logger.Warn(ctx, "Failed to create user data directory: %v", err)
 			} else {
@@ -2224,6 +2401,10 @@ func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) 
 		logger.Info(ctx, "[startInstanceInternal] Launching Chrome...")
 		url, err = l.Launch()
 		if err != nil {
+			if isBrowserBinaryNotFound(err) {
+				logger.Error(ctx, "[startInstanceInternal] Failed to find local Chrome/Edge browser: %v", err)
+				return fmt.Errorf("failed to find local Chrome/Edge browser binary; configure browser.bin_path: %w", err)
+			}
 			logger.Error(ctx, "[startInstanceInternal] Chrome launch failed: %v, attempting to kill orphaned processes and retry...", err)
 
 			// 杀死残留的 Chrome 进程并清理锁文件
@@ -2327,6 +2508,13 @@ func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) 
 	}
 	if err := grantPermissions.Call(browser); err != nil {
 		logger.Warn(ctx, "Failed to grant clipboard permissions: %v", err)
+	}
+
+	if err := checkBrowserConnection(browser); err != nil {
+		if launcherObj != nil {
+			launcherObj.Kill()
+		}
+		return fmt.Errorf("browser connection closed after launch: %w", err)
 	}
 
 	// 创建运行时信息

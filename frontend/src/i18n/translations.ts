@@ -1,4 +1,4 @@
-export const translations = {
+﻿export const translations = {
   'zh-CN': {
     // 通用
     'common.save': '保存',
@@ -970,7 +970,7 @@ export const translations = {
     'browser.config.noSandboxDisabledOption': '禁用 NoSandbox（保留沙箱）',
     'browser.config.noSandboxHint': '在 Linux 环境下运行 Chrome 通常需要禁用沙箱，否则可能无法启动。Linux 下默认启用，Windows/macOS 下默认禁用。',
     'browser.config.launchArgs': '启动参数（每行一个）',
-    'browser.config.launchArgsPlaceholder': 'disable-blink-features=AutomationControlled\nexcludeSwitches=enable-automation',
+    'browser.config.launchArgsPlaceholder': 'disable-blink-features=AutomationControlled\nno-first-run',
     'browser.config.launchArgsHint': '留空表示使用默认配置的启动参数。网站特定配置会完全覆盖默认启动参数（非合并）。',
     'browser.config.setAsDefault': '设为默认配置',
     'browser.config.cancel': '取消',
@@ -2161,7 +2161,7 @@ export const translations = {
     'browser.config.noSandboxDisabledOption': '禁用 NoSandbox（保留沙箱）',
     'browser.config.noSandboxHint': '在 Linux 環境下運行 Chrome 通常需要禁用沙箱，否則可能無法啟動。Linux 下默認啟用，Windows/macOS 下默認禁用。',
     'browser.config.launchArgs': '啟動參數（每行一個）',
-    'browser.config.launchArgsPlaceholder': 'disable-blink-features=AutomationControlled\nexcludeSwitches=enable-automation',
+    'browser.config.launchArgsPlaceholder': 'disable-blink-features=AutomationControlled\nno-first-run',
     'browser.config.launchArgsHint': '留空表示使用默認配置的啟動參數。網站特定配置會完全覆蓋默認啟動參數（非合併）。',
     'browser.config.setAsDefault': '設為默認配置',
     'browser.config.cancel': '取消',
@@ -3505,7 +3505,7 @@ export const translations = {
     'browser.config.noSandboxDisabledOption': 'Disable NoSandbox (Keep Sandbox)',
     'browser.config.noSandboxHint': 'Running Chrome on Linux usually requires disabling the sandbox, otherwise it may fail to start. Enabled by default on Linux, disabled on Windows/macOS.',
     'browser.config.launchArgs': 'Launch Arguments (One Per Line)',
-    'browser.config.launchArgsPlaceholder': 'disable-blink-features=AutomationControlled\nexcludeSwitches=enable-automation',
+    'browser.config.launchArgsPlaceholder': 'disable-blink-features=AutomationControlled\nno-first-run',
     'browser.config.launchArgsHint': 'Leave empty to use default configuration launch arguments. Site-specific configurations completely override default launch arguments (not merged).',
     'browser.config.setAsDefault': 'Set as Default Configuration',
     'browser.config.cancel': 'Cancel',
@@ -4735,7 +4735,7 @@ export const translations = {
     'browser.config.noSandboxDisabledOption': 'Deshabilitar NoSandbox (Mantener Sandbox)',
     'browser.config.noSandboxHint': 'Ejecutar Chrome en Linux generalmente requiere deshabilitar el sandbox, de lo contrario puede fallar al iniciar. Habilitado por defecto en Linux, deshabilitado en Windows/macOS.',
     'browser.config.launchArgs': 'Argumentos de Lanzamiento (Uno Por Línea)',
-    'browser.config.launchArgsPlaceholder': 'disable-blink-features=AutomationControlled\nexcludeSwitches=enable-automation',
+    'browser.config.launchArgsPlaceholder': 'disable-blink-features=AutomationControlled\nno-first-run',
     'browser.config.launchArgsHint': 'Dejar vacío para usar los argumentos de lanzamiento de configuración predeterminada. Las configuraciones específicas del sitio anulan completamente los argumentos de lanzamiento predeterminados (no se fusionan).',
     'browser.config.setAsDefault': 'Establecer como Configuración Predeterminada',
     'browser.config.cancel': 'Cancelar',
@@ -6012,7 +6012,7 @@ export const translations = {
     'browser.config.noSandboxDisabledOption': 'NoSandbox を無効にする（サンドボックスを保持）',
     'browser.config.noSandboxHint': 'Linux環境でChromeを実行する場合、通常サンドボックスを無効にする必要があります。Linuxではデフォルトで有効、Windows/macOSではデフォルトで無効です。',
     'browser.config.launchArgs': '起動引数（1行に1つ）',
-    'browser.config.launchArgsPlaceholder': 'disable-blink-features=AutomationControlled\nexcludeSwitches=enable-automation',
+    'browser.config.launchArgsPlaceholder': 'disable-blink-features=AutomationControlled\nno-first-run',
     'browser.config.launchArgsHint': '空白の場合はデフォルト設定の起動引数を使用。サイト固有の設定はデフォルトの起動引数を完全に上書きします（マージされません）。',
     'browser.config.setAsDefault': 'デフォルト設定として設定',
     'browser.config.cancel': 'キャンセル',
