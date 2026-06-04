@@ -20,6 +20,7 @@ type GenerateOptions struct {
 	IntentPlan      interface{} // 可以是 map 或 string，将被转为 JSON
 	PageDescription string
 	Instruction     string
+	AuthContext     string
 	LLMEndpoint     string
 	LLMAPIKey       string
 	LLMModel        string
@@ -52,6 +53,9 @@ func GenerateTestPlan(ctx context.Context, opts GenerateOptions) (string, error)
 		"intent_plan":      opts.IntentPlan,
 		"page_description": opts.PageDescription,
 		"instruction":      opts.Instruction,
+	}
+	if strings.TrimSpace(opts.AuthContext) != "" {
+		jobData["auth_context"] = strings.TrimSpace(opts.AuthContext)
 	}
 	return runCLI(ctx, jobData, "", opts.PythonPath, opts.EngineDir, opts.LLMEndpoint, opts.LLMAPIKey, opts.LLMModel)
 }

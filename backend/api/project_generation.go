@@ -33,6 +33,7 @@ type generatedTestCaseBlueprint struct {
 	Title       string         `json:"title"`
 	Description string         `json:"description"`
 	Steps       []any          `json:"steps"`
+	AuthContext string         `json:"auth_context"`
 	Raw         map[string]any `json:"-"`
 }
 
@@ -84,6 +85,15 @@ func (h *ProjectHandlers) GenerateTestCases(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	meta, _, err := parseRecordingMetaJSON(script.RecordingMetaJSON)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	authContext := meta.AuthContext
+	if authContext == "" {
+		authContext = authContextClean
+	}
 
 	llmConfig, err := h.loadGenerationLLMConfig(req.LLMConfigID)
 	if err != nil {
@@ -97,6 +107,7 @@ func (h *ProjectHandlers) GenerateTestCases(c *gin.Context) {
 		IntentPlan:      intentPlan,
 		PageDescription: page.Description,
 		Instruction:     req.Instruction,
+		AuthContext:     authContext,
 		LLMEndpoint:     llmConfig.BaseURL,
 		LLMAPIKey:       llmConfig.APIKey,
 		LLMModel:        llmConfig.Model,
@@ -106,7 +117,7 @@ func (h *ProjectHandlers) GenerateTestCases(c *gin.Context) {
 		return
 	}
 
-	blueprints, err := parsePlaybotGeneratedCases(stdout)
+	blueprints, err := parsePlaybotGeneratedCases(stdout, authContext)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -251,7 +262,7 @@ func buildPageURL(baseURL, pagePath string) string {
 	return base + "/" + rel
 }
 
-func parsePlaybotGeneratedCases(stdout string) ([]generatedTestCaseBlueprint, error) {
+func parsePlaybotGeneratedCases(stdout string, inheritedAuthContext string) ([]generatedTestCaseBlueprint, error) {
 	var output playbotGenerateOutput
 	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
 		return nil, fmt.Errorf("Playbot 输出不是合法 JSON")
@@ -276,11 +287,20 @@ func parsePlaybotGeneratedCases(stdout string) ([]generatedTestCaseBlueprint, er
 		if strings.TrimSpace(title) == "" || strings.TrimSpace(description) == "" || !ok || len(steps) == 0 {
 			return nil, fmt.Errorf("Playbot 测试用例缺少必要字段")
 		}
+		if rawContext := strings.TrimSpace(stringFromAny(blueprint["auth_context"])); rawContext != "" && !validAuthContext(rawContext) {
+			return nil, fmt.Errorf("Playbot 测试用例 auth_context 非法")
+		}
+		authContext := strings.TrimSpace(inheritedAuthContext)
+		if authContext == "" {
+			authContext = authContextClean
+		}
+		blueprint["auth_context"] = authContext
 
 		blueprints = append(blueprints, generatedTestCaseBlueprint{
 			Title:       title,
 			Description: description,
 			Steps:       steps,
+			AuthContext: authContext,
 			Raw:         blueprint,
 		})
 	}

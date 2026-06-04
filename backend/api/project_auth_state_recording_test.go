@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/browserwing/browserwing/models"
+	"gorm.io/gorm"
 )
 
 const (
@@ -125,12 +126,44 @@ func TestDeleteProjectAuthStateScopesAndMakesProjectSavedRunFail(t *testing.T) {
 	env.requireTestExecutionCount(t, testCase.ID, 0)
 }
 
+func TestDeleteVersionDeletesScopedProjectAuthState(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	sameProjectOtherVersion := env.seedVersionInProject(t, project.ID, "v2-delete-version-keeps-auth")
+	sameProjectOtherPage := env.seedPageInVersion(t, sameProjectOtherVersion.ID, "delete version other page")
+	auth := env.seedProjectAuthState(t, project.ID, version.ID, page.ID, contractStorageState("https://example.invalid/app/home"))
+	sameProjectOtherAuth := env.seedProjectAuthState(t, project.ID, sameProjectOtherVersion.ID, sameProjectOtherPage.ID, contractStorageState("https://example.invalid/app/other-version"))
+
+	res := env.deleteVersion(t, project.ID, version.ID)
+
+	env.requireStatus(t, res, http.StatusOK)
+	env.requireProjectAuthStateMissing(t, auth.ID)
+	env.requireActiveProjectAuthStateCount(t, project.ID, version.ID, 0)
+	env.requireProjectAuthStateUnchanged(t, sameProjectOtherAuth)
+	env.requireActiveProjectAuthStateCount(t, project.ID, sameProjectOtherVersion.ID, 1)
+}
+
 func TestCaptureProjectAuthStateRejectsEmptyStateAndKeepsPreviousOnFailure(t *testing.T) {
 	env := newGenerateContractEnv(t)
 	project, version, page := env.seedProjectVersionPage(t)
 	previous := env.seedProjectAuthState(t, project.ID, version.ID, page.ID, contractStorageState("https://example.invalid/app/home"))
 	fake := newContractP45Runtime()
 	env.installProjectAuthRuntimeFake(t, fake)
+
+	t.Run("replace false", func(t *testing.T) {
+		fake.nextStorageState = contractStorageState("https://example.invalid/app/new")
+		res := env.captureProjectAuthState(t, project.ID, version.ID, map[string]any{
+			"name":             "must not create second active auth",
+			"captured_page_id": page.ID,
+			"captured_url":     "https://example.invalid/app/new",
+			"replace":          false,
+		})
+		env.requireStatus(t, res, http.StatusBadRequest)
+		env.requireJSONError(t, res)
+		fake.requireNoEvent(t, "capture_auth_state")
+		env.requireProjectAuthStateUnchanged(t, previous)
+		env.requireActiveProjectAuthStateCount(t, project.ID, version.ID, 1)
+	})
 
 	t.Run("empty state", func(t *testing.T) {
 		fake.nextStorageState = map[string]any{
@@ -401,6 +434,7 @@ func TestRunTestCaseCleanOrLegacyAuthContextDoesNotRestoreAuthState(t *testing.T
 			fakeRuntime.hasGlobalBrowserCookieStore = true
 			env.installProjectAuthRuntimeFake(t, fakeRuntime)
 			runner := newContractP45Runner(t)
+			runner.recordEventsTo(fakeRuntime)
 			env.installAnyTestCaseRunner(t, runner)
 			testCase := env.seedCustomTestCase(t, page.ID, testCaseSeed{
 				Title:     tc.name,
@@ -411,6 +445,7 @@ func TestRunTestCaseCleanOrLegacyAuthContextDoesNotRestoreAuthState(t *testing.T
 			res := env.runTestCase(t, project.ID, version.ID, page.ID, testCase.ID, map[string]any{})
 
 			env.requireStatus(t, res, http.StatusOK)
+			fakeRuntime.requireEventBefore(t, "new_clean_context", "runner_start")
 			fakeRuntime.requireNoEvent(t, "restore_project_auth_state")
 			fakeRuntime.requireNoEvent(t, "load_global_browser_cookie_store")
 			detail := env.decodeTestExecutionDetail(t, res)
@@ -426,6 +461,8 @@ func TestRunTestCaseCleanOrLegacyAuthContextDoesNotRestoreAuthState(t *testing.T
 func TestRunTestCaseProjectSavedRequiresAuthStateBeforeRunner(t *testing.T) {
 	env := newGenerateContractEnv(t)
 	project, version, page := env.seedProjectVersionPage(t)
+	fakeRuntime := newContractP45Runtime()
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
 	runner := newContractP45Runner(t)
 	runner.failOnCall = true
 	env.installAnyTestCaseRunner(t, runner)
@@ -442,6 +479,7 @@ func TestRunTestCaseProjectSavedRequiresAuthStateBeforeRunner(t *testing.T) {
 	if runner.calls != 0 {
 		t.Fatalf("runner calls = %d, want 0", runner.calls)
 	}
+	fakeRuntime.requireNoEvent(t, "new_clean_context")
 	env.requireTestExecutionCount(t, testCase.ID, 0)
 }
 
@@ -461,6 +499,7 @@ func TestRunTestCaseProjectSavedRestoresAuthStateBeforeNavigation(t *testing.T) 
 			project, version, page := env.seedProjectVersionPage(t)
 			auth := env.seedProjectAuthState(t, project.ID, version.ID, page.ID, contractStorageState("https://example.invalid/app/home"))
 			fakeRuntime := newContractP45Runtime()
+			fakeRuntime.hasGlobalBrowserCookieStore = true
 			env.installProjectAuthRuntimeFake(t, fakeRuntime)
 			runner := newContractP45Runner(t)
 			runner.recordEventsTo(fakeRuntime)
@@ -474,7 +513,9 @@ func TestRunTestCaseProjectSavedRestoresAuthStateBeforeNavigation(t *testing.T) 
 			res := env.runTestCase(t, project.ID, version.ID, page.ID, testCase.ID, map[string]any{})
 
 			env.requireStatus(t, res, http.StatusOK)
+			fakeRuntime.requireEventBefore(t, "new_clean_context", "restore_project_auth_state")
 			fakeRuntime.requireEventBefore(t, "restore_project_auth_state", "runner_start")
+			fakeRuntime.requireNoEvent(t, "load_global_browser_cookie_store")
 			detail := env.decodeTestExecutionDetail(t, res)
 			report := p45ObjectField(t, detail, "report_data")
 			initialNavigation := p45ObjectField(t, report, "initial_navigation")
@@ -525,6 +566,11 @@ func (r *contractP45Runtime) StartPageRecording(_ context.Context, input map[str
 	}
 	r.events = append(r.events, "open_target_url", "start_recording")
 	return map[string]any{"recording_session_id": "contract-recording-session"}, nil
+}
+
+func (r *contractP45Runtime) PrepareTestExecution(_ context.Context, _ map[string]any) error {
+	r.events = append(r.events, "new_clean_context")
+	return nil
 }
 
 func (r *contractP45Runtime) RestoreProjectAuthState(_ context.Context, _ map[string]any) error {
@@ -642,6 +688,12 @@ func (e *generateContractEnv) getProjectAuthState(t *testing.T, projectID, versi
 func (e *generateContractEnv) deleteProjectAuthState(t *testing.T, projectID, versionID uint) *httptest.ResponseRecorder {
 	t.Helper()
 	path := fmt.Sprintf("/api/v1/projects/%d/versions/%d/auth-state", projectID, versionID)
+	return e.performP45JSONRequest(t, http.MethodDelete, path, nil)
+}
+
+func (e *generateContractEnv) deleteVersion(t *testing.T, projectID, versionID uint) *httptest.ResponseRecorder {
+	t.Helper()
+	path := fmt.Sprintf("/api/v1/projects/%d/versions/%d", projectID, versionID)
 	return e.performP45JSONRequest(t, http.MethodDelete, path, nil)
 }
 
@@ -765,6 +817,31 @@ func (e *generateContractEnv) requireProjectAuthStateUnchanged(t *testing.T, wan
 	}
 	if got.StateJSON != want.StateJSON || got.StateDigest != want.StateDigest || got.Status != want.Status {
 		t.Fatalf("ProjectAuthState changed\nwant: %+v\n got: %+v", want, got)
+	}
+}
+
+func (e *generateContractEnv) requireProjectAuthStateMissing(t *testing.T, authStateID uint) {
+	t.Helper()
+	var got models.ProjectAuthState
+	err := e.db.Where("id = ?", authStateID).First(&got).Error
+	if err == nil {
+		t.Fatalf("ProjectAuthState %d still exists after scoped delete", authStateID)
+	}
+	if err != gorm.ErrRecordNotFound {
+		t.Fatalf("load deleted ProjectAuthState %d: %v", authStateID, err)
+	}
+}
+
+func (e *generateContractEnv) requireActiveProjectAuthStateCount(t *testing.T, projectID, versionID uint, want int64) {
+	t.Helper()
+	var count int64
+	if err := e.db.Model(&models.ProjectAuthState{}).
+		Where("project_id = ? AND version_id = ? AND status = ?", projectID, versionID, "active").
+		Count(&count).Error; err != nil {
+		t.Fatalf("count active ProjectAuthState: %v", err)
+	}
+	if count != want {
+		t.Fatalf("active ProjectAuthState count = %d, want %d", count, want)
 	}
 }
 

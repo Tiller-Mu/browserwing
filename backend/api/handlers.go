@@ -50,6 +50,7 @@ type Handler struct {
 	explorer       *browser.Explorer // AI 探索器
 	versionInfo    VersionInfo
 	testCaseRunner *testCaseRunnerHolder
+	projectAuth    *projectAuthRuntimeHolder
 }
 
 type testCaseRunnerHolder struct {
@@ -78,6 +79,7 @@ func NewHandler(
 		llmManager:     llmMgr,
 		mcpServer:      nil, // 将在主程序中设置
 		testCaseRunner: newTestCaseRunnerHolder(testcase_executor.New(exec)),
+		projectAuth:    newProjectAuthRuntimeHolder(newBrowserProjectAuthRuntime(browserMgr)),
 	}
 }
 
@@ -94,6 +96,21 @@ func (h *Handler) ensureTestCaseRunnerHolder() *testCaseRunnerHolder {
 
 func (h *Handler) SetTestCaseRunnerForTest(runner any) {
 	h.ensureTestCaseRunnerHolder().set(runner)
+}
+
+func (h *Handler) ensureProjectAuthRuntimeHolder() *projectAuthRuntimeHolder {
+	if h.projectAuth == nil {
+		runtime := newBrowserProjectAuthRuntime(h.browserManager)
+		if runtime == nil {
+			runtime = unavailableProjectAuthRuntime{}
+		}
+		h.projectAuth = newProjectAuthRuntimeHolder(runtime)
+	}
+	return h.projectAuth
+}
+
+func (h *Handler) SetProjectAuthRuntimeForTest(runtime any) {
+	h.ensureProjectAuthRuntimeHolder().set(adaptInjectedProjectAuthRuntime(runtime))
 }
 
 func (h *testCaseRunnerHolder) set(runner any) {

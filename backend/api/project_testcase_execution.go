@@ -39,6 +39,7 @@ type runTestCaseRequest struct {
 	Headless          *bool  `json:"headless"`
 	StopOnFailure     *bool  `json:"stop_on_failure"`
 	CaptureScreenshot *bool  `json:"capture_screenshot"`
+	AuthContext       string `json:"auth_context"`
 }
 
 type testExecutionSummaryResponse struct {
@@ -89,12 +90,46 @@ func (h *ProjectHandlers) RunTestCase(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	runtime := h.projectAuthRuntime()
+	var authSummary map[string]any
+	var authStateJSON string
+	if input["auth_context"] == authContextProjectSaved {
+		auth, err := loadActiveProjectAuthState(version.ProjectID, version.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if auth == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Project auth state is required"})
+			return
+		}
+		authSummary = projectAuthStateSummary(*auth)
+		input["auth_state"] = authSummary
+		authStateJSON = auth.StateJSON
+	}
+	if runtime == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Project auth runtime is not configured"})
+		return
+	}
+	if err := runtime.PrepareTestExecution(c.Request.Context(), input); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Prepare isolated test execution failed"})
+		return
+	}
+	if input["auth_context"] == authContextProjectSaved {
+		input["auth_state_json"] = authStateJSON
+		if err := runtime.RestoreProjectAuthState(c.Request.Context(), input); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Restore project auth state failed"})
+			return
+		}
+		delete(input, "auth_state_json")
+	}
 
 	result, err := h.runTestCaseWithRunner(c.Request.Context(), input)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	attachAuthContextToRunnerResult(result, input, authSummary)
 
 	execution, err := saveTestCaseExecution(testCase.ID, result)
 	if err != nil {
@@ -240,6 +275,17 @@ func buildRunTestCaseInput(testCase models.TestCase, version models.ProjectVersi
 	if err != nil {
 		return nil, err
 	}
+	authContext, authContextSource, err := authContextFromBlueprint(blueprint)
+	if err != nil {
+		return nil, err
+	}
+	if requestAuthContext := strings.TrimSpace(req.AuthContext); requestAuthContext != "" {
+		if !validAuthContext(requestAuthContext) {
+			return nil, testCaseValidationError("Request auth_context is invalid")
+		}
+		authContext = requestAuthContext
+		authContextSource = "request"
+	}
 	defaultURL, err := buildExecutionURL(version.BaseURL, page.Path)
 	if err != nil {
 		return nil, err
@@ -291,6 +337,8 @@ func buildRunTestCaseInput(testCase models.TestCase, version models.ProjectVersi
 		"browser_instance_id": req.BrowserInstanceID,
 		"stop_on_failure":     stopOnFailure,
 		"capture_screenshot":  captureScreenshot,
+		"auth_context":        authContext,
+		"auth_context_source": authContextSource,
 	}, nil
 }
 
@@ -522,6 +570,23 @@ func normalizeExecutionReportForStorage(report map[string]any) map[string]any {
 	return report
 }
 
+func attachAuthContextToRunnerResult(result map[string]any, input map[string]any, authSummary map[string]any) {
+	reportData, ok := firstRunnerValue(result, "report_data", "ReportData").(map[string]any)
+	if !ok || reportData == nil {
+		return
+	}
+	if _, exists := reportData["auth_context"]; !exists {
+		reportData["auth_context"] = input["auth_context"]
+	}
+	if _, exists := reportData["auth_context_source"]; !exists {
+		reportData["auth_context_source"] = input["auth_context_source"]
+	}
+	if authSummary != nil {
+		reportData["auth_state"] = authSummary
+	}
+	result["report_data"] = reportData
+}
+
 func toTestExecutionSummary(execution models.TestExecution) testExecutionSummaryResponse {
 	return testExecutionSummaryResponse{
 		ID:           execution.ID,
@@ -627,6 +692,12 @@ func toSnakeCase(value string) string {
 		return "target_summary"
 	case "stepIndex":
 		return "step_index"
+	case "authContext":
+		return "auth_context"
+	case "authContextSource":
+		return "auth_context_source"
+	case "authState":
+		return "auth_state"
 	default:
 		return value
 	}

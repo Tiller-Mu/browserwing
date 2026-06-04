@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Bot, ExternalLink, FilePlus, FileText, ListChecks, Plus, Trash2, Video } from 'lucide-react';
+import { ArrowLeft, Bot, ExternalLink, FilePlus, FileText, Plus, RefreshCw, ShieldCheck, Trash2, Video } from 'lucide-react';
 import { api, type LLMConfig } from '../api/client';
-import { projectApi, type TestCase, type TestCaseStatus, type TestPage } from '../api/project';
+import { projectApi, type P45AuthContext, type P45RecordingKind, type ProjectAuthStateSummary, type TestCase, type TestPage } from '../api/project';
 import { Modal } from '../components/Modal';
 import Toast from '../components/Toast';
+import {
+  buildP45AuthStateSummary,
+  buildP45PageManagementView,
+  createP45AuthStateController,
+  createP45RecordingController,
+  type P45AuthStateSummaryView,
+} from './p45RecordingUiContract';
 
 type GenerateMode = 'append' | 'replace' | 'preview';
 
@@ -14,25 +21,15 @@ const generateModeLabels: Record<GenerateMode, string> = {
   preview: '预览'
 };
 
-const testCaseStatusLabels: Record<TestCaseStatus, string> = {
-  active: '启用',
-  draft: '草稿',
-  archived: '归档'
-};
-
-const testCaseStatusClass: Record<TestCaseStatus, string> = {
-  active: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
-  draft: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-  archived: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
-};
-
 export default function TestPageManager() {
   const { projectId, versionId } = useParams();
   const navigate = useNavigate();
 
   const [pages, setPages] = useState<TestPage[]>([]);
+  const [authState, setAuthState] = useState<P45AuthStateSummaryView | null>(null);
   const [llmConfigs, setLlmConfigs] = useState<LLMConfig[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authStateUpdating, setAuthStateUpdating] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
@@ -53,6 +50,7 @@ export default function TestPageManager() {
   useEffect(() => {
     if (projectId && versionId) {
       loadPages();
+      loadProjectAuthState();
       loadLLMConfigs();
     }
   }, [projectId, versionId]);
@@ -71,6 +69,16 @@ export default function TestPageManager() {
       showToast('获取测试页面列表失败', 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadProjectAuthState = async () => {
+    try {
+      const response = await projectApi.getProjectAuthState(Number(projectId), Number(versionId));
+      setAuthState(buildP45AuthStateSummary(response.data.auth_state as ProjectAuthStateSummary | null));
+    } catch (error) {
+      console.error('Failed to load project auth state:', error);
+      setAuthState(null);
     }
   };
 
@@ -112,8 +120,62 @@ export default function TestPageManager() {
     }
   };
 
-  const navigateToRecord = (pageId: number) => {
-    navigate(`/browser?projectId=${projectId}&versionId=${versionId}&pageId=${pageId}`);
+  const recordingController = projectId && versionId ? createP45RecordingController({
+    projectId: Number(projectId),
+    versionId: Number(versionId),
+    api: projectApi,
+    navigate,
+  }) : null;
+
+  const authStateController = projectId && versionId ? createP45AuthStateController({
+    projectId: Number(projectId),
+    versionId: Number(versionId),
+    api: projectApi,
+  }) : null;
+
+  const handleCaptureProjectAuthState = async () => {
+    if (!authStateController) return;
+    try {
+      setAuthStateUpdating(true);
+      const nextAuthState = await authStateController.capture();
+      setAuthState(nextAuthState);
+      showToast('项目登录态已更新', 'success');
+    } catch (error: any) {
+      showToast(error.response?.data?.error || '更新项目登录态失败，请先在浏览器中完成登录', 'error');
+    } finally {
+      setAuthStateUpdating(false);
+    }
+  };
+
+  const handleDeleteProjectAuthState = async () => {
+    if (!authStateController || !authState) return;
+    if (!window.confirm('确定要删除当前版本保存的项目登录态吗？')) return;
+
+    try {
+      setAuthStateUpdating(true);
+      await authStateController.remove();
+      setAuthState(null);
+      showToast('项目登录态已删除', 'success');
+    } catch (error: any) {
+      showToast(error.response?.data?.error || '删除项目登录态失败', 'error');
+    } finally {
+      setAuthStateUpdating(false);
+    }
+  };
+
+  const navigateToRecord = async (page: TestPage, recordingKind: P45RecordingKind, selectedAuthContext: P45AuthContext) => {
+    if (!recordingController) return;
+    try {
+      await recordingController.startRecording({
+        pageId: page.id,
+        recordingKind,
+        authContext: selectedAuthContext,
+        authStateId: selectedAuthContext === 'project_saved' ? authState?.id ?? null : null,
+        targetUrl: page.path,
+      });
+    } catch (error: any) {
+      showToast(error.response?.data?.error || '启动页面录制失败', 'error');
+    }
   };
 
   const navigateToTestCase = (pageId: number, testCaseId: number) => {
@@ -208,6 +270,8 @@ export default function TestPageManager() {
     </button>
   );
 
+  const pageManagementView = buildP45PageManagementView({ pages, authState });
+
   return (
     <div className="space-y-6 lg:space-y-8 animate-fade-in">
       <div className="space-y-4">
@@ -246,133 +310,146 @@ export default function TestPageManager() {
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {pages.map((page) => {
-            const hasMainScript = Boolean(page.scripts && page.scripts.length > 0);
-            const testCases = page.test_cases || [];
-            const casesCount = testCases.length;
+        <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm text-gray-600 dark:text-gray-400 flex flex-wrap items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-gray-400" />
+              <span>项目登录态：</span>
+              {pageManagementView.authState ? (
+                <span className="font-medium text-gray-900 dark:text-gray-100">
+                  {pageManagementView.authState.cookieCount} Cookie / {pageManagementView.authState.originCount} Origin
+                </span>
+              ) : (
+                <span className="font-medium text-amber-700 dark:text-amber-300">未保存</span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={handleCaptureProjectAuthState}
+                disabled={authStateUpdating || pageManagementView.authStateActions.find((action) => action.kind === 'capture_project_auth_state')?.disabled}
+                className="px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-md hover:border-indigo-300 dark:hover:border-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5 text-sm"
+                title="从当前浏览器页面更新项目登录态摘要"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${authStateUpdating ? 'animate-spin' : ''}`} /> 更新登录态
+              </button>
+              {pageManagementView.authState && (
+                <button
+                  onClick={handleDeleteProjectAuthState}
+                  disabled={authStateUpdating || pageManagementView.authStateActions.find((action) => action.kind === 'delete_project_auth_state')?.disabled}
+                  className="px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-md hover:border-red-300 hover:text-red-700 dark:hover:border-red-800 dark:hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5 text-sm"
+                  title="删除当前版本保存的项目登录态"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> 删除登录态
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px] text-sm">
+              <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-500 dark:text-gray-400">
+                <tr>
+                  <th className="px-5 py-3 text-left font-medium">页面</th>
+                  <th className="px-5 py-3 text-left font-medium">主流程</th>
+                  <th className="px-5 py-3 text-left font-medium">测试用例</th>
+                  <th className="px-5 py-3 text-left font-medium">录制</th>
+                  <th className="px-5 py-3 text-right font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                {pageManagementView.rows.map((row) => {
+                  const page = row.page;
+                  const hasMainScript = Boolean(page.scripts && page.scripts.length > 0);
+                  const testCases = page.test_cases || [];
+                  const casesCount = testCases.length;
+                  const projectSavedAction = row.actions.find((action) => action.recordingKind === 'business_flow' && action.authContext === 'project_saved');
 
-            return (
-              <div key={page.id} className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
-                <div className="p-5 border-b border-gray-100 dark:border-gray-700 flex items-start justify-between bg-gray-50/50 dark:bg-gray-900/20">
-                  <div className="flex items-start gap-3 min-w-0">
-                    <div className="p-2 bg-indigo-50 dark:bg-indigo-900/30 rounded-lg mt-0.5">
-                      <FileText className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                    </div>
-                    <div className="min-w-0">
-                      <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2 flex-wrap">
-                        {page.name}
-                        {hasMainScript && (
-                          <span className="px-2 py-0.5 text-xs font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 rounded-full flex items-center gap-1">
-                            <Video className="w-3 h-3" /> 主流程已就绪
-                          </span>
-                        )}
-                      </h3>
-                      {page.path && (
-                        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 font-mono flex items-center gap-1 break-all">
-                          <ExternalLink className="w-3.5 h-3.5 shrink-0" /> {page.path}
-                        </p>
-                      )}
-                      {page.description && (
-                        <p className="text-sm text-gray-600 dark:text-gray-400 mt-2 line-clamp-2">
-                          {page.description}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => handleDeletePage(page.id)}
-                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors"
-                    title="删除页面"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-
-                <div className="p-5 flex-1 flex flex-col bg-white dark:bg-gray-800">
-                  <div className={`mb-5 rounded-lg p-4 border ${
-                    hasMainScript
-                      ? 'bg-indigo-50/50 dark:bg-indigo-900/10 border-indigo-100 dark:border-indigo-900/30'
-                      : 'bg-gray-50 dark:bg-gray-900/50 border-gray-200 dark:border-gray-700'
-                  }`}>
-                    <div className="flex items-center justify-between mb-2 gap-3">
-                      <h4 className={`font-medium text-sm flex items-center gap-2 ${
-                        hasMainScript ? 'text-indigo-900 dark:text-indigo-300' : 'text-gray-900 dark:text-gray-100'
-                      }`}>
-                        <Video className="w-4 h-4 text-indigo-500" />
-                        {hasMainScript ? '主流程录制轨迹' : '缺少主流程录制'}
-                      </h4>
-                      <button
-                        onClick={() => navigateToRecord(page.id)}
-                        className="text-xs text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 font-medium flex items-center gap-1 transition-colors"
-                      >
-                        <Video className="w-3.5 h-3.5" /> {hasMainScript ? '重新录制' : '立即录制'}
-                      </button>
-                    </div>
-                    {hasMainScript ? (
-                      <div className="flex items-center justify-between gap-3 text-sm">
-                        <span className="text-gray-600 dark:text-gray-400 min-w-0">
-                          已绑定脚本: <span className="font-semibold text-gray-900 dark:text-gray-100">{page.scripts?.[0]?.name || '未命名脚本'}</span>
-                        </span>
-                        <span className="text-gray-500 dark:text-gray-500 text-xs shrink-0">
-                          {page.scripts?.[0]?.updated_at ? new Date(page.scripts[0].updated_at).toLocaleString() : ''}
-                        </span>
-                      </div>
-                    ) : (
-                      <p className="text-sm text-gray-500 dark:text-gray-400">
-                        手工维护用例不要求主流程；智能生成前需要先录制一条正向主流程。
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-between gap-3 mb-4">
-                    <h4 className="font-medium text-gray-900 dark:text-gray-100 flex items-center gap-2">
-                      <ListChecks className="w-4 h-4 text-indigo-500" /> 测试用例 ({casesCount})
-                    </h4>
-                    <div className="flex items-center gap-2">
-                      {renderCreateCaseButton(page)}
-                      {hasMainScript && renderGenerateButton(page)}
-                    </div>
-                  </div>
-
-                  {casesCount === 0 ? (
-                    <div className="flex-1 bg-gray-50 dark:bg-gray-900/50 rounded-lg p-6 flex flex-col items-center justify-center text-center">
-                      <FilePlus className="w-10 h-10 text-gray-400 mb-3" />
-                      <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                        暂无测试用例。
-                      </p>
-                      <div className="flex flex-wrap items-center justify-center gap-2">
-                        {renderCreateCaseButton(page)}
-                        {hasMainScript && renderGenerateButton(page, '智能生成测试用例')}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-3 flex-1 overflow-y-auto max-h-[300px] pr-2">
-                      {testCases.map((tc) => (
-                        <button
-                          key={tc.id}
-                          onClick={() => navigateToTestCase(page.id, tc.id)}
-                          className="w-full text-left p-3 border border-gray-100 dark:border-gray-700 rounded-lg hover:border-indigo-200 dark:hover:border-indigo-800 transition-colors group"
-                        >
-                          <div className="flex justify-between items-start gap-3 mb-1">
-                            <span className="font-medium text-sm text-gray-900 dark:text-gray-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                              {tc.title}
-                            </span>
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${testCaseStatusClass[tc.status] || testCaseStatusClass.draft}`}>
-                              {testCaseStatusLabels[tc.status] || tc.status}
-                            </span>
+                  return (
+                    <tr key={page.id} className="align-top hover:bg-gray-50/70 dark:hover:bg-gray-900/30">
+                      <td className="px-5 py-4 max-w-[280px]">
+                        <div className="font-semibold text-gray-900 dark:text-gray-100">{page.name}</div>
+                        {page.path && (
+                          <div className="mt-1 font-mono text-xs text-gray-500 dark:text-gray-400 break-all flex items-center gap-1">
+                            <ExternalLink className="w-3.5 h-3.5 shrink-0" /> {page.path}
                           </div>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-1">
-                            {tc.description}
-                          </p>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+                        )}
+                        {page.description && (
+                          <div className="mt-1 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{page.description}</div>
+                        )}
+                      </td>
+                      <td className="px-5 py-4">
+                        {hasMainScript ? (
+                          <div>
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                              <Video className="w-3.5 h-3.5" /> 已就绪
+                            </span>
+                            <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                              {page.scripts?.[0]?.name || '未命名脚本'}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-amber-700 dark:text-amber-300">未录制</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="font-medium text-gray-900 dark:text-gray-100">{casesCount} 条</div>
+                        {testCases.slice(0, 2).map((tc) => (
+                          <button
+                            key={tc.id}
+                            onClick={() => navigateToTestCase(page.id, tc.id)}
+                            className="block mt-1 max-w-[220px] truncate text-xs text-indigo-600 hover:text-indigo-700 dark:text-indigo-400"
+                          >
+                            {tc.title}
+                          </button>
+                        ))}
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => navigateToRecord(page, 'login_flow', 'clean')}
+                            className="px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-md hover:border-indigo-300 dark:hover:border-indigo-700 inline-flex items-center gap-1.5"
+                          >
+                            <Video className="w-3.5 h-3.5" /> 登录流程
+                          </button>
+                          <button
+                            onClick={() => navigateToRecord(page, 'business_flow', 'project_saved')}
+                            disabled={projectSavedAction?.disabled}
+                            title={projectSavedAction?.disabled ? '请先更新项目登录态，或选择干净会话录制业务流程' : undefined}
+                            className="px-3 py-1.5 bg-gray-900 dark:bg-gray-700 text-white rounded-md hover:bg-gray-800 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+                          >
+                            <Video className="w-3.5 h-3.5" /> 业务流程
+                          </button>
+                          <button
+                            onClick={() => navigateToRecord(page, 'business_flow', 'clean')}
+                            className="px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-md hover:border-indigo-300 dark:hover:border-indigo-700 inline-flex items-center gap-1.5"
+                          >
+                            <Video className="w-3.5 h-3.5" /> 干净业务
+                          </button>
+                        </div>
+                        {projectSavedAction?.disabled && (
+                          <div className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                            无登录态时，请先更新登录态或选择干净业务录制。
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex justify-end gap-2">
+                          {renderCreateCaseButton(page)}
+                          {hasMainScript && renderGenerateButton(page)}
+                          <button
+                            onClick={() => handleDeletePage(page.id)}
+                            className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-md transition-colors"
+                            title="删除页面"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -582,3 +659,10 @@ export default function TestPageManager() {
     </div>
   );
 }
+
+export const p45TestPageManagerContract = {
+  buildAuthStateSummary: buildP45AuthStateSummary,
+  buildPageManagementView: buildP45PageManagementView,
+  createAuthStateController: createP45AuthStateController,
+  createRecordingController: createP45RecordingController,
+};

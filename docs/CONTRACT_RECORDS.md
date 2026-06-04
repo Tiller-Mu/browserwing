@@ -331,3 +331,75 @@ P4 refine 必须复用既有 BoltDB LLM 配置读取链路；默认配置和指�
 
 验证：
 `TestRefineTestCaseReusesExistingLLMConfigSelection` 覆盖 LLM 配置复用和密钥不泄露；P4 代码审核确认 `frontend/src/pages/TestCaseDetail.tsx` 已接入自然语言修改、历史展示、应用/放弃和未保存编辑拦截。
+
+## P4.5：录制体验和项目登录态
+
+### 项目登录态生命周期和脱敏
+
+契约：
+`ProjectAuthState` 是某个 `ProjectVersion` 的默认登录态，必须同时按 ProjectID 和 VersionID 校验归属。普通查询、前端展示、Playbot 输入、执行报告和错误响应只能使用摘要，不得返回 Cookie、localStorage 或 sessionStorage 的明文 value。捕获空状态或保存失败时不能替换已有 active 登录态；删除 ProjectVersion 时必须清理对应登录态。
+
+依据：
+来自 P4.5 设计中的 ProjectAuthState 模型、敏感字段边界和版本隔离规则。登录态是敏感资产，不能用普通详情接口、报告或日志泄露原始 `StateJSON`。
+
+当前/历史问题：
+如果只按 AuthState ID 读取，会造成跨版本串用；如果捕获失败仍覆盖旧状态，会让后续业务录制和执行突然失效；如果响应带出明文 value，会把自动化凭据暴露给前端和报告消费者。
+
+验证：
+`TestCaptureProjectAuthStateScopesToProjectVersionAndRedactsValues`、`TestDeleteProjectAuthStateScopesAndMakesProjectSavedRunFail`、`TestDeleteVersionDeletesScopedProjectAuthState` 和 `TestCaptureProjectAuthStateRejectsEmptyStateAndKeepsPreviousOnFailure` 覆盖版本隔离、脱敏、删除和失败不变更。
+
+### 录制会话口径和 PageScript 元数据
+
+契约：
+项目页面录制只允许 `login_flow` 和 `business_flow` 两类；`login_flow` 必须使用 `clean`，`business_flow` 可以显式选择 `clean` 或 `project_saved`。`project_saved` 录制在当前版本没有 active 登录态时必须前置失败。项目页面录制必须使用隔离上下文，不能自动加载全局 `browser` Cookie Store。新前端保存 PageScript 必须写入 `recording_meta`，旧前端缺失该字段时按兼容语义视为 `business_flow + clean`。
+
+依据：
+来自 P4.5 设计对登录页可录制、业务流程可复用项目登录态以及旧录制兼容的要求。录制元数据是后续 Playbot 生成和 TestCase 执行口径的事实来源。
+
+当前/历史问题：
+如果登录流程自动复用项目登录态，会跳过登录页导致登录脚本无法录制；如果业务流程显式选择 `clean` 后生成又改成 `project_saved`，会让没有登录态的项目执行前失败；如果旧 PageScript 缺元数据被默认为 `project_saved`，会破坏 P1-P4 已存在用例。
+
+验证：
+`TestStartLoginFlowRecordingUsesCleanContext`、`TestStartBusinessFlowRecordingRequiresAndRestoresProjectAuthState`、`TestSavePageRecordingPersistsRecordingMetaAndValidatesAuthContext` 和 `TestSavePageRecordingAllowsLegacyMissingRecordingMetaAsClean` 覆盖录制口径、项目登录态恢复、元数据持久化、非法元数据拒绝和旧前端兼容。
+
+### 生成和执行的 auth_context 继承
+
+契约：
+从 PageScript 生成 TestCase 时，后端必须优先继承 `recording_meta.auth_context`；`business_flow + clean` 生成结果必须保持 `clean`，旧 PageScript 缺元数据按 `clean` 处理。Playbot 输出中的非法 `auth_context` 必须拒绝保存，`replace` 模式下不得删除旧 TestCase。执行 TestCase 时，请求可显式覆盖 `auth_context`；未传请求值时读取 Blueprint 顶层；旧 Blueprint 缺字段时按 `clean` 执行并记录 legacy 来源。
+
+依据：
+来自 P4.5 设计中“录制选择是生成事实源”和“旧用例兼容不改变 P1-P4 行为”的边界。Playbot 不负责登录态恢复，后端负责把合法会话口径落入 Blueprint 和执行输入。
+
+当前/历史问题：
+如果只按 `recording_kind` 推断，会丢失用户显式选择的 clean 业务流程；如果非法 Playbot 输出在 replace 前不校验，会删除旧用例后保存失败；如果旧 Blueprint 缺字段被当成 project_saved，会让历史用例在未保存登录态时突然不可执行。
+
+验证：
+`TestGenerateTestCasesCarriesAuthContextWithoutSendingAuthSecretsToPlaybot`、`TestGenerateTestCasesRejectsInvalidBlueprintAuthContext`、`TestGenerateTestCasesRejectsInvalidRecordingMetaAuthContextBeforePlaybot` 和 `TestRunTestCaseCleanOrLegacyAuthContextDoesNotRestoreAuthState` 覆盖生成继承、非法输出拒绝、生成前校验、clean 与 legacy 执行不恢复登录态。
+
+### project_saved 执行恢复和报告
+
+契约：
+显式 `project_saved` 执行必须在 runner 之前找到当前版本 active 登录态，并在首次导航前恢复；缺少登录态时返回执行前错误，不调用 runner，不创建 TestExecution。执行报告只记录 `auth_context`、来源、登录态摘要和导航摘要，不记录敏感明文。
+
+依据：
+来自 P4.5 对自动化执行登录状态复用、缺登录态前置失败和敏感字段不出报告的要求。恢复顺序必须早于默认导航或首步 navigate，否则业务用例会在未登录状态下打开目标页。
+
+当前/历史问题：
+如果缺少登录态时静默降级 clean，会掩盖用户配置错误；如果先导航再恢复，会在目标页打开时仍处于未登录状态；如果执行报告带明文值，会把登录凭据写入历史记录。
+
+验证：
+`TestRunTestCaseProjectSavedRequiresAuthStateBeforeRunner` 和 `TestRunTestCaseProjectSavedRestoresAuthStateBeforeNavigation` 覆盖前置失败、runner 不调用、TestExecution 不创建、恢复顺序、默认导航和首步 navigate 的优先关系。
+
+### 前端列表入口和短录制页
+
+契约：
+页面管理页使用列表或表格展示页面，不再用大卡片承载主要工作流；列表顶部展示当前版本登录态摘要，页面行内提供登录流程、项目登录态业务流程、干净业务流程、智能生成、新建用例、查看和删除入口。没有项目登录态时，`business_flow + project_saved` 必须禁用并引导用户更新登录态或选择干净业务录制。项目录制页必须从通用浏览器页收敛，只展示项目录制需要的操作；登录流程保存时提供“保存主流程并更新项目登录态”“只保存主流程”“只更新登录态”。
+
+依据：
+来自 P4.5 的核心体验目标：压缩录制路径，并把登录态保存纳入录制闭环。前端不能只把字段传通，还要减少用户在通用浏览器、页面列表和录制保存之间来回切换。
+
+当前/历史问题：
+如果页面仍用大卡片，页面数量变多后很难扫描；如果项目录制页仍展示通用脚本库、配置和独立 Cookie 管理，流程压缩没有落地；如果登录流程结束后不能同步保存登录态，用户仍要回列表手动补一次。
+
+验证：
+`frontend/src/p45_recording_ui_contract.test.ts` 覆盖前端契约 helper、页面列表视图、录制入口、无登录态引导和保存录制元数据；代码审核确认 `frontend/src/pages/TestPageManager.tsx` 已接入列表式页面管理和登录态入口，`frontend/src/pages/BrowserManager.tsx` 已接入项目录制短流程和登录流程保存登录态选项。

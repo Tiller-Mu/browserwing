@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,18 +19,18 @@ type ProjectHandlers struct {
 	boltDB         *storage.BoltDB
 	config         *config.Config
 	testCaseRunner *testCaseRunnerHolder
+	projectAuth    *projectAuthRuntimeHolder
 }
 
 // NewProjectHandlers 创建处理器实例
-func NewProjectHandlers(boltDB *storage.BoltDB, cfg *config.Config, runnerHolder ...*testCaseRunnerHolder) *ProjectHandlers {
+func NewProjectHandlers(boltDB *storage.BoltDB, cfg *config.Config, runnerHolder *testCaseRunnerHolder, authHolder *projectAuthRuntimeHolder) *ProjectHandlers {
 	var holder *testCaseRunnerHolder
-	if len(runnerHolder) > 0 {
-		holder = runnerHolder[0]
-	}
+	holder = runnerHolder
 	return &ProjectHandlers{
 		boltDB:         boltDB,
 		config:         cfg,
 		testCaseRunner: holder,
+		projectAuth:    authHolder,
 	}
 }
 
@@ -161,6 +162,12 @@ func (h *ProjectHandlers) UpdateVersion(c *gin.Context) {
 }
 
 func (h *ProjectHandlers) DeleteVersion(c *gin.Context) {
+	idStr := c.Param("id")
+	projectID, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Project ID"})
+		return
+	}
 	vidStr := c.Param("vid")
 	versionID, err := strconv.ParseUint(vidStr, 10, 32)
 	if err != nil {
@@ -168,8 +175,19 @@ func (h *ProjectHandlers) DeleteVersion(c *gin.Context) {
 		return
 	}
 
-	// Cascade delete is configured in models (it will delete Pages, TestCases, etc.)
-	if err := storage.DB.Delete(&models.ProjectVersion{}, versionID).Error; err != nil {
+	var version models.ProjectVersion
+	if err := storage.DB.Where("id = ? AND project_id = ?", uint(versionID), uint(projectID)).First(&version).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
+		return
+	}
+
+	if err := storage.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("project_id = ? AND version_id = ?", uint(projectID), uint(versionID)).
+			Delete(&models.ProjectAuthState{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&version).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -236,10 +254,11 @@ func (h *ProjectHandlers) CloneVersion(c *gin.Context) {
 		tx.Where("page_id = ?", p.ID).Find(&scripts)
 		for _, s := range scripts {
 			newScript := models.PageScript{
-				PageID:      newPage.ID,
-				Name:        s.Name,
-				ActionTrace: s.ActionTrace,
-				DOMSnapshot: s.DOMSnapshot,
+				PageID:            newPage.ID,
+				Name:              s.Name,
+				ActionTrace:       s.ActionTrace,
+				DOMSnapshot:       s.DOMSnapshot,
+				RecordingMetaJSON: s.RecordingMetaJSON,
 			}
 			tx.Create(&newScript)
 		}
@@ -334,34 +353,59 @@ func (h *ProjectHandlers) DeletePage(c *gin.Context) {
 }
 
 func (h *ProjectHandlers) SavePageRecording(c *gin.Context) {
-	pidStr := c.Param("pid")
-	pageID, err := strconv.ParseUint(pidStr, 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Page ID"})
+	projectID, versionID, pageID, ok := parseProjectVersionPageIDs(c)
+	if !ok {
+		return
+	}
+	if _, _, err := loadGenerationPageContext(projectID, versionID, pageID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, or page not found"})
 		return
 	}
 
 	var req struct {
-		Name        string `json:"name"`
-		ActionTrace string `json:"action_trace"`
-		DOMSnapshot string `json:"dom_snapshot"`
+		Name          string          `json:"name"`
+		ActionTrace   string          `json:"action_trace"`
+		DOMSnapshot   string          `json:"dom_snapshot"`
+		RecordingMeta json.RawMessage `json:"recording_meta"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 		return
 	}
 
-	// 删除此页面下已有的其他录制脚本，保证 1-to-1 的主流程（根据设计决策）
-	storage.DB.Where("page_id = ?", pageID).Delete(&models.PageScript{})
-
-	newScript := models.PageScript{
-		PageID:      uint(pageID),
-		Name:        req.Name,
-		ActionTrace: req.ActionTrace,
-		DOMSnapshot: req.DOMSnapshot,
+	recordingMetaJSON := ""
+	if len(req.RecordingMeta) > 0 && strings.TrimSpace(string(req.RecordingMeta)) != "null" {
+		var meta p45RecordingMeta
+		if err := json.Unmarshal(req.RecordingMeta, &meta); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "recording_meta JSON is invalid"})
+			return
+		}
+		if err := validateRecordingMeta(meta, false); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		normalizedMeta, err := json.Marshal(meta)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "recording_meta JSON is invalid"})
+			return
+		}
+		recordingMetaJSON = string(normalizedMeta)
 	}
 
-	if err := storage.DB.Create(&newScript).Error; err != nil {
+	newScript := models.PageScript{
+		PageID:            pageID,
+		Name:              req.Name,
+		ActionTrace:       req.ActionTrace,
+		DOMSnapshot:       req.DOMSnapshot,
+		RecordingMetaJSON: recordingMetaJSON,
+	}
+
+	if err := storage.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("page_id = ?", pageID).Delete(&models.PageScript{}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&newScript).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

@@ -3,20 +3,21 @@ import { convertToI18nKey } from '../utils/backendMessageConverter'
 
 // 动态构建 API URL
 const getApiBaseUrl = () => {
+  const env = (import.meta as ImportMeta & { env?: Record<string, string | boolean | undefined> }).env || {}
   // 如果是嵌入式运行（生产环境），使用相对路径
   // 这样前端会自动使用当前页面的地址和端口
-  if (import.meta.env.PROD) {
+  if (env.PROD) {
     return '/api/v1'
   }
 
   // 开发环境：优先使用完整的 API URL
-  if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL
+  if (env.VITE_API_URL) {
+    return String(env.VITE_API_URL)
   }
   
   // 开发环境：使用端口号构建（用于 Vite 代理）
-  const port = import.meta.env.VITE_API_PORT || '8080'
-  const host = import.meta.env.VITE_API_HOST || 'localhost'
+  const port = env.VITE_API_PORT || '8080'
+  const host = env.VITE_API_HOST || 'localhost'
   return `http://${host}:${port}/api/v1`
 }
 
@@ -1088,4 +1089,3 @@ export const getAppVersion = async (): Promise<AppVersionInfo> => {
   const response = await client.get('/version')
   return response.data
 }
-

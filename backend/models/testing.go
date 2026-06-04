@@ -43,13 +43,14 @@ type TestPage struct {
 
 // PageScript 记录针对某个页面的操作轨迹和 DOM 快照（底层技术脚本，保留以供调优）
 type PageScript struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	PageID      uint      `gorm:"index;not null" json:"page_id"`
-	Name        string    `gorm:"size:255" json:"name"`
-	ActionTrace string    `gorm:"type:text" json:"action_trace"` // JSON 序列化后的用户录制操作序列
-	DOMSnapshot string    `gorm:"type:text" json:"dom_snapshot"` // 页面结构 JSON 快照
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID                uint      `gorm:"primaryKey" json:"id"`
+	PageID            uint      `gorm:"index;not null" json:"page_id"`
+	Name              string    `gorm:"size:255" json:"name"`
+	ActionTrace       string    `gorm:"type:text" json:"action_trace"` // JSON 序列化后的用户录制操作序列
+	DOMSnapshot       string    `gorm:"type:text" json:"dom_snapshot"` // 页面结构 JSON 快照
+	RecordingMetaJSON string    `gorm:"type:text" json:"recording_meta_json"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // TestCase 是真正的测试用例，通常由 PageScript + 大模型智能裂变而来
@@ -93,6 +94,29 @@ type TestExecution struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// ProjectAuthState 保存某个 ProjectVersion 的默认登录态。
+// StateJSON 是敏感字段，只能供恢复执行使用，普通响应必须返回摘要。
+type ProjectAuthState struct {
+	ID                  uint       `gorm:"primaryKey" json:"id"`
+	ProjectID           uint       `gorm:"index:idx_project_auth_state_scope,not null" json:"project_id"`
+	VersionID           uint       `gorm:"index:idx_project_auth_state_scope,not null" json:"version_id"`
+	Name                string     `gorm:"size:255" json:"name"`
+	Status              string     `gorm:"size:50;default:'active';index" json:"status"`
+	SchemaVersion       int        `gorm:"default:1" json:"schema_version"`
+	StateJSON           string     `gorm:"type:text" json:"-"`
+	StateDigest         string     `gorm:"size:128" json:"state_digest"`
+	OriginAllowlistJSON string     `gorm:"type:text" json:"origin_allowlist_json"`
+	CookieCount         int        `json:"cookie_count"`
+	OriginCount         int        `json:"origin_count"`
+	CapturedURL         string     `gorm:"type:text" json:"captured_url"`
+	CapturedPageID      uint       `gorm:"index" json:"captured_page_id"`
+	CapturedAt          time.Time  `json:"captured_at"`
+	LastValidatedAt     *time.Time `json:"last_validated_at"`
+	InvalidReason       string     `gorm:"type:text" json:"invalid_reason"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
 // AutoMigrate 注册所有的结构体至 GORM
 func AutoMigrate(db *gorm.DB) error {
 	return db.AutoMigrate(
@@ -103,5 +127,6 @@ func AutoMigrate(db *gorm.DB) error {
 		&TestCase{},
 		&LLMRefinement{},
 		&TestExecution{},
+		&ProjectAuthState{},
 	)
 }

@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api, Script, ScriptAction, BrowserConfig, BrowserInstance } from '../api/client'
-import { Power, PowerOff, Loader, ExternalLink, RefreshCw, Save, Video, Play, Settings, Cookie, Monitor } from 'lucide-react'
+import { ArrowLeft, Power, PowerOff, Loader, ExternalLink, RefreshCw, Save, Video, Play, Settings, Cookie, Monitor, ShieldCheck } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { projectApi } from '../api/project'
 import Toast from '../components/Toast'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { useLanguage } from '../i18n'
+import { buildP45SaveRecordingPayload } from './p45RecordingUiContract'
+import type { P45AuthContext, P45RecordingKind, PageRecordingContextResponse } from '../api/project'
 
 interface BrowserStatus {
   is_running: boolean
@@ -23,6 +25,9 @@ interface RecordingStatus {
   actions?: ScriptAction[]
   count?: number
 }
+
+type ProjectRecordingSaveAction = 'save_only' | 'save_and_capture_auth' | 'capture_auth_only'
+
 export default function BrowserManager() {
   const { t, language } = useLanguage()
   const navigate = useNavigate()
@@ -33,6 +38,11 @@ export default function BrowserManager() {
   const projectId = searchParams.get('projectId')
   const versionId = searchParams.get('versionId')
   const pageId = searchParams.get('pageId')
+  const recordingKind = (searchParams.get('recordingKind') || 'business_flow') as P45RecordingKind
+  const authContext = (searchParams.get('authContext') || 'clean') as P45AuthContext
+  const authStateId = searchParams.get('authStateId')
+  const targetUrlParam = searchParams.get('targetUrl') || ''
+  const isProjectRecordingContext = Boolean(projectId && versionId && pageId)
 
   const [status, setStatus] = useState<BrowserStatus>({ is_running: false })
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({ is_recording: false })
@@ -40,10 +50,12 @@ export default function BrowserManager() {
   const [stoppingBrowser, setStoppingBrowser] = useState(false)
   const [openingPage, setOpeningPage] = useState(false)
   const [savingCookies, setSavingCookies] = useState(false)
+  const [savingAuthState, setSavingAuthState] = useState(false)
   const [recordingLoading, setRecordingLoading] = useState(false)
   const [executingScript, setExecutingScript] = useState(false)
   const [savingScript, setSavingScript] = useState(false)
   const [openUrl, setOpenUrl] = useState('')
+  const [pageRecordingContext, setPageRecordingContext] = useState<PageRecordingContextResponse | null>(null)
   const [message, setMessage] = useState('')
   const [showToast, setShowToast] = useState(false)
   const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('info')
@@ -65,6 +77,11 @@ export default function BrowserManager() {
   
   // 历史访问记录状态
   const [historyLinks, setHistoryLinks] = useState<string[]>([])
+
+  const projectRecordingTargetUrl = targetUrlParam || pageRecordingContext?.target_url || recordingStatus.start_url || openUrl
+  const projectRecordingModeLabel = recordingKind === 'login_flow' ? '登录流程' : '业务流程'
+  const projectAuthContextLabel = authContext === 'project_saved' ? '项目登录态' : '干净会话'
+  const projectRecordingPageName = pageRecordingContext?.page?.name || (pageId ? `页面 #${pageId}` : '项目页面')
 
   // 浏览器实例相关状态
   const [instances, setInstances] = useState<BrowserInstance[]>([])
@@ -89,6 +106,7 @@ export default function BrowserManager() {
 
   // 从localStorage加载历史访问记录
   useEffect(() => {
+    if (isProjectRecordingContext) return
     const savedHistory = localStorage.getItem('browserHistory')
     if (savedHistory) {
       try {
@@ -100,6 +118,17 @@ export default function BrowserManager() {
   }, [])
 
   useEffect(() => {
+    if (!isProjectRecordingContext || !projectId || !versionId || !pageId) return
+
+    projectApi.getPageRecordingContext(Number(projectId), Number(versionId), Number(pageId))
+      .then((response) => setPageRecordingContext(response.data))
+      .catch((err) => {
+        console.error('获取项目录制上下文失败:', err)
+        setPageRecordingContext(null)
+      })
+  }, [isProjectRecordingContext, projectId, versionId, pageId])
+
+  useEffect(() => {
     // 初始化加载：先加载实例列表，再加载当前实例（以便自动选择默认实例）
     const initLoad = async () => {
       const instanceList = await loadInstances()
@@ -107,8 +136,10 @@ export default function BrowserManager() {
     }
 
     loadStatus()
-    loadScripts()
-    loadConfigs()
+    if (!isProjectRecordingContext) {
+      loadScripts()
+      loadConfigs()
+    }
     initLoad()
     
     // 定时刷新状态、录制状态和实例状态
@@ -221,8 +252,9 @@ export default function BrowserManager() {
       const instanceId = currentInstance?.id || ''
       const response = await api.openBrowserPage(targetUrl, language, instanceId)
       showMessage(t(response.data.message), 'success')
-      // 将当前URL添加到历史记录
-      saveToHistory(targetUrl)
+      if (!isProjectRecordingContext) {
+        saveToHistory(targetUrl)
+      }
       // 更新输入框的值
       setOpenUrl(targetUrl)
     } catch (err: any) {
@@ -429,8 +461,46 @@ export default function BrowserManager() {
     }
   }
 
-  const handleSaveScript = async () => {
-    if (!scriptName.trim()) {
+  const navigateBackToProjectPages = () => {
+    if (projectId && versionId) {
+      navigate(`/projects/${projectId}/versions/${versionId}/pages`)
+    }
+  }
+
+  const captureProjectAuthState = async () => {
+    if (!projectId || !versionId || !pageId) {
+      throw new Error('缺少项目录制上下文')
+    }
+    await projectApi.captureProjectAuthState(Number(projectId), Number(versionId), {
+      name: '项目登录态',
+      captured_page_id: Number(pageId),
+      captured_url: projectRecordingTargetUrl || recordingStatus.start_url || openUrl,
+      replace: true,
+    })
+  }
+
+  const handleCaptureProjectAuthState = async () => {
+    try {
+      setSavingAuthState(true)
+      await captureProjectAuthState()
+      showMessage('项目登录态已更新', 'success')
+    } catch (err: any) {
+      showMessage(err.response?.data?.error || err.message || '更新项目登录态失败', 'error')
+    } finally {
+      setSavingAuthState(false)
+    }
+  }
+
+  const handleOpenProjectTarget = async () => {
+    await handleOpenPage(projectRecordingTargetUrl)
+  }
+
+  const handleSaveScript = async (projectAction: ProjectRecordingSaveAction = 'save_only') => {
+    const isPageRecordingContext = projectId && versionId && pageId
+    const shouldSavePageScript = !isPageRecordingContext || projectAction !== 'capture_auth_only'
+    const shouldCaptureAuthState = Boolean(isPageRecordingContext && (projectAction === 'save_and_capture_auth' || projectAction === 'capture_auth_only'))
+
+    if (shouldSavePageScript && !scriptName.trim()) {
       showMessage(t('browser.messages.scriptNameRequired'), 'error')
       return
     }
@@ -438,24 +508,42 @@ export default function BrowserManager() {
     try {
       setSavingScript(true)
       
-      const isPageRecordingContext = projectId && versionId && pageId;
-      
       if (isPageRecordingContext) {
         // Save as a PageScript bounded to a TestPage
-        const response = await projectApi.savePageRecording(
-          Number(projectId),
-          Number(versionId),
-          Number(pageId),
-          {
-            name: scriptName,
-            action_trace: JSON.stringify(recordedActions),
-            dom_snapshot: "{}" // Placeholder for actual DOM snapshot if available later
-          }
-        );
-        showMessage(response.data.message, 'success');
-        await cleanRecordingState();
-        // Redirect back to the page manager after successful save
-        navigate(`/projects/${projectId}/versions/${versionId}/pages`);
+        let savedMessage = ''
+        if (shouldSavePageScript) {
+          const response = await projectApi.savePageRecording(
+            Number(projectId),
+            Number(versionId),
+            Number(pageId),
+            buildP45SaveRecordingPayload({
+              name: scriptName,
+              actionTrace: JSON.stringify(recordedActions),
+              domSnapshot: "{}", // Placeholder for actual DOM snapshot if available later
+              recordingMeta: {
+                schema_version: 1,
+                recording_kind: recordingKind,
+                auth_context: authContext,
+                auth_state_id: authStateId ? Number(authStateId) : null,
+                target_url: projectRecordingTargetUrl || recordingStatus.start_url || openUrl,
+              },
+            })
+          )
+          savedMessage = response.data.message
+        }
+        if (shouldCaptureAuthState) {
+          await captureProjectAuthState()
+        }
+        showMessage(
+          shouldSavePageScript && shouldCaptureAuthState
+            ? '主流程已保存，项目登录态已更新'
+            : shouldCaptureAuthState
+              ? '项目登录态已更新'
+              : savedMessage,
+          'success'
+        )
+        await cleanRecordingState()
+        navigateBackToProjectPages()
       } else {
         // Legacy general Script save
         const response = await api.saveScript({
@@ -470,7 +558,12 @@ export default function BrowserManager() {
         await loadScripts()
       }
     } catch (err: any) {
-      showMessage(t(err.response?.data?.error || 'browser.messages.scriptSaveError'), 'error')
+      showMessage(
+        isPageRecordingContext
+          ? (err.response?.data?.error || err.message || '保存项目录制失败')
+          : t(err.response?.data?.error || 'browser.messages.scriptSaveError'),
+        'error'
+      )
     } finally {
       setSavingScript(false)
     }
@@ -554,6 +647,263 @@ export default function BrowserManager() {
   }
   
   const quickLinks = getQuickLinks()
+  const isLoginFlowProjectRecording = isProjectRecordingContext && recordingKind === 'login_flow'
+
+  const saveRecordingDialog = showSaveDialog ? (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" style={{ marginTop: 0, marginBottom: 0 }}>
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-md w-full p-6">
+        <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-4">{t('browser.script.saveRecording')}</h3>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              {t('browser.script.name')} <span className="text-gray-900 dark:text-gray-100">*</span>
+            </label>
+            <input
+              type="text"
+              value={scriptName}
+              onChange={(e) => setScriptName(e.target.value)}
+              placeholder={t('browser.script.namePlaceholder')}
+              className="input w-full"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              {t('browser.script.description')}
+            </label>
+            <textarea
+              value={scriptDescription}
+              onChange={(e) => setScriptDescription(e.target.value)}
+              placeholder={t('browser.script.descriptionPlaceholder')}
+              rows={3}
+              className="input w-full"
+            />
+          </div>
+
+          {isLoginFlowProjectRecording && (
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-900/40 rounded-lg text-sm text-blue-800 dark:text-blue-200 flex gap-2">
+              <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>登录流程结束后，可以一次保存主流程并更新当前版本的项目登录态。</span>
+            </div>
+          )}
+
+          <div className="p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">
+            <div className="text-sm text-gray-600 dark:text-gray-400 space-y-1">
+              <div className="flex justify-between gap-3">
+                <span>{t('browser.script.startUrl')}:</span>
+                <span className="font-mono text-xs break-all text-right">{recordingStatus.start_url || projectRecordingTargetUrl}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>{t('browser.script.steps')}:</span>
+                <span className="font-bold text-gray-900 dark:text-gray-100">{recordedActions.length} {t('browser.script.stepsUnit')}</span>
+              </div>
+            </div>
+          </div>
+
+          {isLoginFlowProjectRecording ? (
+            <div className="space-y-2 pt-4">
+              <button
+                onClick={() => handleSaveScript('save_and_capture_auth')}
+                disabled={savingScript || !scriptName.trim()}
+                className="btn-primary w-full flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {savingScript ? <Loader className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
+                <span>保存主流程并更新项目登录态</span>
+              </button>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  onClick={() => handleSaveScript('save_only')}
+                  disabled={savingScript || !scriptName.trim()}
+                  className="btn-secondary flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>只保存主流程</span>
+                </button>
+                <button
+                  onClick={() => handleSaveScript('capture_auth_only')}
+                  disabled={savingScript}
+                  className="btn-secondary flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>只更新登录态</span>
+                </button>
+              </div>
+              <button
+                onClick={async () => {
+                  await cleanRecordingState()
+                }}
+                disabled={savingScript}
+                className="btn-ghost w-full"
+              >
+                {t('browser.script.cancel')}
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center space-x-3 pt-4">
+              <button
+                onClick={() => handleSaveScript()}
+                disabled={savingScript}
+                className="btn-primary flex-1 flex items-center justify-center space-x-2"
+              >
+                {savingScript ? (
+                  <>
+                    <Loader className="w-5 h-5 animate-spin" />
+                    <span>{t('browser.script.saving')}</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-5 h-5" />
+                    <span>{t('browser.script.save')}</span>
+                  </>
+                )}
+              </button>
+              <button
+                onClick={async () => {
+                  await cleanRecordingState()
+                }}
+                disabled={savingScript}
+                className="btn-ghost flex-1"
+              >
+                {t('browser.script.cancel')}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  ) : null
+
+  if (isProjectRecordingContext) {
+    return (
+      <div className="space-y-6 lg:space-y-8 animate-fade-in">
+        <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <button
+                onClick={navigateBackToProjectPages}
+                className="flex items-center gap-1 text-sm text-gray-500 hover:text-indigo-600 transition-colors mb-2"
+              >
+                <ArrowLeft className="w-4 h-4" /> 返回页面列表
+              </button>
+              <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">项目页面录制</h1>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                <span className="px-2.5 py-1 bg-gray-900 dark:bg-gray-700 text-white rounded-md">{projectRecordingModeLabel}</span>
+                <span className="px-2.5 py-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-md">{projectAuthContextLabel}</span>
+                <span className="text-gray-500 dark:text-gray-400">{projectRecordingPageName}</span>
+              </div>
+            </div>
+            <button
+              onClick={loadStatus}
+              className="btn-ghost self-start lg:self-center flex items-center gap-2"
+              title={t('browser.control.refreshStatus')}
+            >
+              <RefreshCw className="w-4 h-4" /> 刷新
+            </button>
+          </div>
+
+          <div className="p-5 space-y-5">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+              <div>
+                <div className="text-gray-500 dark:text-gray-400 mb-1">项目</div>
+                <div className="font-semibold text-gray-900 dark:text-gray-100">#{projectId} / v{versionId}</div>
+              </div>
+              <div>
+                <div className="text-gray-500 dark:text-gray-400 mb-1">页面</div>
+                <div className="font-semibold text-gray-900 dark:text-gray-100 truncate">{projectRecordingPageName}</div>
+              </div>
+              <div>
+                <div className="text-gray-500 dark:text-gray-400 mb-1">浏览器</div>
+                <div className={`font-semibold ${status.is_running ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-300'}`}>
+                  {status.is_running ? '已启动' : '未启动'}
+                </div>
+              </div>
+              <div>
+                <div className="text-gray-500 dark:text-gray-400 mb-1">录制</div>
+                <div className={`font-semibold ${recordingStatus.is_recording ? 'text-indigo-700 dark:text-indigo-300' : 'text-gray-900 dark:text-gray-100'}`}>
+                  {recordingStatus.is_recording ? '录制中' : '待录制'}
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">目标 URL</label>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <input
+                  value={projectRecordingTargetUrl}
+                  readOnly
+                  className="input flex-1 font-mono text-sm"
+                />
+                <button
+                  onClick={handleOpenProjectTarget}
+                  disabled={!status.is_running || openingPage || !projectRecordingTargetUrl}
+                  className="btn-primary whitespace-nowrap flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {openingPage ? <Loader className="w-5 h-5 animate-spin" /> : <ExternalLink className="w-5 h-5" />}
+                  打开目标页
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 pt-2">
+              {!status.is_running ? (
+                <button
+                  onClick={handleStart}
+                  disabled={startingBrowser}
+                  className="btn-primary flex items-center gap-2"
+                >
+                  {startingBrowser ? <Loader className="w-5 h-5 animate-spin" /> : <Power className="w-5 h-5" />}
+                  启动浏览器
+                </button>
+              ) : (
+                <>
+                  {!recordingStatus.is_recording ? (
+                    <button
+                      onClick={handleStartRecording}
+                      disabled={recordingLoading}
+                      className="btn-secondary flex items-center gap-2"
+                    >
+                      {recordingLoading ? <Loader className="w-5 h-5 animate-spin" /> : <Video className="w-5 h-5" />}
+                      开始录制
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleStopRecording}
+                      disabled={recordingLoading}
+                      className="btn-primary flex items-center gap-2"
+                    >
+                      {recordingLoading ? <Loader className="w-5 h-5 animate-spin" /> : <Video className="w-5 h-5" />}
+                      停止并保存
+                    </button>
+                  )}
+                  {recordingKind === 'login_flow' && (
+                    <button
+                      onClick={handleCaptureProjectAuthState}
+                      disabled={savingAuthState || recordingStatus.is_recording}
+                      className="btn-secondary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {savingAuthState ? <Loader className="w-5 h-5 animate-spin" /> : <ShieldCheck className="w-5 h-5" />}
+                      保存登录态
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {saveRecordingDialog}
+
+        {showToast && (
+          <Toast
+            message={message}
+            type={toastType}
+            onClose={() => setShowToast(false)}
+          />
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6 lg:space-y-8 animate-fade-in">
@@ -898,84 +1248,7 @@ export default function BrowserManager() {
         </>
       )}
 
-      {/* Save Script Dialog */}
-      {showSaveDialog && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" style={{ marginTop: 0, marginBottom: 0 }}>
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-md w-full p-6">
-            <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-4">{t('browser.script.saveRecording')}</h3>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  {t('browser.script.name')} <span className="text-gray-900 dark:text-gray-100">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={scriptName}
-                  onChange={(e) => setScriptName(e.target.value)}
-                  placeholder={t('browser.script.namePlaceholder')}
-                  className="input w-full"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  {t('browser.script.description')}
-                </label>
-                <textarea
-                  value={scriptDescription}
-                  onChange={(e) => setScriptDescription(e.target.value)}
-                  placeholder={t('browser.script.descriptionPlaceholder')}
-                  rows={3}
-                  className="input w-full"
-                />
-              </div>
-
-              <div className="p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">
-                <div className="text-sm text-gray-600 dark:text-gray-400 space-y-1">
-                  <div className="flex justify-between">
-                    <span>{t('browser.script.startUrl')}:</span>
-                    <span className="font-mono text-xs">{recordingStatus.start_url}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>{t('browser.script.steps')}:</span>
-                    <span className="font-bold text-gray-900 dark:text-gray-100">{recordedActions.length} {t('browser.script.stepsUnit')}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center space-x-3 pt-4">
-                <button
-                  onClick={handleSaveScript}
-                  disabled={savingScript}
-                  className="btn-primary flex-1 flex items-center justify-center space-x-2"
-                >
-                  {savingScript ? (
-                    <>
-                      <Loader className="w-5 h-5 animate-spin" />
-                      <span>{t('browser.script.saving')}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Save className="w-5 h-5" />
-                        <span>{t('browser.script.save')}</span>
-                    </>
-                  )}
-                </button>
-                <button
-                  onClick={async () => {
-                    await cleanRecordingState()
-                  }}
-                  disabled={savingScript}
-                  className="btn-ghost flex-1"
-                >
-                  {t('browser.script.cancel')}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {saveRecordingDialog}
 
 
       {/* Instructions Card */}
@@ -1345,4 +1618,8 @@ export default function BrowserManager() {
       )}
     </div>
   )
+}
+
+export const p45BrowserManagerContract = {
+  buildSaveRecordingPayload: buildP45SaveRecordingPayload,
 }

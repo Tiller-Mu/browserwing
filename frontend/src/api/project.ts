@@ -20,6 +20,77 @@ export interface Project {
   versions: ProjectVersion[];
 }
 
+export type P45RecordingKind = 'login_flow' | 'business_flow';
+export type P45AuthContext = 'clean' | 'project_saved';
+
+export interface P45RecordingMeta {
+  schema_version: 1;
+  recording_kind: P45RecordingKind;
+  auth_context: P45AuthContext;
+  auth_state_id: number | null;
+  target_url: string;
+  started_at?: string;
+  ended_at?: string;
+}
+
+export interface ProjectAuthStateSummary {
+  id: number;
+  project_id: number;
+  version_id: number;
+  name: string;
+  status: 'active' | 'expired' | 'disabled';
+  schema_version: number;
+  state_digest: string;
+  origins: string[];
+  cookie_count: number;
+  origin_count: number;
+  captured_url: string;
+  captured_page_id: number;
+  captured_at: string;
+  last_validated_at?: string | null;
+  invalid_reason?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectAuthStateResponse {
+  auth_state: ProjectAuthStateSummary | null;
+}
+
+export interface CaptureProjectAuthStateRequest {
+  name?: string;
+  captured_page_id?: number;
+  captured_url?: string;
+  origin_allowlist?: string[];
+  replace?: boolean;
+  browser_instance_id?: string;
+}
+
+export interface StartPageRecordingSessionRequest {
+  recording_kind: P45RecordingKind;
+  auth_context: P45AuthContext;
+  browser_instance_id?: string;
+}
+
+export interface PageRecordingSessionResponse {
+  recording_session_id: string;
+  recording_meta?: P45RecordingMeta;
+  auth_state?: ProjectAuthStateSummary;
+}
+
+export interface PageRecordingContextResponse {
+  page: TestPage;
+  target_url: string;
+  auth_state: ProjectAuthStateSummary | null;
+}
+
+export interface SavePageRecordingRequest {
+  name: string;
+  action_trace: string;
+  dom_snapshot: string;
+  recording_meta: P45RecordingMeta;
+}
+
 export const projectApi = {
   // 项目管理
   getProjects: () => client.get<Project[]>('/projects'),
@@ -43,6 +114,13 @@ export const projectApi = {
   cloneVersion: (projectId: number, versionId: number, newVersionName: string) =>
     client.post<ProjectVersion>(`/projects/${projectId}/versions/${versionId}/clone`, { new_version_name: newVersionName }),
 
+  getProjectAuthState: (projectId: number, versionId: number) =>
+    client.get<ProjectAuthStateResponse>(`/projects/${projectId}/versions/${versionId}/auth-state`),
+  captureProjectAuthState: (projectId: number, versionId: number, data: CaptureProjectAuthStateRequest) =>
+    client.post<ProjectAuthStateResponse>(`/projects/${projectId}/versions/${versionId}/auth-state/capture`, data),
+  deleteProjectAuthState: (projectId: number, versionId: number) =>
+    client.delete<{ message: string }>(`/projects/${projectId}/versions/${versionId}/auth-state`),
+
   // 页面管理
   getPages: (projectId: number, versionId: number) => 
     client.get<TestPage[]>(`/projects/${projectId}/versions/${versionId}/pages`),
@@ -50,7 +128,11 @@ export const projectApi = {
     client.post<TestPage>(`/projects/${projectId}/versions/${versionId}/pages`, data),
   deletePage: (projectId: number, versionId: number, pageId: number) =>
     client.delete<{ message: string }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}`),
-  savePageRecording: (projectId: number, versionId: number, pageId: number, data: { name: string; action_trace: string; dom_snapshot: string }) =>
+  getPageRecordingContext: (projectId: number, versionId: number, pageId: number) =>
+    client.get<PageRecordingContextResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-context`),
+  startPageRecordingSession: (projectId: number, versionId: number, pageId: number, data: StartPageRecordingSessionRequest) =>
+    client.post<PageRecordingSessionResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-session`, data),
+  savePageRecording: (projectId: number, versionId: number, pageId: number, data: SavePageRecordingRequest) =>
     client.post<{ message: string; script: any }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recordings`, data),
   listTestCases: (projectId: number, versionId: number, pageId: number) =>
     client.get<ListTestCasesResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases`),
@@ -164,6 +246,7 @@ export interface RunTestCaseRequest {
   headless?: boolean;
   stop_on_failure?: boolean;
   capture_screenshot?: boolean;
+  auth_context?: P45AuthContext;
 }
 
 export interface TestExecutionSummary {
@@ -208,6 +291,9 @@ export interface ExecutionReportData {
     screenshots?: string[];
   };
   final_url?: string;
+  auth_context?: P45AuthContext;
+  auth_context_source?: 'request' | 'blueprint' | 'legacy_default';
+  auth_state?: ProjectAuthStateSummary;
 }
 
 export interface TestExecutionDetail extends TestExecutionSummary {

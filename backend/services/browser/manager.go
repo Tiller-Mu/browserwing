@@ -291,6 +291,15 @@ func (m *Manager) AdoptBrowser(ctx context.Context, instanceID string, browser *
 
 // Start 启动浏览器
 func (m *Manager) Start(ctx context.Context) error {
+	return m.start(ctx, true)
+}
+
+// StartWithoutGlobalCookieStore 启动浏览器但不加载固定 browser Cookie Store。
+func (m *Manager) StartWithoutGlobalCookieStore(ctx context.Context) error {
+	return m.start(ctx, false)
+}
+
+func (m *Manager) start(ctx context.Context, loadGlobalCookieStore bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -531,7 +540,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	// 尝试从数据库加载保存的 Cookie
-	if m.db != nil {
+	if loadGlobalCookieStore && m.db != nil {
 		cookieStore, err := m.db.GetCookies("browser")
 		if err == nil && cookieStore != nil && len(cookieStore.Cookies) > 0 {
 			// 将 NetworkCookie 转换为 NetworkCookieParam
@@ -558,6 +567,8 @@ func (m *Manager) Start(ctx context.Context) error {
 		} else {
 			logger.Info(ctx, "No saved Cookies found")
 		}
+	} else if !loadGlobalCookieStore {
+		logger.Info(ctx, "Skipped global browser Cookie Store for isolated project recording")
 	}
 
 	downloadPath := "./downloads"
@@ -792,6 +803,48 @@ func (m *Manager) SetActivePage(page *rod.Page) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.activePage = page
+}
+
+// OpenIsolatedPage opens a page in an incognito browser context for project-scoped recording.
+func (m *Manager) OpenIsolatedPage(ctx context.Context, targetURL string, language string, instanceID string) error {
+	m.mu.Lock()
+	if language != "" {
+		m.currentLanguage = language
+	}
+	browser, _, instance, err := m.getInstanceBrowser(instanceID)
+	if err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	if instance != nil {
+		instanceID = instance.ID
+	}
+	m.mu.Unlock()
+
+	incognito, err := browser.Incognito()
+	if err != nil {
+		return fmt.Errorf("failed to create isolated browser context: %w", err)
+	}
+	page, err := incognito.Page(proto.TargetCreateTarget{})
+	if err != nil {
+		return fmt.Errorf("failed to create isolated page: %w", err)
+	}
+	m.setPageWindow(page)
+
+	if err := page.Timeout(60 * time.Second).Navigate(targetURL); err != nil {
+		return fmt.Errorf("failed to navigate isolated page: %w", err)
+	}
+	if err := page.Timeout(60 * time.Second).WaitLoad(); err != nil {
+		logger.Warn(ctx, "Failed to wait for isolated page load: %v", err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.setInstanceActivePage(instanceID, page); err != nil {
+		return err
+	}
+	m.activePage = page
+	return nil
 }
 
 // CloseActivePage 关闭当前活动页面

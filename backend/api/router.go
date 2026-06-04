@@ -70,7 +70,7 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 		}
 
 		// 项目管理相关 (Testing Platform)
-		projectHandlers := NewProjectHandlers(handler.db, handler.config, handler.ensureTestCaseRunnerHolder())
+		projectHandlers := NewProjectHandlers(handler.db, handler.config, handler.ensureTestCaseRunnerHolder(), handler.ensureProjectAuthRuntimeHolder())
 		projects := api.Group("/projects")
 		{
 			projects.GET("", projectHandlers.ListProjects)
@@ -80,9 +80,14 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			projects.PUT("/:id/versions/:vid", projectHandlers.UpdateVersion)
 			projects.DELETE("/:id/versions/:vid", projectHandlers.DeleteVersion)
 			projects.POST("/:id/versions/:vid/clone", projectHandlers.CloneVersion)
+			projects.GET("/:id/versions/:vid/auth-state", projectHandlers.GetProjectAuthState)
+			projects.POST("/:id/versions/:vid/auth-state/capture", projectHandlers.CaptureProjectAuthState)
+			projects.DELETE("/:id/versions/:vid/auth-state", projectHandlers.DeleteProjectAuthState)
 			projects.GET("/:id/versions/:vid/pages", projectHandlers.ListPages)
 			projects.POST("/:id/versions/:vid/pages", projectHandlers.CreatePage)
 			projects.DELETE("/:id/versions/:vid/pages/:pid", projectHandlers.DeletePage)
+			projects.GET("/:id/versions/:vid/pages/:pid/recording-context", projectHandlers.GetPageRecordingContext)
+			projects.POST("/:id/versions/:vid/pages/:pid/recording-session", projectHandlers.StartPageRecordingSession)
 			projects.POST("/:id/versions/:vid/pages/:pid/recordings", projectHandlers.SavePageRecording)
 			projects.GET("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.ListTestCases)
 			projects.POST("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.CreateTestCase)
