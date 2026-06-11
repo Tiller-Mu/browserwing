@@ -1252,9 +1252,16 @@ func (m *Manager) GetCurrentPageCookies() (interface{}, error) {
 }
 
 // StartRecording 开始录制操作
-// StartRecording 开始录制操作
 // instanceID: 指定实例ID，空字符串表示使用当前实例
 func (m *Manager) StartRecording(ctx context.Context, instanceID string) error {
+	return m.startRecording(ctx, instanceID, nil)
+}
+
+func (m *Manager) StartRecordingWithStorageScope(ctx context.Context, instanceID string, scope RecordingStorageScope) error {
+	return m.startRecording(ctx, instanceID, &scope)
+}
+
+func (m *Manager) startRecording(ctx context.Context, instanceID string, scope *RecordingStorageScope) error {
 	m.mu.Lock()
 	currentLang := m.currentLanguage
 	if currentLang == "" {
@@ -1287,10 +1294,23 @@ func (m *Manager) StartRecording(ctx context.Context, instanceID string) error {
 		return fmt.Errorf("failed to get page info: %w", err)
 	}
 
-	err = m.recorder.StartRecording(ctx, activePage, info.URL, currentLang)
+	scopes := []RecordingStorageScope{}
+	if scope != nil {
+		scopes = append(scopes, *scope)
+	}
+	err = m.recorder.StartRecording(ctx, activePage, info.URL, currentLang, scopes...)
 	if err != nil {
 		return err
 	}
+
+	// StartRecording may be called without OpenPage, for example project-scoped
+	// isolated recording. Bind in-page controls to the recording lifecycle, not
+	// to the short-lived HTTP request that starts recording.
+	recordingCtx := m.recorder.RecordingContext()
+	if recordingCtx == nil {
+		recordingCtx = context.WithoutCancel(ctx)
+	}
+	go m.checkInPageRecordingRequests(recordingCtx, activePage)
 
 	// 启动录制后,显示录制UI面板
 	_, _ = activePage.Eval(`() => {
@@ -1343,6 +1363,11 @@ func (m *Manager) GetRecordingInfo() map[string]interface{} {
 	m.mu.Unlock()
 
 	return info
+}
+
+// ConsumeLastRecordingStorageState returns and clears the latest storage snapshot when it matches scope.
+func (m *Manager) ConsumeLastRecordingStorageState(scope RecordingStorageScope) map[string]any {
+	return m.recorder.ConsumeLastStorageState(scope)
 }
 
 // ClearInPageRecordingState 清除页面内录制状态(供前端保存或取消后调用)

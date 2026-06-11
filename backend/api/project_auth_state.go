@@ -241,6 +241,7 @@ func (h *ProjectHandlers) CaptureProjectAuthState(c *gin.Context) {
 		"browser_instance_id": req.BrowserInstanceID,
 	})
 	if err != nil {
+		logger.Warn(c.Request.Context(), "Capture project auth state failed: project_id=%d version_id=%d category=%s", projectID, versionID, projectAuthCaptureFailureCategory(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Capture project auth state failed"})
 		return
 	}
@@ -472,6 +473,21 @@ func loadActiveProjectAuthState(projectID, versionID uint) (*models.ProjectAuthS
 		return nil, err
 	}
 	return &auth, nil
+}
+
+func projectAuthCaptureFailureCategory(err error) string {
+	if err == nil {
+		return "none"
+	}
+	text := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(text, "open a page") || strings.Contains(text, "page") && strings.Contains(text, "not available") || strings.Contains(text, "not capturable"):
+		return "page_unavailable"
+	case strings.Contains(text, "web storage") || strings.Contains(text, "storage"):
+		return "storage_unavailable"
+	default:
+		return "runtime_failed"
+	}
 }
 
 func buildProjectAuthStateRow(projectID, versionID uint, req captureProjectAuthStateRequest, state map[string]any) (models.ProjectAuthState, error) {
@@ -758,6 +774,21 @@ func newBrowserProjectAuthRuntime(manager *browser.Manager) projectAuthRuntime {
 }
 
 func (r *browserProjectAuthRuntime) CaptureProjectAuthState(ctx context.Context, input map[string]any) (map[string]any, error) {
+	state, err := r.captureActiveProjectAuthState(ctx, input)
+	if err == nil {
+		return state, nil
+	}
+	if snapshot := r.manager.ConsumeLastRecordingStorageState(browser.RecordingStorageScope{
+		ProjectID: uintFromAny(input["project_id"]),
+		VersionID: uintFromAny(input["version_id"]),
+		PageID:    uintFromAny(input["captured_page_id"]),
+	}); snapshot != nil {
+		return snapshot, nil
+	}
+	return nil, err
+}
+
+func (r *browserProjectAuthRuntime) captureActiveProjectAuthState(ctx context.Context, input map[string]any) (map[string]any, error) {
 	page := r.manager.GetActivePage()
 	if page == nil {
 		return nil, fmt.Errorf("please open a page first")
@@ -766,11 +797,14 @@ func (r *browserProjectAuthRuntime) CaptureProjectAuthState(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	origin := pageOrigin(info.URL)
+	if !strings.HasPrefix(origin, "http://") && !strings.HasPrefix(origin, "https://") {
+		return nil, fmt.Errorf("active page origin is not capturable")
+	}
 	cookiesValue, err := page.Browser().GetCookies()
 	if err != nil {
 		return nil, err
 	}
-	origin := pageOrigin(info.URL)
 	allowedOrigins := allowedProjectOrigins(stringFromAny(input["base_url"]), origin, stringSliceFromAny(input["origin_allowlist"]))
 	cookies := filterStorageCookies(normalizeRodCookies(cookiesValue), allowedOrigins)
 	storage, err := page.Eval(`() => {
@@ -854,7 +888,11 @@ func (r *browserProjectAuthRuntime) StartPageRecording(ctx context.Context, inpu
 	if err := page.Timeout(60 * time.Second).WaitLoad(); err != nil {
 		return nil, fmt.Errorf("failed to wait isolated recording page load: %w", err)
 	}
-	if err := r.manager.StartRecording(ctx, instanceID); err != nil {
+	if err := r.manager.StartRecordingWithStorageScope(ctx, instanceID, browser.RecordingStorageScope{
+		ProjectID: uintFromAny(input["project_id"]),
+		VersionID: uintFromAny(input["version_id"]),
+		PageID:    uintFromAny(input["page_id"]),
+	}); err != nil {
 		return nil, err
 	}
 	return map[string]any{"recording_session_id": fmt.Sprintf("project-recording-%d", time.Now().UnixNano())}, nil
@@ -978,4 +1016,28 @@ func firstNonEmptyString(values ...string) string {
 func boolFromAny(value any) bool {
 	result, _ := value.(bool)
 	return result
+}
+
+func uintFromAny(value any) uint {
+	switch v := value.(type) {
+	case uint:
+		return v
+	case int:
+		if v < 0 {
+			return 0
+		}
+		return uint(v)
+	case int64:
+		if v < 0 {
+			return 0
+		}
+		return uint(v)
+	case float64:
+		if v < 0 {
+			return 0
+		}
+		return uint(v)
+	default:
+		return 0
+	}
 }

@@ -5,6 +5,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -35,24 +37,53 @@ type DBInterface interface {
 	ListLLMConfigs() ([]*models.LLMConfigModel, error)
 }
 
+type RecordingStorageScope struct {
+	ProjectID          uint
+	VersionID          uint
+	PageID             uint
+	RecordingSessionID string
+}
+
+func (s RecordingStorageScope) isZero() bool {
+	return s.ProjectID == 0 && s.VersionID == 0 && s.PageID == 0 && strings.TrimSpace(s.RecordingSessionID) == ""
+}
+
+func (s RecordingStorageScope) matches(other RecordingStorageScope) bool {
+	if s.ProjectID == 0 || s.VersionID == 0 || s.PageID == 0 {
+		return false
+	}
+	if s.ProjectID != other.ProjectID || s.VersionID != other.VersionID || s.PageID != other.PageID {
+		return false
+	}
+	if strings.TrimSpace(s.RecordingSessionID) != "" || strings.TrimSpace(other.RecordingSessionID) != "" {
+		return strings.TrimSpace(s.RecordingSessionID) == strings.TrimSpace(other.RecordingSessionID)
+	}
+	return true
+}
+
 type Recorder struct {
-	mu              sync.Mutex
-	isRecording     bool
-	startTime       time.Time
-	startURL        string
-	actions         []models.ScriptAction
-	page            *rod.Page            // 主页面
-	pages           map[string]*rod.Page // 所有录制的标签页 (key: page target ID)
-	syncTicker      *time.Ticker
-	syncStopChan    chan bool
-	lastSyncedCount int
-	apiServerPort   string                  // API 服务器端口
-	llmManager      *llm.Manager            // LLM 管理器
-	db              DBInterface             // 数据库接口
-	language        string                  // 当前语言设置
-	downloadedFiles []models.DownloadedFile // 录制过程中下载的文件
-	downloadPath    string                  // 下载目录路径
-	downloadCancel  context.CancelFunc      // 取消下载监听
+	mu               sync.Mutex
+	isRecording      bool
+	startTime        time.Time
+	startURL         string
+	actions          []models.ScriptAction
+	page             *rod.Page            // 主页面
+	pages            map[string]*rod.Page // 所有录制的标签页 (key: page target ID)
+	syncTicker       *time.Ticker
+	syncStopChan     chan bool
+	lastSyncedCount  int
+	apiServerPort    string                  // API 服务器端口
+	llmManager       *llm.Manager            // LLM 管理器
+	db               DBInterface             // 数据库接口
+	language         string                  // 当前语言设置
+	downloadedFiles  []models.DownloadedFile // 录制过程中下载的文件
+	downloadPath     string                  // 下载目录路径
+	downloadCancel   context.CancelFunc      // 取消下载监听
+	recordingCtx     context.Context         // 录制生命周期上下文
+	recordingCancel  context.CancelFunc      // 取消录制后台任务
+	storageScope     *RecordingStorageScope  // 当前项目录制快照作用域
+	lastStorageState map[string]any          // 最近一次停止录制时捕获的浏览器登录态快照
+	lastStorageScope *RecordingStorageScope  // 最近一次登录态快照作用域
 }
 
 // NewRecorder 创建录制器
@@ -85,8 +116,30 @@ func (r *Recorder) SetAPIServerPort(port string) {
 	r.apiServerPort = port
 }
 
+// RecordingContext returns the context that lives for the active recording.
+func (r *Recorder) RecordingContext() context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recordingCtx
+}
+
+func (r *Recorder) ConsumeLastStorageState(scope RecordingStorageScope) map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lastStorageState == nil || r.lastStorageScope == nil {
+		return nil
+	}
+	if !r.lastStorageScope.matches(scope) {
+		return nil
+	}
+	state := cloneStorageState(r.lastStorageState)
+	r.lastStorageState = nil
+	r.lastStorageScope = nil
+	return state
+}
+
 // StartRecording 开始录制
-func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url string, language string) error {
+func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url string, language string, scopes ...RecordingStorageScope) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -107,6 +160,13 @@ func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url strin
 	r.page = page
 	r.pages = make(map[string]*rod.Page)
 	r.downloadedFiles = make([]models.DownloadedFile, 0)
+	r.storageScope = nil
+	r.lastStorageState = nil
+	r.lastStorageScope = nil
+	if len(scopes) > 0 && !scopes[0].isZero() {
+		scope := scopes[0]
+		r.storageScope = &scope
+	}
 
 	// 添加主页面到 pages map
 	pageInfo := page.MustInfo()
@@ -247,35 +307,41 @@ func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url strin
 	// 为所有现有的 iframe 注入录制脚本
 	r.injectIframeRecorders(ctx, page)
 
+	recordingCtx, recordingCancel := context.WithCancel(context.WithoutCancel(ctx))
+	r.recordingCtx = recordingCtx
+	r.recordingCancel = recordingCancel
+
 	// 监听新创建的 iframe
-	go r.watchForNewIframes(ctx, page)
+	go r.watchForNewIframes(recordingCtx, page)
 
 	// 监听页面导航事件,在新页面自动重新注入录制脚本
-	go r.watchForPageNavigation(ctx, page)
+	go r.watchForPageNavigation(recordingCtx, page)
 
 	// 监听新标签页的创建
-	go r.watchForNewPages(ctx, page)
+	go r.watchForNewPages(recordingCtx, page)
 
 	logger.Info(ctx, "Starting recording operation, URL: %s", url)
 
 	// 启动定期同步协程，每500ms同步一次浏览器中的操作（更频繁，减少丢失风险）
-	r.syncTicker = time.NewTicker(500 * time.Millisecond)
-	r.syncStopChan = make(chan bool)
+	syncTicker := time.NewTicker(500 * time.Millisecond)
+	r.syncTicker = syncTicker
+	syncStopChan := make(chan bool)
+	r.syncStopChan = syncStopChan
 	r.lastSyncedCount = 0
 
-	go r.syncActionsFromBrowser(ctx)
+	go r.syncActionsFromBrowser(recordingCtx, syncTicker, syncStopChan)
 
 	// 启动下载事件监听
-	go r.watchDownloadEvents(ctx, page)
+	go r.watchDownloadEvents(recordingCtx, page)
 
 	return nil
 }
 
 // syncActionsFromBrowser 定期从浏览器同步录制的操作
-func (r *Recorder) syncActionsFromBrowser(ctx context.Context) {
+func (r *Recorder) syncActionsFromBrowser(ctx context.Context, ticker *time.Ticker, stopChan <-chan bool) {
 	for {
 		select {
-		case <-r.syncTicker.C:
+		case <-ticker.C:
 			r.mu.Lock()
 			if !r.isRecording || r.page == nil {
 				r.mu.Unlock()
@@ -283,7 +349,7 @@ func (r *Recorder) syncActionsFromBrowser(ctx context.Context) {
 			}
 
 			// 检查是否有停止录制请求（从任何页面）
-			hasStopRequest := false
+			var stopRequestPage *rod.Page
 			for _, pg := range r.pages {
 				if pg != nil {
 					stopResult, _ := pg.Eval(`() => {
@@ -293,7 +359,7 @@ func (r *Recorder) syncActionsFromBrowser(ctx context.Context) {
 						return false;
 					}`)
 					if stopResult != nil && stopResult.Value.Bool() {
-						hasStopRequest = true
+						stopRequestPage = pg
 						logger.Info(ctx, "[syncActionsFromBrowser] Detected stop request from a tab page")
 						break
 					}
@@ -301,13 +367,20 @@ func (r *Recorder) syncActionsFromBrowser(ctx context.Context) {
 			}
 
 			// 如果检测到停止请求,通知主页面
-			if hasStopRequest {
+			if stopRequestPage != nil {
 				// 在主页面设置停止标志,让 manager 的监听循环能检测到
 				if r.page != nil {
-					_, _ = r.page.Eval(`() => {
+					_, err := r.page.Eval(`() => {
 						window.__stopRecordingRequest__ = true;
 					}`)
-					logger.Info(ctx, "[syncActionsFromBrowser] Forwarded stop request to main page")
+					if err == nil {
+						logger.Info(ctx, "[syncActionsFromBrowser] Forwarded stop request to main page")
+						if stopRequestPage != r.page {
+							_, _ = stopRequestPage.Eval(`() => {
+								delete window.__stopRecordingRequest__;
+							}`)
+						}
+					}
 				}
 			}
 
@@ -380,7 +453,10 @@ func (r *Recorder) syncActionsFromBrowser(ctx context.Context) {
 			}
 			r.mu.Unlock()
 
-		case <-r.syncStopChan:
+		case <-stopChan:
+			return
+
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -595,6 +671,12 @@ func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, er
 		return nil, fmt.Errorf("recording is not in progress")
 	}
 
+	if r.recordingCancel != nil {
+		r.recordingCancel()
+		r.recordingCancel = nil
+	}
+	r.recordingCtx = nil
+
 	// 停止同步协程
 	if r.syncTicker != nil {
 		r.syncTicker.Stop()
@@ -610,7 +692,7 @@ func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, er
 	// 最后一次同步：从所有页面获取录制的操作
 	logger.Info(ctx, "Performing final sync from all pages...")
 	allActions := make([]models.ScriptAction, 0)
-	stopCtx, stopCancel := context.WithTimeout(ctx, 8*time.Second)
+	stopCtx, stopCancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
 	defer stopCancel()
 
 	for targetID, pg := range r.pages {
@@ -630,6 +712,15 @@ func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, er
 		}
 
 		logger.Info(ctx, "Syncing from page: %s", targetID)
+		if state, err := captureStorageStateFromRecordingPage(stopCtx, pg, pageInfo.URL); err == nil {
+			if r.storageScope != nil {
+				scope := *r.storageScope
+				r.lastStorageState = state
+				r.lastStorageScope = &scope
+			}
+		} else {
+			logger.Warn(ctx, "Failed to capture recording storage snapshot from page %s: %v", targetID, err)
+		}
 
 		// 先检查录制器是否还存在
 		checkResult, _ := pg.Timeout(2 * time.Second).Eval(`() => {
@@ -758,6 +849,9 @@ func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, er
 	r.page = nil
 	r.pages = make(map[string]*rod.Page)
 	r.downloadedFiles = nil
+	r.syncTicker = nil
+	r.syncStopChan = nil
+	r.storageScope = nil
 
 	if len(downloadedFiles) > 0 {
 		logger.Info(ctx, "Recorded %d file downloads during recording", len(downloadedFiles))
@@ -769,6 +863,154 @@ func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, er
 	logger.Info(ctx, "Final return of %d actions", len(actions))
 
 	return actions, nil
+}
+
+func captureStorageStateFromRecordingPage(ctx context.Context, page *rod.Page, pageURL string) (map[string]any, error) {
+	origin := recordingPageOrigin(pageURL)
+	if !strings.HasPrefix(origin, "http://") && !strings.HasPrefix(origin, "https://") {
+		return nil, fmt.Errorf("recording page origin is not capturable")
+	}
+
+	cookies := []map[string]any{}
+	if cookiesValue, err := page.Browser().GetCookies(); err == nil {
+		cookies = normalizeRecordingCookies(cookiesValue)
+	}
+
+	result, err := page.Context(ctx).Eval(`() => {
+		const readStorage = (storage) => {
+			const items = [];
+			for (let i = 0; i < storage.length; i++) {
+				const name = storage.key(i);
+				if (!name || name.startsWith('__browserwing_')) continue;
+				items.push({ name, value: storage.getItem(name) });
+			}
+			return items;
+		};
+		return {
+			local_storage: readStorage(window.localStorage),
+			session_storage: readStorage(window.sessionStorage),
+		};
+	}`)
+	if err != nil {
+		if len(cookies) == 0 {
+			return nil, fmt.Errorf("recording storage snapshot is unavailable")
+		}
+	}
+
+	originState := map[string]any{"origin": origin}
+	if result != nil {
+		var storageObj map[string]any
+		if data, err := json.Marshal(result.Value); err == nil {
+			_ = json.Unmarshal(data, &storageObj)
+		}
+		for key, value := range storageObj {
+			originState[key] = value
+		}
+	}
+
+	return map[string]any{
+		"schema_version": 1,
+		"kind":           "browser_storage_state",
+		"captured_url":   pageURL,
+		"captured_at":    time.Now().UTC().Format(time.RFC3339),
+		"origins":        []map[string]any{originState},
+		"cookies":        cookies,
+		"extensions":     map[string]any{},
+	}, nil
+}
+
+func normalizeRecordingCookies(cookiesValue any) []map[string]any {
+	value := reflect.ValueOf(cookiesValue)
+	if !value.IsValid() || value.Kind() != reflect.Slice {
+		return nil
+	}
+	cookies := make([]map[string]any, 0, value.Len())
+	for i := 0; i < value.Len(); i++ {
+		item := value.Index(i).Interface()
+		data, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(data, &obj); err != nil {
+			continue
+		}
+		normalized := make(map[string]any, len(obj)+8)
+		for key, itemValue := range obj {
+			normalized[key] = itemValue
+		}
+		if name := stringFromRecordingCookie(obj, "name", "Name"); name != "" {
+			normalized["name"] = name
+		}
+		if value := stringFromRecordingCookie(obj, "value", "Value"); value != "" {
+			normalized["value"] = value
+		}
+		if domain := stringFromRecordingCookie(obj, "domain", "Domain"); domain != "" {
+			normalized["domain"] = domain
+		}
+		if path := stringFromRecordingCookie(obj, "path", "Path"); path != "" {
+			normalized["path"] = path
+		}
+		if raw, ok := firstRecordingCookieValue(obj, "http_only", "httpOnly", "HTTPOnly"); ok {
+			normalized["http_only"] = boolFromRecordingCookie(raw)
+		}
+		if raw, ok := firstRecordingCookieValue(obj, "secure", "Secure"); ok {
+			normalized["secure"] = boolFromRecordingCookie(raw)
+		}
+		if sameSite := stringFromRecordingCookie(obj, "same_site", "sameSite", "SameSite"); sameSite != "" {
+			normalized["same_site"] = sameSite
+		}
+		cookies = append(cookies, normalized)
+	}
+	return cookies
+}
+
+func firstRecordingCookieValue(obj map[string]any, names ...string) (any, bool) {
+	for _, name := range names {
+		if value, ok := obj[name]; ok {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func stringFromRecordingCookie(obj map[string]any, names ...string) string {
+	for _, name := range names {
+		if value, ok := obj[name]; ok {
+			if text, ok := value.(string); ok {
+				return strings.TrimSpace(text)
+			}
+		}
+	}
+	return ""
+}
+
+func boolFromRecordingCookie(value any) bool {
+	result, _ := value.(bool)
+	return result
+}
+
+func recordingPageOrigin(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return rawURL
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+func cloneStorageState(state map[string]any) map[string]any {
+	if state == nil {
+		return nil
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return nil
+	}
+	var cloned map[string]any
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		return nil
+	}
+	return cloned
 }
 
 // injectIframeRecorders 为页面中所有 iframe 注入录制脚本

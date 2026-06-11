@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -236,14 +237,17 @@ func main() {
 	addr := fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port)
 	log.Printf("🚀 BrowserWing server started at http://%s", addr)
 
-	go openBrowser("http://127.0.0.1:" + cfg.Server.Port)
-
 	if embedMode {
 		log.Printf("📦 Running mode: Embedded (Frontend packed)")
-		log.Printf("🌐 Access: http://%s", addr)
+		accessURL := "http://127.0.0.1:" + cfg.Server.Port
+		log.Printf("🌐 Access: %s", accessURL)
+		go openBrowser(accessURL)
 	} else {
+		frontendURL := "http://localhost:5173/"
 		log.Printf("📦 Running mode: Development (Frontend needs to be started separately)")
+		log.Printf("🌐 Frontend dev URL: %s", frontendURL)
 		log.Printf("📝 API Documentation: http://%s/health", addr)
+		go openBrowserWhenReachable(frontendURL, 8*time.Second)
 	}
 
 	if err := router.Run(addr); err != nil {
@@ -342,6 +346,36 @@ func openBrowser(url string) {
 	}
 
 	_ = cmd.Start() // 不阻塞，忽略错误（有些环境可能没有 GUI）
+}
+
+func openBrowserWhenReachable(url string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+
+	for {
+		if isURLReachable(client, url) {
+			openBrowser(url)
+			return
+		}
+		if time.Now().After(deadline) {
+			log.Printf("Frontend dev server not detected at %s; run `cd frontend && pnpm run dev` to open the UI.", url)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func isURLReachable(client *http.Client, url string) bool {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 500
 }
 
 // initDefaultBrowserInstance 初始化默认浏览器实例
