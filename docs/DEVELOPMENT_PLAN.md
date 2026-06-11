@@ -34,6 +34,7 @@
 | P3 | 用例执行 | 已完成：单用例执行、保存结果、展示报告 |
 | P4 | 自然语言修改 | 已完成：自然语言生成修改建议，确认后应用并记录历史 |
 | P4.5 | 录制体验和项目登录态 | 已完成：页面列表、短录制流程、项目登录态、清洁会话和执行恢复 |
+| P4.6 | PostgreSQL 统一存储迁移 | 当前规划：统一替换 BoltDB 和 SQLite，建立防遗漏存储清单和红测 |
 | P5 | 多用户和权限 | 后续阶段：项目数据归属、API 权限校验、用户隔离 |
 | P6 | 稳定化和发布 | 回归测试、文档、打包、发布检查 |
 
@@ -278,7 +279,7 @@ POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/
 
 下一步：
 
-P4.5 已完成。录制体验与项目登录态契约已定稿、红测已通过、实现已复核，可以进入 P5 多用户和权限规划。
+P4.5 已完成。录制体验与项目登录态契约已定稿、红测已通过、实现已复核。下一步先进入 P4.6 PostgreSQL 统一存储迁移，完成存储事实源收口后再进入 P5 多用户和权限规划。
 
 ## 八、P4.5：录制体验和项目登录态
 
@@ -323,10 +324,63 @@ P4.5 已完成。录制体验与项目登录态契约已定稿、红测已通过
 遗留风险：
 
 - P4.5 首要保证 Cookie、localStorage、sessionStorage；IndexedDB、CacheStorage 和 Service Worker Cache 的完整恢复仍可能需要后续稳定化扩展。
-- 登录态是敏感资产，P4.5 必须保证 API、日志、Playbot 输入和执行报告不泄露明文；发布前仍应补齐加密存储和审计。
+- 登录态是敏感资产，P4.5 必须保证 API、日志、Playbot job JSON 和执行报告不泄露明文；发布前仍应补齐加密存储和审计。
 - 项目录制 URL 被直达或刷新时，前端仍可能走通用浏览器兜底按钮；正常从页面列表进入会先建立隔离录制会话，后续可把直达场景也收敛成重新建立项目录制会话。
 
-## 九、P5：多用户和权限
+## 九、P4.6：PostgreSQL 统一存储迁移
+
+当前状态：规划中。
+
+阶段设计：
+
+- `docs/P4_6_POSTGRES_STORAGE_MIGRATION_DESIGN.md`
+
+目标：
+
+把当前 BoltDB + SQLite/GORM 双存储统一迁移为 PostgreSQL/GORM 单一业务数据库。PostgreSQL 数据库名称固定为 `PlayBot`。P4.6 不迁移旧数据，不新增业务能力，不改变 P1-P4.5 已确认业务逻辑。
+
+核心要求：
+
+- 生产代码只使用 PostgreSQL 作为业务数据库。
+- DSN 通过配置文件保存，示例配置指向 `PlayBot`，真实 DSN 不提交仓库。
+- 原 BoltDB 的脚本、LLM 配置、浏览器配置、浏览器实例、Cookie、Prompt、Agent、MCP、用户、API Key、调度等数据域全部迁入 PostgreSQL。
+- 原 SQLite/GORM 的 Project、Version、Page、PageScript、TestCase、LLMRefinement、TestExecution、ProjectAuthState 继续保持业务语义，只替换底层数据库连接。
+- 建立 Store 接口、Store Operation Inventory、编译断言和静态扫描测试，防止遗漏旧数据库入口。
+- 生产代码不得继续引用 BoltDB、SQLite driver、全局 `storage.DB` 或 `*storage.BoltDB`。
+- LLM API Key 不得以明文写入 PostgreSQL；配置导入时必须加密落库，运行时再解密或解析为可用密钥。
+- LLM API Key 加密密钥只允许来自 `[security] llm_api_key_encryption_key` 或 `BROWSERWING_LLM_API_KEY_ENCRYPTION_KEY`，环境变量优先，格式为 base64 编码 32 字节密钥。
+
+协作顺序：
+
+1. 规划者定稿 P4.6 设计。
+2. 业务开发者 review P4.6 设计可行性，重点反馈 Store 接口边界、PostgreSQL 表结构、SDK/CLI 影响和测试环境要求。
+3. 用例编写者先写契约红测，覆盖操作清单完整性、禁止旧入口、PostgreSQL 配置、JSONB roundtrip、默认唯一、删除级联、分页排序和 P1-P4.5 回归。
+4. 代码审核者先审红测，确认红测没有固化偶然实现，也没有遗漏旧存储入口。
+5. 业务开发者按通过审核的红测实现 PostgreSQL Store、启动链路和调用方替换。
+6. 代码审核者复核实现并运行 PostgreSQL 契约测试和标准验证。
+7. 规划者收尾并沉淀契约记录。
+
+红测要求：
+
+- 清单完整性：Store 接口方法、Inventory 和测试名称必须同步。
+- 禁止旧入口：生产代码不得出现 BoltDB、SQLite、全局 `storage.DB` 和 `*storage.BoltDB`。
+- PostgreSQL 配置：DSN 必须指向数据库名 `PlayBot`。
+- Store 行为：覆盖脚本、执行记录、LLM、浏览器、Cookie、Prompt、Agent、工具、MCP、认证、调度和测试平台数据访问。
+- 安全边界：红测必须断言 LLM API Key 数据库原始值不等于配置明文，且运行时仍可获得可用密钥。
+- 密钥入口：红测必须断言 LLM 加密密钥字段、环境变量优先级、base64/32 字节格式，以及不能复用 `auth.app_key`。
+- 回归：P1-P4.5 既有契约继续通过，不能改变生成、管理、执行、自然语言修改和登录态恢复语义。
+
+遗留边界：
+
+- P4.6 不做旧数据迁移。
+- P4.6 不做 P5 多用户权限。
+- P4.6 不做登录态字段加密，只延续 P4.5 明文不出普通响应、日志、Playbot job JSON 和报告的契约。
+
+后续衔接：
+
+P4.6 完成后，P5 多用户权限应基于 PostgreSQL 统一存储和 Store 边界继续设计，避免在旧 BoltDB/SQLite 双事实源上扩展权限逻辑。
+
+## 十、P5：多用户和权限
 
 目标：
 
@@ -367,7 +421,7 @@ P4.5 已完成。录制体验与项目登录态契约已定稿、红测已通过
 - editor 可以编辑和执行。
 - owner/admin 可以管理成员。
 
-## 十、P6：稳定化和发布
+## 十一、P6：稳定化和发布
 
 目标：
 
@@ -409,6 +463,7 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 - 创建版本。
 - 创建页面。
 - 保存项目登录态。
+- 使用 PostgreSQL `PlayBot` 启动并完成主流程。
 - 用干净会话录制登录流程。
 - 录制主流程。
 - 生成用例。
@@ -429,7 +484,7 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 - Playbot 环境配置说明。
 - API 文档。
 
-## 十一、建议开发顺序
+## 十二、建议开发顺序
 
 第一轮：
 
@@ -485,6 +540,16 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 
 第六轮：
 
+1. 规划者编写并定稿 P4.6 PostgreSQL 统一存储迁移详细设计。
+2. 业务开发者 review P4.6 设计可行性，重点反馈 Store 接口、PostgreSQL 表结构、SDK/CLI 影响和测试数据库配置。
+3. 用例编写者先写操作清单完整性、禁止旧入口、PostgreSQL 配置和 Store 行为红测。
+4. 代码审核者审核红测。
+5. 业务开发者实现 PostgreSQL Store、启动链路和生产调用方替换。
+6. 代码审核者复核并跑相关验证。
+7. 规划者更新计划、契约记录和遗留风险。
+
+第七轮：
+
 1. 规划者编写 P5 多用户权限详细设计。
 2. 业务开发者 review P5 设计可行性。
 3. 用例编写者写项目归属、越权访问、角色权限的契约用例。
@@ -493,13 +558,13 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 6. 代码审核者复核并跑相关验证。
 7. 规划者更新计划、契约记录和遗留风险。
 
-第七轮：
+第八轮：
 
 1. 用例编写者补全跨栈回归用例和人工验收清单。
 2. 业务开发者修复前端 type-check、构建、Playbot 依赖和发布文档问题。
 3. 代码审核者做发布前最终 review 和标准入口验证。
 
-## 十二、当前已知风险
+## 十三、当前已知风险
 
 ### Playbot 生成结果不稳定
 
@@ -530,13 +595,23 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 应对：
 
 - 项目录制和 TestCase 执行显式区分 `clean` 和 `project_saved`。
-- 登录态摘要可以展示，Cookie 和 Storage value 不进入前端、日志、Playbot 输入和执行报告。
+- 登录态摘要可以展示，Cookie 和 Storage value 不进入前端、日志、Playbot job JSON 和执行报告。
 - 显式 `project_saved` 缺少项目登录态时执行前失败，不静默降级。
+
+### 数据库存储迁移遗漏
+
+应对：
+
+- P4.6 先建立 Store Operation Inventory。
+- 用编译断言保证 PostgreSQL Store 完整实现接口。
+- 用静态扫描禁止生产代码继续引用 BoltDB、SQLite、全局 `storage.DB` 和 `*storage.BoltDB`。
+- 用 PostgreSQL 契约测试覆盖 JSONB roundtrip、默认唯一、删除级联、分页排序和 P1-P4.5 回归。
 
 ### 多用户改造影响面大
 
 应对：
 
+- 先通过 P4.6 统一 PostgreSQL 存储。
 - 先加 Project 归属。
 - 再统一封装权限校验。
 - 最后处理成员角色。
@@ -549,7 +624,7 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 - 补足 TestCase、Execution、Refinement 类型。
 - 每阶段跑 type-check。
 
-## 十三、阶段完成定义
+## 十四、阶段完成定义
 
 每个阶段完成时必须满足：
 
