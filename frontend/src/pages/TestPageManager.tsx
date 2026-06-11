@@ -174,7 +174,9 @@ export default function TestPageManager() {
         targetUrl: page.path,
       });
     } catch (error: any) {
-      showToast(error.response?.data?.error || '启动页面录制失败', 'error');
+      const detail = error.response?.data?.detail;
+      const message = error.response?.data?.error || '启动页面录制失败';
+      showToast(detail ? `${message}: ${detail}` : message, 'error');
     }
   };
 

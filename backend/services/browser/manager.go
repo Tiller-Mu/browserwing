@@ -188,6 +188,10 @@ type BrowserInstanceRuntime struct {
 	startTime  time.Time               // 启动时间
 }
 
+type startInstanceOptions struct {
+	openStartupPage bool
+}
+
 // Manager 浏览器管理器
 type Manager struct {
 	config       *config.Config
@@ -296,7 +300,10 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // StartWithoutGlobalCookieStore 启动浏览器但不加载固定 browser Cookie Store。
 func (m *Manager) StartWithoutGlobalCookieStore(ctx context.Context) error {
-	return m.start(ctx, false)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.startInstanceInternalWithOptions(ctx, "", startInstanceOptions{openStartupPage: false})
 }
 
 func (m *Manager) start(ctx context.Context, loadGlobalCookieStore bool) error {
@@ -374,7 +381,7 @@ func (m *Manager) start(ctx context.Context, loadGlobalCookieStore bool) error {
 			Headless(headless).
 			Devtools(false).
 			Leakless(false)
-		if !headless {
+		if !headless && loadGlobalCookieStore {
 			l = l.Delete("no-startup-window").StartURL("about:blank")
 		}
 
@@ -2201,6 +2208,10 @@ func (m *Manager) StartInstance(ctx context.Context, instanceID string) error {
 	return m.startInstanceInternal(ctx, instanceID)
 }
 
+func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) error {
+	return m.startInstanceInternalWithOptions(ctx, instanceID, startInstanceOptions{openStartupPage: true})
+}
+
 func (m *Manager) clearInstanceRuntimeLocked(ctx context.Context, instanceID string) {
 	runtime, exists := m.instances[instanceID]
 	if !exists || runtime == nil {
@@ -2229,8 +2240,8 @@ func (m *Manager) clearInstanceRuntimeLocked(ctx context.Context, instanceID str
 	}
 }
 
-// startInstanceInternal 内部启动函数，调用者必须已持有锁
-func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) error {
+// startInstanceInternalWithOptions 内部启动函数，调用者必须已持有锁。
+func (m *Manager) startInstanceInternalWithOptions(ctx context.Context, instanceID string, opts startInstanceOptions) error {
 	// 空 instanceID 回退：优先使用当前实例，否则查找默认实例
 	if instanceID == "" {
 		if m.currentInstanceID != "" {
@@ -2329,7 +2340,7 @@ func (m *Manager) startInstanceInternal(ctx context.Context, instanceID string) 
 			Headless(headless).
 			Devtools(false).
 			Leakless(false)
-		if !headless {
+		if !headless && opts.openStartupPage {
 			l = l.Delete("no-startup-window").StartURL("about:blank")
 		}
 

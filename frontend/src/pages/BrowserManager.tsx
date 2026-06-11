@@ -657,7 +657,8 @@ export default function BrowserManager() {
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              {t('browser.script.name')} <span className="text-gray-900 dark:text-gray-100">*</span>
+              {isLoginFlowProjectRecording ? '录制名称（保存主流程时必填）' : t('browser.script.name')}
+              {!isLoginFlowProjectRecording && <span className="text-gray-900 dark:text-gray-100"> *</span>}
             </label>
             <input
               type="text"
@@ -846,7 +847,16 @@ export default function BrowserManager() {
             </div>
 
             <div className="flex flex-wrap items-center gap-3 pt-2">
-              {!status.is_running ? (
+              {recordingStatus.is_recording ? (
+                <button
+                  onClick={handleStopRecording}
+                  disabled={recordingLoading}
+                  className="btn-primary flex items-center gap-2"
+                >
+                  {recordingLoading ? <Loader className="w-5 h-5 animate-spin" /> : <Video className="w-5 h-5" />}
+                  停止并保存
+                </button>
+              ) : !status.is_running ? (
                 <button
                   onClick={handleStart}
                   disabled={startingBrowser}
@@ -857,25 +867,14 @@ export default function BrowserManager() {
                 </button>
               ) : (
                 <>
-                  {!recordingStatus.is_recording ? (
-                    <button
-                      onClick={handleStartRecording}
-                      disabled={recordingLoading}
-                      className="btn-secondary flex items-center gap-2"
-                    >
-                      {recordingLoading ? <Loader className="w-5 h-5 animate-spin" /> : <Video className="w-5 h-5" />}
-                      开始录制
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleStopRecording}
-                      disabled={recordingLoading}
-                      className="btn-primary flex items-center gap-2"
-                    >
-                      {recordingLoading ? <Loader className="w-5 h-5 animate-spin" /> : <Video className="w-5 h-5" />}
-                      停止并保存
-                    </button>
-                  )}
+                  <button
+                    onClick={handleStartRecording}
+                    disabled={recordingLoading}
+                    className="btn-secondary flex items-center gap-2"
+                  >
+                    {recordingLoading ? <Loader className="w-5 h-5 animate-spin" /> : <Video className="w-5 h-5" />}
+                    开始录制
+                  </button>
                   {recordingKind === 'login_flow' && (
                     <button
                       onClick={handleCaptureProjectAuthState}

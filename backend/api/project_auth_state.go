@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/browserwing/browserwing/models"
+	"github.com/browserwing/browserwing/pkg/logger"
 	"github.com/browserwing/browserwing/services/browser"
 	"github.com/browserwing/browserwing/storage"
 	"github.com/gin-gonic/gin"
@@ -377,7 +378,21 @@ func (h *ProjectHandlers) StartPageRecordingSession(c *gin.Context) {
 	}
 	result, err := runtime.StartPageRecording(c.Request.Context(), input)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Start page recording failed"})
+		safeDetail := safeProjectRecordingStartError(err)
+		logger.Error(
+			c.Request.Context(),
+			"Failed to start project page recording: project_id=%d version_id=%d page_id=%d recording_kind=%s auth_context=%s detail=%s",
+			projectID,
+			versionID,
+			pageID,
+			meta.RecordingKind,
+			meta.AuthContext,
+			safeDetail,
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Start page recording failed",
+			"detail": safeDetail,
+		})
 		return
 	}
 	if result == nil {
@@ -395,6 +410,25 @@ func (h *ProjectHandlers) StartPageRecordingSession(c *gin.Context) {
 		result["recording_meta"].(map[string]any)["auth_state_id"] = auth.ID
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+func safeProjectRecordingStartError(err error) string {
+	if err == nil {
+		return "Project page recording could not be started"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "project auth state") || strings.Contains(msg, "storage"):
+		return "Saved project auth state could not be restored"
+	case strings.Contains(msg, "browser") || strings.Contains(msg, "chrome"):
+		return "Browser is not ready for project recording"
+	case strings.Contains(msg, "navigate") || strings.Contains(msg, "load"):
+		return "Target page could not be opened for recording"
+	case strings.Contains(msg, "recorder") || strings.Contains(msg, "recording"):
+		return "Recorder could not be initialized"
+	default:
+		return "Project page recording could not be started"
+	}
 }
 
 func parseProjectVersionIDs(c *gin.Context) (uint, uint, bool) {

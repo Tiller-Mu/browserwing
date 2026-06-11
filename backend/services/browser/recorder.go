@@ -137,7 +137,7 @@ func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url strin
 	}
 
 	logger.Info(ctx, "Preparing to inject recording script into page (language: %s)...", language)
-	
+
 	// 首先设置 EvalOnNewDocument，确保所有新文档（包括iframe和新页面）都会自动注入XHR拦截器
 	// 这样可以在页面加载的最早期就开始监听XHR请求
 	_, err := page.EvalOnNewDocument(xhrInterceptorScript)
@@ -180,7 +180,7 @@ func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url strin
 	} else {
 		logger.Info(ctx, "✓ XHR interceptor injected into current page")
 	}
-	
+
 	// 设置录制模式标志,让脚本知道这是录制模式
 	_, err = page.Eval(`() => { window.__browserwingRecordingMode__ = true; }`)
 	if err != nil {
@@ -199,7 +199,7 @@ func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url strin
 				configsJSONStr = strings.ReplaceAll(configsJSONStr, `\`, `\\`)
 				configsJSONStr = strings.ReplaceAll(configsJSONStr, "`", "\\`")
 				configsJSONStr = strings.ReplaceAll(configsJSONStr, "$", "\\$")
-				
+
 				_, evalErr := page.Eval(fmt.Sprintf(`() => { window.__llmConfigs__ = %s; }`, configsJSONStr))
 				if evalErr != nil {
 					logger.Warn(ctx, "Failed to inject LLM configs: %v", evalErr)
@@ -426,11 +426,11 @@ func (r *Recorder) checkAndProcessAIRequestOnPage(ctx context.Context, page *rod
 	// 支持新的多区域格式和旧的单HTML格式
 	var html string
 	regions, hasRegions := requestData["regions"].([]interface{})
-	
+
 	if hasRegions && len(regions) > 0 {
 		// 新格式：多区域
 		logger.Info(ctx, "Processing AI request with %d regions", len(regions))
-		
+
 		// 将所有区域的HTML合并
 		var htmlParts []string
 		for i, regionInterface := range regions {
@@ -438,7 +438,7 @@ func (r *Recorder) checkAndProcessAIRequestOnPage(ctx context.Context, page *rod
 				regionType, _ := regionMap["type"].(string)
 				regionXpath, _ := regionMap["xpath"].(string)
 				regionHtml, _ := regionMap["html"].(string)
-				
+
 				if regionHtml != "" {
 					if regionType == "pagination" {
 						htmlParts = append(htmlParts, fmt.Sprintf("\n<!-- Pagination Region (XPath: %s) -->\n%s", regionXpath, regionHtml))
@@ -448,7 +448,7 @@ func (r *Recorder) checkAndProcessAIRequestOnPage(ctx context.Context, page *rod
 				}
 			}
 		}
-		
+
 		html = strings.Join(htmlParts, "\n\n")
 	} else {
 		// 旧格式：单个HTML
@@ -610,14 +610,20 @@ func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, er
 	// 最后一次同步：从所有页面获取录制的操作
 	logger.Info(ctx, "Performing final sync from all pages...")
 	allActions := make([]models.ScriptAction, 0)
+	stopCtx, stopCancel := context.WithTimeout(ctx, 8*time.Second)
+	defer stopCancel()
 
 	for targetID, pg := range r.pages {
+		if stopCtx.Err() != nil {
+			logger.Warn(ctx, "Final recording sync timed out, returning actions collected so far")
+			break
+		}
 		if pg == nil {
 			continue
 		}
 
 		// 检查页面URL是否有效
-		pageInfo, err := pg.Info()
+		pageInfo, err := pg.Timeout(2 * time.Second).Info()
 		if err != nil || !isValidRecordingURL(pageInfo.URL) {
 			logger.Info(ctx, "Skipping invalid/special page: %s", targetID)
 			continue
@@ -626,7 +632,7 @@ func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, er
 		logger.Info(ctx, "Syncing from page: %s", targetID)
 
 		// 先检查录制器是否还存在
-		checkResult, _ := pg.Eval(`() => {
+		checkResult, _ := pg.Timeout(2 * time.Second).Eval(`() => {
 			var savedCount = 0;
 			try {
 				var saved = sessionStorage.getItem('__browserwing_actions__');
@@ -646,7 +652,7 @@ func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, er
 			logger.Info(ctx, "Recorder status check on page %s: %+v", targetID, checkResult.Value)
 		}
 
-		result, err := pg.Eval(`() => {
+		result, err := pg.Timeout(3 * time.Second).Eval(`() => {
 			try {
 				// 优先从 sessionStorage 获取完整数据
 				var saved = sessionStorage.getItem('__browserwing_actions__');
@@ -685,7 +691,7 @@ func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, er
 
 		// 清理注入的脚本、UI面板和 sessionStorage
 		// 使用超时避免卡住
-		cleanupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(stopCtx, 2*time.Second)
 
 		_, _ = pg.Context(cleanupCtx).Eval(`() => { 
 			// 移除录制器 UI 面板
@@ -719,7 +725,7 @@ func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, er
 		cancel() // 立即释放资源
 
 		// 恢复 CSP 限制（忽略错误）
-		_ = proto.PageSetBypassCSP{Enabled: false}.Call(pg)
+		_ = proto.PageSetBypassCSP{Enabled: false}.Call(pg.Timeout(2 * time.Second))
 	}
 
 	logger.Info(ctx, "✓ All pages cleaned up")
