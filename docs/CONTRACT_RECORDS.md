@@ -403,3 +403,47 @@ P4 refine 必须复用既有 BoltDB LLM 配置读取链路；默认配置和指�
 
 验证：
 `frontend/src/p45_recording_ui_contract.test.ts` 覆盖前端契约 helper、页面列表视图、录制入口、无登录态引导和保存录制元数据；代码审核确认 `frontend/src/pages/TestPageManager.tsx` 已接入列表式页面管理和登录态入口，`frontend/src/pages/BrowserManager.tsx` 已接入项目录制短流程和登录流程保存登录态选项。
+
+## P4.6：PostgreSQL 统一存储迁移
+
+### 统一 Store 和防遗漏清单
+
+契约：
+P4.6 必须把 BoltDB 和 SQLite/GORM 双存储统一为 PostgreSQL/GORM 单一业务数据库。生产模块只能依赖 `storage.Store`、细分领域接口或受控 TestingPlatform GORM 入口，不得继续依赖 `*storage.BoltDB`、全局 `storage.DB`、BoltDB 初始化或 SQLite driver。每个 Store 方法都必须登记到 Store Operation Inventory，并绑定真实存在的 `TestP46*` 契约测试名。
+
+依据：
+来自 `docs/P4_6_POSTGRES_STORAGE_MIGRATION_DESIGN.md` 对单一存储事实源、操作清单完整性、编译断言和静态守门的要求。P4.6 的核心风险是迁移遗漏旧入口，而不是单纯能连接 PostgreSQL。
+
+当前/历史问题：
+当前生产代码仍同时存在 BoltDB、SQLite/GORM 全局入口和多个直接 `storage.DB` 调用点。如果没有 Inventory、静态扫描和真实测试名绑定，开发者可能只替换启动链路，遗漏 SDK、API、Agent、Scheduler、Browser、MCP 或 TestingPlatform 的旧存储路径。
+
+验证：
+`TestP46StoreOperationInventoryMatchesStoreInterface`、`TestP46StoreOperationInventoryHasContractTestNames`、`TestP46LegacyBoltMethodsAreCoveredByStoreInventory`、`TestP46ProductionCodeDoesNotUseBoltDBOrSQLite`、`TestP46MainInitializesOnlyPostgresStore` 和 `TestP46SDKDoesNotOpenBoltDB` 覆盖该契约。当前红测在旧实现上按预期打红。
+
+### PostgreSQL 配置和密钥安全
+
+契约：
+P4.6 的业务数据库名称固定为 `PlayBot`，配置必须使用 `[database] type = "postgres"` 和 PostgreSQL DSN；真实 DSN 不提交仓库。LLM API Key 不得以明文保存到 PostgreSQL 原始字段，必须使用独立的 `[security] llm_api_key_encryption_key` 或 `BROWSERWING_LLM_API_KEY_ENCRYPTION_KEY` 加密密钥，环境变量优先，格式为 base64 编码 32 字节随机密钥。运行时 Store 可以返回解密后的可用 API Key，但普通 API 响应、日志、Playbot job JSON、错误摘要和数据库原始字段不得出现明文。
+
+依据：
+来自核心需求中“不在数据库或日志中明文保存 LLM API Key”的安全要求，以及 P4.6 设计对 `PlayBot` 数据库名、配置入口和 Playbot 密钥传递边界的确认。P4.6 不改变当前受控 CLI 参数传递 `--llm-api-key` 的方式，但必须保持日志和错误摘要脱敏。
+
+当前/历史问题：
+如果 PostgreSQL 表直接使用 `api_key` 明文字段，会把密钥落库并违反核心安全边界；如果加密密钥入口不固定，测试者和开发者会各自定义来源；如果把“Playbot 输入”泛化理解为禁止 CLI 参数，会和 P1/P4 既有 Playbot 调用契约冲突。
+
+验证：
+`TestP46ExampleConfigUsesPostgresPlayBotDSN`、`TestP46ConfigModelDefinesPostgresAndLLMEncryptionFields`、`TestP46StartupRejectsDSNWithoutPlayBotDatabase`、`TestP46StartupRejectsInvalidLLMAPIKeyEncryptionKey`、`TestP46LLMAPIKeyEncryptionKeySourcePrecedence`、`TestP46StartupDoesNotReuseAuthAppKeyForLLMEncryption`、`TestP46LLMConfigPersistenceModelDoesNotExposePlainAPIKeyColumn`、`TestP46PostgresStoreLLMDefaultUniquenessAndEncryptedAtRest` 和 `TestP46PlaybotJobJSONDoesNotContainPostgresLLMAPIKey` 覆盖该契约。
+
+### Store 行为和 P1-P4.5 回归边界
+
+契约：
+PostgreSQL Store 必须保持 P1-P4.5 已确认业务语义，不迁移旧数据、不新增 P5 多用户权限、不改变 API 响应语义、前端流程、Playbot job JSON 契约和 P4.5 登录态业务规则。Script 的 `description`、`mcp_command_description` 必须作为结构化列保存；复杂载荷如 actions、cookies、tool parameters、MCP schema、执行结果使用 JSONB roundtrip；默认 LLM、浏览器配置和浏览器实例必须保持唯一语义；TestingPlatform 的 Project、Version、Page、PageScript、TestCase、LLMRefinement、TestExecution、ProjectAuthState 必须通过 PostgreSQL Store 路径保持原有层级、事务和级联删除行为。
+
+依据：
+来自 P1-P4.5 已沉淀契约和 P4.6 设计对“只统一存储，不改变业务逻辑”的边界。P4.6 是存储基础设施阶段，不能把实现便利写成新的业务规则。
+
+当前/历史问题：
+如果只覆盖 BoltDB 原方法，可能漏掉原 SQLite/GORM TestingPlatform 主体；如果脚本描述字段未结构化迁移，会影响脚本详情和 MCP 命令展示；如果默认唯一、分页排序、级联删除和事务边界改变，会造成用户资产和执行历史回归。
+
+验证：
+`TestP46ScriptStructuredFieldsHavePostgresColumnTags`、`TestP46PostgresStoreScriptRoundTrip`、`TestP46PostgresStoreToolConfigByScriptDeletion`、`TestP46PostgresStoreSchedulerPaginationAndFilters`、`TestP46PostgresStoreBrowserDefaultsAndCookieRoundTrip`、`TestP46PostgresStorePromptSystemUpgrade`、`TestP46PostgresStoreAgentCascadeAndMCPServiceToolsRoundTrip`、`TestP46PostgresStoreAuthLookupAndUniqueness`、`TestP46PostgresStoreExecutionAndRecordingDomains` 和 `TestP46PostgresStoreTestingPlatformBusinessDataAccess` 覆盖该契约。
