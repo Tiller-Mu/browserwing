@@ -710,6 +710,85 @@ func TestP46Probe(t *testing.T) {
 `)
 }
 
+func TestP46PostgresStoreLLMUpdateWithoutAPIKeyPreservesSecretAndManagerRuntime(t *testing.T) {
+	p46RunStoreProbe(t, `
+func TestP46Probe(t *testing.T) {
+	secret := "sk-p46-contract-retained-secret"
+	cfg := p46Config(p46IsolatedPlayBotDSN(t, "llm_update_without_key"), p46Base64Key(0x5c), "")
+	store, cleanup := openStore(t, cfg)
+	defer cleanup()
+
+	db := openRawDB(t, cfg)
+	defer db.Close()
+
+	original := &models.LLMConfigModel{
+		ID:        p46ID("llm_update"),
+		Name:      "contract update retains key",
+		Provider:  "openai",
+		APIKey:    secret,
+		Model:     "gpt-4o-mini",
+		BaseURL:   "https://api.example.invalid",
+		IsDefault: true,
+		IsActive:  true,
+	}
+	defer store.DeleteLLMConfig(original.ID)
+
+	if err := store.SaveLLMConfig(original); err != nil {
+		t.Fatalf("SaveLLMConfig original through Postgres Store: %v", err)
+	}
+	rawBefore := queryLLMAtRestPayload(t, db, original.ID)
+	if rawBefore == "" || strings.Contains(rawBefore, secret) {
+		t.Fatalf("original at-rest LLM payload should be encrypted and non-empty, got %q", rawBefore)
+	}
+
+	manager := llm.NewManager(store)
+	if err := manager.LoadAll(); err != nil {
+		t.Fatalf("LoadAll before update: %v", err)
+	}
+
+	updated := &models.LLMConfigModel{
+		ID:        original.ID,
+		Name:      "contract update renamed",
+		Provider:  "openai",
+		Model:     "gpt-4o",
+		BaseURL:   "https://api-updated.example.invalid",
+		IsDefault: true,
+		IsActive:  true,
+	}
+	if err := manager.Update(updated); err != nil {
+		t.Fatalf("Manager.Update without api_key should preserve existing encrypted key and reload runtime config: %v", err)
+	}
+
+	rawAfter := queryLLMAtRestPayload(t, db, original.ID)
+	if rawAfter != rawBefore {
+		t.Fatalf("UpdateLLMConfig without api_key must preserve encrypted API key fields exactly, before=%q after=%q", rawBefore, rawAfter)
+	}
+
+	stored, err := store.GetLLMConfig(original.ID)
+	if err != nil {
+		t.Fatalf("GetLLMConfig after api_key-less update: %v", err)
+	}
+	if stored.APIKey != secret {
+		t.Fatalf("Store did not retain decrypted API key after api_key-less update: got %q", stored.APIKey)
+	}
+	if stored.Name != updated.Name || stored.Model != updated.Model || stored.BaseURL != updated.BaseURL {
+		t.Fatalf("UpdateLLMConfig did not persist non-secret fields: %+v", stored)
+	}
+
+	if _, ok := manager.Get(original.Name); ok {
+		t.Fatalf("Manager.Update should remove extractor under old LLM config name")
+	}
+	extractor, ok := manager.Get(updated.Name)
+	if !ok {
+		t.Fatalf("Manager.Update should load active updated LLM config into memory")
+	}
+	if got := extractorAPIKey(t, extractor); got != secret {
+		t.Fatalf("Manager runtime extractor did not keep original API key after api_key-less update: got %q", got)
+	}
+}
+`)
+}
+
 func TestP46PostgresStoreToolConfigByScriptDeletion(t *testing.T) {
 	p46RunStoreProbe(t, `
 func TestP46Probe(t *testing.T) {
@@ -1954,8 +2033,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/browserwing/browserwing/config"
+	"github.com/browserwing/browserwing/llm"
 	"github.com/browserwing/browserwing/models"
 	"github.com/browserwing/browserwing/services/playbot"
 	"github.com/browserwing/browserwing/storage"
@@ -2242,6 +2323,27 @@ func containsRefinementStatus(refinements []models.LLMRefinement, status string)
 		}
 	}
 	return false
+}
+
+func extractorAPIKey(t *testing.T, extractor *llm.Extractor) string {
+	t.Helper()
+	if extractor == nil {
+		t.Fatalf("nil LLM extractor")
+	}
+	value := reflect.ValueOf(extractor)
+	if value.Kind() != reflect.Ptr || value.IsNil() {
+		t.Fatalf("unexpected LLM extractor value: %T", extractor)
+	}
+	configField := value.Elem().FieldByName("config")
+	if !configField.IsValid() || configField.IsNil() {
+		t.Fatalf("LLM extractor does not hold a runtime config")
+	}
+	configValue := reflect.NewAt(configField.Type(), unsafe.Pointer(configField.UnsafeAddr())).Elem()
+	cfg, ok := configValue.Interface().(*config.LLMConfig)
+	if !ok || cfg == nil {
+		t.Fatalf("unexpected LLM extractor config field type: %s", configField.Type())
+	}
+	return cfg.APIKey
 }
 
 func writeFailingFakePlaybot(t *testing.T, secret string) (pythonPath string, engineDir string, jobFile string, argsFile string) {

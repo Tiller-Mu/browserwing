@@ -24,7 +24,7 @@ import (
 func main() {
     // 创建客户端
     client, err := sdk.New(&sdk.Config{
-        DatabasePath: "./data/browserwing.db",
+        DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
         EnableBrowser: true,
         EnableScript: true,
     })
@@ -47,7 +47,7 @@ func main() {
 ```go
 type Config struct {
     // 必需
-    DatabasePath string // 数据库路径
+    DatabaseDSN  string // PostgreSQL DSN，必须指向 PlayBot 数据库
     
     // 功能开关
     EnableBrowser bool // 启用浏览器
@@ -360,7 +360,7 @@ config, err := client.Agent().GetLLMConfig(ctx)
 
 ```go
 client, _ := sdk.New(&sdk.Config{
-    DatabasePath: "./data/test.db",
+    DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
     EnableBrowser: true,
     EnableScript: true,
 })
@@ -445,7 +445,7 @@ for range ticker.C {
 
 ```go
 client, _ := sdk.New(&sdk.Config{
-    DatabasePath: "./data/app.db",
+    DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
     EnableBrowser: true,
     EnableScript: true,
     EnableAgent: true,
@@ -566,7 +566,7 @@ A: 在配置中设置 `EnableAgent: false`:
 
 ```go
 client, _ := sdk.New(&sdk.Config{
-    DatabasePath: "./data/browserwing.db",
+    DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
     EnableBrowser: true,
     EnableScript: true,
     EnableAgent: false, // 不启用 Agent

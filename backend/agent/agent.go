@@ -260,7 +260,7 @@ type AgentInstances struct {
 
 // AgentManager Agent 管理器
 type AgentManager struct {
-	db               *storage.BoltDB
+	db               storage.Store
 	mcpServer        browsermcp.IMCPServer
 	sessions         map[string]*ChatSession
 	agents           map[string]*AgentInstances // sessionID -> Agent 实例集合
@@ -274,7 +274,7 @@ type AgentManager struct {
 }
 
 // NewAgentManager 创建 Agent 管理器
-func NewAgentManager(db *storage.BoltDB, mcpServer browsermcp.IMCPServer) (*AgentManager, error) {
+func NewAgentManager(db storage.Store, mcpServer browsermcp.IMCPServer) (*AgentManager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	am := &AgentManager{
@@ -1454,57 +1454,57 @@ needTools:
 				}
 
 			case interfaces.AgentEventToolCall:
-			// 工具调用
-			if event.ToolCall == nil {
-				logger.Error(ctx, "Tool call event missing ToolCall information")
-				continue
-			}
-			tc := event.ToolCall
-
-			// 每次工具调用都创建新记录（同名工具可能被多次调用）
-			toolCall := &ToolCall{
-				ToolName:  tc.Name,
-				Status:    "calling",
-				Timestamp: time.Now(),
-				Arguments: make(map[string]interface{}),
-			}
-
-			logger.Info(ctx, "[ToolCall Event] Tool: %s, Arguments JSON: %s", tc.Name, tc.Arguments)
-
-			// 提取 instructions 和其他参数
-			if tc.Arguments != "" {
-				// 解析参数 JSON
-				var args map[string]interface{}
-				if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
-					logger.Info(ctx, "[ToolCall Event] Parsed args: %+v", args)
-
-					// 提取 instructions
-					if instructions, ok := args["instructions"].(string); ok {
-						toolCall.Instructions = instructions
-						logger.Info(ctx, "[ToolCall Event] Found instructions: %s", instructions)
-						// 从参数中移除 instructions，保留实际的工具参数
-						delete(args, "instructions")
-					} else {
-						logger.Warn(ctx, "[ToolCall Event] No instructions found in args")
-					}
-					toolCall.Arguments = args
-					logger.Info(ctx, "[ToolCall Event] Final toolCall - Instructions: %s, Args: %+v",
-						toolCall.Instructions, toolCall.Arguments)
-				} else {
-					logger.Error(ctx, "[ToolCall Event] Failed to parse arguments JSON: %v", err)
+				// 工具调用
+				if event.ToolCall == nil {
+					logger.Error(ctx, "Tool call event missing ToolCall information")
+					continue
 				}
-			} else {
-				logger.Warn(ctx, "[ToolCall Event] Arguments is empty")
-			}
+				tc := event.ToolCall
 
-			toolCallMap[tc.Name] = toolCall
-			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, toolCall)
+				// 每次工具调用都创建新记录（同名工具可能被多次调用）
+				toolCall := &ToolCall{
+					ToolName:  tc.Name,
+					Status:    "calling",
+					Timestamp: time.Now(),
+					Arguments: make(map[string]interface{}),
+				}
 
-			// 发送工具调用状态
-			streamChan <- StreamChunk{
-				Type:     "tool_call",
-				ToolCall: toolCall,
-			}
+				logger.Info(ctx, "[ToolCall Event] Tool: %s, Arguments JSON: %s", tc.Name, tc.Arguments)
+
+				// 提取 instructions 和其他参数
+				if tc.Arguments != "" {
+					// 解析参数 JSON
+					var args map[string]interface{}
+					if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
+						logger.Info(ctx, "[ToolCall Event] Parsed args: %+v", args)
+
+						// 提取 instructions
+						if instructions, ok := args["instructions"].(string); ok {
+							toolCall.Instructions = instructions
+							logger.Info(ctx, "[ToolCall Event] Found instructions: %s", instructions)
+							// 从参数中移除 instructions，保留实际的工具参数
+							delete(args, "instructions")
+						} else {
+							logger.Warn(ctx, "[ToolCall Event] No instructions found in args")
+						}
+						toolCall.Arguments = args
+						logger.Info(ctx, "[ToolCall Event] Final toolCall - Instructions: %s, Args: %+v",
+							toolCall.Instructions, toolCall.Arguments)
+					} else {
+						logger.Error(ctx, "[ToolCall Event] Failed to parse arguments JSON: %v", err)
+					}
+				} else {
+					logger.Warn(ctx, "[ToolCall Event] Arguments is empty")
+				}
+
+				toolCallMap[tc.Name] = toolCall
+				assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, toolCall)
+
+				// 发送工具调用状态
+				streamChan <- StreamChunk{
+					Type:     "tool_call",
+					ToolCall: toolCall,
+				}
 			case interfaces.AgentEventThinking:
 				// 思考过程(可选择性展示)
 				logger.Debug(ctx, "Agent thinking: %s", event.ThinkingStep)
@@ -1655,7 +1655,7 @@ func (am *AgentManager) Stop() {
 func (am *AgentManager) SendMessageGeneric(ctx context.Context, sessionID, userMessage string, streamChan chan<- any) error {
 	// 创建一个内部的 StreamChunk 通道
 	internalChan := make(chan StreamChunk, 100)
-	
+
 	// 启动一个 goroutine 来转换通道类型
 	go func() {
 		defer close(streamChan)
@@ -1663,7 +1663,7 @@ func (am *AgentManager) SendMessageGeneric(ctx context.Context, sessionID, userM
 			streamChan <- chunk
 		}
 	}()
-	
+
 	// 调用原始的 SendMessage 方法
 	return am.SendMessage(ctx, sessionID, userMessage, internalChan)
 }

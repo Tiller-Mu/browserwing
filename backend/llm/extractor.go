@@ -15,7 +15,7 @@ import (
 type Extractor struct {
 	llmClient *llmhub.Client
 	config    *config.LLMConfig
-	storage   *storage.BoltDB
+	storage   storage.Store
 }
 
 // ExtractionRequest 提取请求
@@ -43,7 +43,7 @@ type FormFillResult struct {
 }
 
 // NewExtractor 创建提取器
-func NewExtractor(cfg *config.LLMConfig, db *storage.BoltDB) (*Extractor, error) {
+func NewExtractor(cfg *config.LLMConfig, db storage.Store) (*Extractor, error) {
 	client, err := llmhub.NewClient(llmhub.ClientConfig{
 		APIKey:   cfg.APIKey,
 		Provider: llmhub.Provider(cfg.Provider),

@@ -38,7 +38,7 @@ backend/sdk/
 ```go
 // 仅浏览器和脚本
 client, _ := sdk.New(&sdk.Config{
-    DatabasePath: "./data/browserwing.db",
+    DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
     EnableBrowser: true,
     EnableScript: true,
     EnableAgent: false,
@@ -46,7 +46,7 @@ client, _ := sdk.New(&sdk.Config{
 
 // 全功能
 client, _ := sdk.New(&sdk.Config{
-    DatabasePath: "./data/browserwing.db",
+    DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
     EnableBrowser: true,
     EnableScript: true,
     EnableAgent: true,
@@ -116,7 +116,7 @@ import (
 func main() {
     // 创建客户端
     client, err := sdk.New(&sdk.Config{
-        DatabasePath: "./data/browserwing.db",
+        DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
         EnableBrowser: true,
         EnableScript: true,
     })

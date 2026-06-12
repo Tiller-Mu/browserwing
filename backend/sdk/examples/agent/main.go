@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 
 	"github.com/browserwing/browserwing/sdk"
 )
@@ -10,7 +11,7 @@ import (
 func main() {
 	// 创建 SDK 客户端 - 启用所有功能
 	client, err := sdk.New(&sdk.Config{
-		DatabasePath:  "./data/browserwing.db",
+		DatabaseDSN:   databaseDSN(),
 		EnableBrowser: true,
 		EnableScript:  true,
 		EnableAgent:   true,
@@ -111,8 +112,8 @@ func main() {
 	// 6. 使用浏览器脚本工具(如果已配置)
 	log.Println("\n=== Using browser automation (optional) ===")
 	log.Println("Asking agent to visit a website...")
-	err = client.Agent().SendMessageStream(ctx, sessionID, 
-		"Please visit https://www.example.com and tell me the page title", 
+	err = client.Agent().SendMessageStream(ctx, sessionID,
+		"Please visit https://www.example.com and tell me the page title",
 		func(chunk *sdk.MessageChunk) {
 			switch chunk.Type {
 			case "message":
@@ -133,4 +134,12 @@ func main() {
 	}
 
 	log.Println("\n✓ Agent example completed!")
+}
+
+func databaseDSN() string {
+	dsn := os.Getenv("BROWSERWING_SDK_POSTGRES_DSN")
+	if dsn == "" {
+		log.Fatal("set BROWSERWING_SDK_POSTGRES_DSN to a PostgreSQL DSN targeting database PlayBot")
+	}
+	return dsn
 }

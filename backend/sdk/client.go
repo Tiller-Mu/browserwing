@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/browserwing/browserwing/agent"
@@ -19,7 +19,11 @@ import (
 // Config SDK 配置
 type Config struct {
 	// 必需配置
-	DatabasePath string // 数据库文件路径
+	DatabaseDSN string // PostgreSQL DSN，必须指向 PlayBot 数据库
+
+	// Deprecated: use DatabaseDSN. P4.6 后 SDK 不再支持 BoltDB/SQLite 文件路径。
+	// 该字段仅作为旧调用方临时兼容入口；传入值也必须是 PostgreSQL DSN。
+	DatabasePath string
 
 	// 可选配置 - 功能开关
 	EnableBrowser bool // 是否启用浏览器功能
@@ -58,7 +62,7 @@ type Client struct {
 	config *Config
 
 	// 核心组件
-	db             *storage.BoltDB
+	db             storage.Store
 	llmManager     *llm.Manager
 	browserManager *browser.Manager
 	mcpServer      *mcp.MCPServer
@@ -80,8 +84,11 @@ func New(cfg *Config) (*Client, error) {
 	}
 
 	// 验证必需配置
-	if cfg.DatabasePath == "" {
-		return nil, fmt.Errorf("database path is required")
+	if cfg.databaseDSN() == "" {
+		return nil, fmt.Errorf("database dsn is required (set Config.DatabaseDSN to a PostgreSQL DSN targeting PlayBot)")
+	}
+	if cfg.DatabaseDSN == "" && looksLikeLegacyDatabasePath(cfg.DatabasePath) {
+		return nil, fmt.Errorf("Config.DatabasePath is deprecated and no longer accepts database file paths; set Config.DatabaseDSN to a PostgreSQL DSN targeting PlayBot")
 	}
 
 	// 验证依赖关系
@@ -162,12 +169,22 @@ func (c *Client) initLogger() error {
 
 // initDatabase 初始化数据库
 func (c *Client) initDatabase() error {
-	// 确保数据库目录存在
-	dbDir := filepath.Dir(c.config.DatabasePath)
-
-	db, err := storage.NewBoltDB(c.config.DatabasePath)
+	storeCfg := &config.Config{
+		Server: &config.ServerConfig{Host: "127.0.0.1", Port: "8080"},
+		Database: &config.DatabaseConfig{
+			Type: "postgres",
+			DSN:  c.config.databaseDSN(),
+		},
+		Security: &config.SecurityConfig{},
+		Browser:  &config.BrowserConfig{},
+		Auth:     &config.AuthConfig{},
+	}
+	db, cleanup, err := storage.OpenPostgresStore(context.Background(), storeCfg)
 	if err != nil {
-		return fmt.Errorf("failed to open database: %w (directory: %s)", err, dbDir)
+		if cleanup != nil {
+			_ = cleanup()
+		}
+		return fmt.Errorf("failed to open PostgreSQL store: %w", err)
 	}
 
 	c.db = db
@@ -203,8 +220,10 @@ func (c *Client) initBrowserManager() error {
 			Port: "8080",
 		},
 		Database: &config.DatabaseConfig{
-			Path: c.config.DatabasePath,
+			Type: "postgres",
+			DSN:  c.config.databaseDSN(),
 		},
+		Security: &config.SecurityConfig{},
 	}
 
 	c.browserManager = browser.NewManager(cfg, c.db, c.llmManager)
@@ -314,4 +333,29 @@ func (c *Client) Close() error {
 // IsInitialized 检查客户端是否已初始化
 func (c *Client) IsInitialized() bool {
 	return c.initialized
+}
+
+func (cfg *Config) databaseDSN() string {
+	if cfg == nil {
+		return ""
+	}
+	if dsn := strings.TrimSpace(cfg.DatabaseDSN); dsn != "" {
+		return dsn
+	}
+	return strings.TrimSpace(cfg.DatabasePath)
+}
+
+func looksLikeLegacyDatabasePath(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" ||
+		strings.Contains(trimmed, "://") ||
+		strings.Contains(strings.ToLower(trimmed), "dbname=") {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return strings.HasSuffix(lower, ".db") ||
+		strings.HasSuffix(lower, ".sqlite") ||
+		strings.HasSuffix(lower, ".sqlite3") ||
+		strings.Contains(trimmed, "/") ||
+		strings.Contains(trimmed, "\\")
 }

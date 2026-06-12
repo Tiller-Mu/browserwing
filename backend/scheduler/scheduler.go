@@ -23,7 +23,7 @@ type TaskExecutor interface {
 
 // Scheduler 定时任务调度器
 type Scheduler struct {
-	db       *storage.BoltDB
+	db       storage.Store
 	executor TaskExecutor
 	cron     *cron.Cron
 	mu       sync.RWMutex
@@ -34,7 +34,7 @@ type Scheduler struct {
 }
 
 // NewScheduler 创建新的调度器
-func NewScheduler(db *storage.BoltDB, executor TaskExecutor) *Scheduler {
+func NewScheduler(db storage.Store, executor TaskExecutor) *Scheduler {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// 创建支持秒级的 cron 调度器

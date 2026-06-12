@@ -11,6 +11,7 @@ type Config struct {
 	Debug     bool                 `json:"debug" yaml:"debug" toml:"debug"`
 	Server    *ServerConfig        `json:"server" yaml:"server" toml:"server"`
 	Database  *DatabaseConfig      `json:"database" yaml:"database" toml:"database"`
+	Security  *SecurityConfig      `json:"security,omitempty" yaml:"security,omitempty" toml:"security,omitempty"`
 	LLM       *LLMConfig           `json:"llm" yaml:"llm" toml:"llm"`    // 保留用于默认配置
 	LLMs      []LLMConfig          `json:"llms" yaml:"llms" toml:"llms"` // 新增：多个 LLM 配置
 	Browser   *BrowserConfig       `json:"browser" yaml:"browser" toml:"browser"`
@@ -28,7 +29,13 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Path string `json:"path" toml:"path"`
+	Type string `json:"type" toml:"type"`
+	DSN  string `json:"dsn" toml:"dsn"`
+	Path string `json:"path,omitempty" toml:"path,omitempty"`
+}
+
+type SecurityConfig struct {
+	LLMAPIKeyEncryptionKey string `json:"llm_api_key_encryption_key,omitempty" toml:"llm_api_key_encryption_key,omitempty"`
 }
 
 type LLMConfig struct {
@@ -89,8 +96,10 @@ func Load(path string) (*Config, error) {
 				Host: "0.0.0.0",
 			},
 			Database: &DatabaseConfig{
-				Path: "./data/browserwing.db",
+				Type: "postgres",
+				DSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
 			},
+			Security:  &SecurityConfig{},
 			LLMs:      make([]LLMConfig, 0),
 			AssetsDir: "./data",
 			Browser:   browserCfg,
@@ -124,6 +133,15 @@ func Load(path string) (*Config, error) {
 	// 确保所有必需的配置项都有值
 	if cfg.Browser == nil {
 		cfg.Browser = &BrowserConfig{}
+	}
+	if cfg.Database == nil {
+		cfg.Database = &DatabaseConfig{
+			Type: "postgres",
+			DSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
+		}
+	}
+	if cfg.Security == nil {
+		cfg.Security = &SecurityConfig{}
 	}
 	if cfg.Log == nil {
 		cfg.Log = &logger.LoggerConfig{

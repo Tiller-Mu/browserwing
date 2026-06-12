@@ -39,7 +39,8 @@
 package mcp
 
 import (
-	"github.com/browserwing/browserwing/backend/executor"
+	"github.com/browserwing/browserwing/executor"
+	"github.com/browserwing/browserwing/storage"
 	// ... 其他导入
 )
 
@@ -49,7 +50,7 @@ type MCPServer struct {
 	toolRegistry *executor.MCPToolRegistry // 添加工具注册表
 }
 
-func NewMCPServer(storage *storage.BoltDB, browserMgr *browser.Manager) *MCPServer {
+func NewMCPServer(storage storage.Store, browserMgr *browser.Manager) *MCPServer {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	s := &MCPServer{
@@ -117,16 +118,13 @@ func (s *MCPServer) Start() error {
 package main
 
 import (
-	"context"
-	
-	"github.com/browserwing/browserwing/backend/executor"
-	"github.com/browserwing/browserwing/backend/mcp"
+	"github.com/browserwing/browserwing/mcp"
 	"github.com/browserwing/browserwing/services/browser"
 	// ... 其他导入
 )
 
 func main() {
-	// ... 初始化配置、数据库等
+	// ... 初始化配置、PostgreSQL Store 等
 
 	// 创建浏览器管理器
 	browserMgr := browser.NewManager(cfg, db, llmMgr)
@@ -443,4 +441,3 @@ result, err := exec.Navigate(ctx, url, &executor.NavigateOptions{
 - 查看 [examples.go](./examples.go) 了解更多使用示例
 - 参考 [playwright-mcp](https://github.com/executeautomation/playwright-mcp) 了解 MCP 最佳实践
 - 参考 [agent-browser](https://github.com/vercel-labs/agent-browser) 了解语义化浏览器自动化
-

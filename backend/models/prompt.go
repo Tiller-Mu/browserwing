@@ -12,20 +12,20 @@ const (
 
 // 系统预设提示词的固定ID
 const (
-	SystemPromptExtractorID   = "system-extractor"     // 数据提取专家
-	SystemPromptFormFillerID  = "system-formfiller"    // 表单填充专家
-	SystemPromptAIAgentID     = "system-aiagent"       // AI智能体
-	SystemPromptGetMCPInfoID  = "system-get-mcp-info"  // 获取 MCP 信息
-	SystemPromptAIExplorerID  = "system-ai-explorer"   // AI 自主探索
+	SystemPromptExtractorID  = "system-extractor"    // 数据提取专家
+	SystemPromptFormFillerID = "system-formfiller"   // 表单填充专家
+	SystemPromptAIAgentID    = "system-aiagent"      // AI智能体
+	SystemPromptGetMCPInfoID = "system-get-mcp-info" // 获取 MCP 信息
+	SystemPromptAIExplorerID = "system-ai-explorer"  // AI 自主探索
 )
 
 type Prompt struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`        // 提示词名称
-	Description string     `json:"description"` // 提示词描述
-	Content     string     `json:"content"`     // 提示词内容
-	Type        PromptType `json:"type"`        // 提示词类型: system/custom
-	Version     int        `json:"version"`     // 版本号，用于追踪系统prompt更新
+	ID          string     `gorm:"primaryKey;size:128" json:"id"`
+	Name        string     `gorm:"size:255;index" json:"name"`   // 提示词名称
+	Description string     `gorm:"type:text" json:"description"` // 提示词描述
+	Content     string     `gorm:"type:text" json:"content"`     // 提示词内容
+	Type        PromptType `gorm:"size:64;index" json:"type"`    // 提示词类型: system/custom
+	Version     int        `json:"version"`                      // 版本号，用于追踪系统prompt更新
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 }

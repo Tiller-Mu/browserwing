@@ -6,7 +6,7 @@ BrowserWing SDK 提供了一套完整的 Go 语言接口,允许其他 Go 项目�
 
 ### 1. 初始化与配置
 - 灵活的初始化选项,支持选择性启用模块
-- 数据库配置
+- PostgreSQL `PlayBot` 数据库 DSN 配置
 - 日志配置
 - LLM 配置(可选)
 - 浏览器配置(可选)
@@ -47,7 +47,7 @@ import (
 func main() {
     // 仅启用浏览器和脚本功能
     client, err := sdk.New(&sdk.Config{
-        DatabasePath: "./data/browserwing.db",
+        DatabaseDSN: "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
         EnableBrowser: true,
         EnableScript: true,
         EnableAgent: false, // 不启用 Agent
@@ -87,7 +87,7 @@ import (
 func main() {
     // 启用所有功能
     client, err := sdk.New(&sdk.Config{
-        DatabasePath: "./data/browserwing.db",
+        DatabaseDSN: "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
         EnableBrowser: true,
         EnableScript: true,
         EnableAgent: true,

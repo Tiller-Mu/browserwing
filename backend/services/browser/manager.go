@@ -195,7 +195,7 @@ type startInstanceOptions struct {
 // Manager 浏览器管理器
 type Manager struct {
 	config       *config.Config
-	db           *storage.BoltDB
+	db           storage.Store
 	llmManager   *llm.Manager
 	agentManager AgentManagerInterface // Agent 管理器接口（用于 AI 控制功能）
 	mu           sync.Mutex
@@ -224,7 +224,7 @@ type Manager struct {
 }
 
 // NewManager 创建浏览器管理器
-func NewManager(cfg *config.Config, db *storage.BoltDB, llmManager *llm.Manager) *Manager {
+func NewManager(cfg *config.Config, db storage.Store, llmManager *llm.Manager) *Manager {
 	recorder := NewRecorder()
 	// 设置 API 服务器端口
 	if cfg.Server != nil && cfg.Server.Port != "" {

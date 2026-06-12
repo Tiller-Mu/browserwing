@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"time"
 
 	"github.com/browserwing/browserwing/models"
@@ -12,7 +13,7 @@ import (
 func main() {
 	// 创建 SDK 客户端 - 仅启用浏览器和脚本功能
 	client, err := sdk.New(&sdk.Config{
-		DatabasePath:  "./data/browserwing.db",
+		DatabaseDSN:   databaseDSN(),
 		EnableBrowser: true,
 		EnableScript:  true,
 		EnableAgent:   false, // 不启用 Agent
@@ -118,4 +119,12 @@ func main() {
 	}
 
 	log.Println("\n✓ Example completed successfully!")
+}
+
+func databaseDSN() string {
+	dsn := os.Getenv("BROWSERWING_SDK_POSTGRES_DSN")
+	if dsn == "" {
+		log.Fatal("set BROWSERWING_SDK_POSTGRES_DSN to a PostgreSQL DSN targeting database PlayBot")
+	}
+	return dsn
 }

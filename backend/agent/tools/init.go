@@ -277,7 +277,7 @@ func GetPresetToolsMetadata() []models.PresetToolMetadata {
 }
 
 // InitPresetTools 初始化所有预设工具
-func InitPresetTools(ctx context.Context, toolReg *tools.Registry, db *storage.BoltDB) error {
+func InitPresetTools(ctx context.Context, toolReg *tools.Registry, db storage.Store) error {
 	if toolReg == nil {
 		return fmt.Errorf("tool registry cannot be empty")
 	}
@@ -330,7 +330,7 @@ func InitPresetTools(ctx context.Context, toolReg *tools.Registry, db *storage.B
 }
 
 // initDefaultToolConfigs 初始化默认工具配置
-func initDefaultToolConfigs(db *storage.BoltDB, implementedTools map[string]func(params map[string]interface{}) interfaces.Tool) []*models.ToolConfig {
+func initDefaultToolConfigs(db storage.Store, implementedTools map[string]func(params map[string]interface{}) interfaces.Tool) []*models.ToolConfig {
 	metadata := GetPresetToolsMetadata()
 	configs := make([]*models.ToolConfig, 0, len(metadata))
 
@@ -359,7 +359,7 @@ func initDefaultToolConfigs(db *storage.BoltDB, implementedTools map[string]func
 }
 
 // cleanupUnimplementedTools 清理未实现的工具配置
-func cleanupUnimplementedTools(db *storage.BoltDB, toolConfigs []*models.ToolConfig, implementedTools map[string]func(params map[string]interface{}) interfaces.Tool) {
+func cleanupUnimplementedTools(db storage.Store, toolConfigs []*models.ToolConfig, implementedTools map[string]func(params map[string]interface{}) interfaces.Tool) {
 	for _, cfg := range toolConfigs {
 		// 只处理预设工具类型
 		if cfg.Type != models.ToolTypePreset {

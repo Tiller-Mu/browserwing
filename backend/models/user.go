@@ -6,8 +6,8 @@ import (
 
 // User 用户模型
 type User struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
+	ID        string    `gorm:"primaryKey;size:128" json:"id"`
+	Username  string    `gorm:"size:255;not null;uniqueIndex" json:"username"`
 	Password  string    `json:"password,omitempty"` // 密码字段，返回给前端时应清空
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -15,11 +15,11 @@ type User struct {
 
 // ApiKey API密钥模型
 type ApiKey struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`        // API密钥名称
-	Key         string    `json:"key"`         // 实际的密钥
-	Description string    `json:"description"` // 描述
-	UserID      string    `json:"user_id"`     // 所属用户ID
+	ID          string    `gorm:"primaryKey;size:128" json:"id"`
+	Name        string    `json:"name"`                                     // API密钥名称
+	Key         string    `gorm:"size:255;not null;uniqueIndex" json:"key"` // 实际的密钥
+	Description string    `json:"description"`                              // 描述
+	UserID      string    `gorm:"size:128;index" json:"user_id"`            // 所属用户ID
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }

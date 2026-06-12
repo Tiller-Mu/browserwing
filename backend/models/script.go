@@ -54,7 +54,7 @@ type ScriptAction struct {
 	// 滚动相关字段
 	ScrollX int `json:"scroll_x,omitempty"`
 	ScrollY int `json:"scroll_y,omitempty"`
-	
+
 	// XHR请求相关字段（用于 capture_xhr 类型）
 	Method string `json:"method,omitempty"` // HTTP方法: GET, POST, PUT, DELETE等
 	Status int    `json:"status,omitempty"` // HTTP状态码
@@ -66,8 +66,8 @@ type ScriptAction struct {
 	ScreenshotHeight int    `json:"screenshot_height,omitempty"` // 截图区域高度（region模式）
 
 	// AI控制相关字段（用于 ai_control 类型）
-	AIControlPrompt      string `json:"ai_control_prompt,omitempty"`       // AI控制的提示词
-	AIControlXPath       string `json:"ai_control_xpath,omitempty"`        // 可选的元素XPath（用于提示词上下文）
+	AIControlPrompt      string `json:"ai_control_prompt,omitempty"`        // AI控制的提示词
+	AIControlXPath       string `json:"ai_control_xpath,omitempty"`         // 可选的元素XPath（用于提示词上下文）
 	AIControlLLMConfigID string `json:"ai_control_llm_config_id,omitempty"` // AI控制使用的LLM配置ID（为空则使用默认）
 
 	Condition *ActionCondition `json:"condition,omitempty"`
@@ -91,35 +91,35 @@ type ScriptAction struct {
 
 func (a *ScriptAction) CopyWithoutSemanticInfo() *ScriptAction {
 	return &ScriptAction{
-		Type:             a.Type,
-		Timestamp:        a.Timestamp,
-		Selector:         a.Selector,
-		XPath:            a.XPath,
-		Value:            a.Value,
-		URL:              a.URL,
-		Duration:         a.Duration,
-		X:                a.X,
-		Y:                a.Y,
-		Text:             a.Text,
-		TagName:          a.TagName,
-		Attrs:            a.Attrs,
-		Key:              a.Key,
-		ExtractType:      a.ExtractType,
-		AttributeName:    a.AttributeName,
-		JSCode:           a.JSCode,
-		VariableName:     a.VariableName,
-		ExtractedData:    a.ExtractedData,
-		FilePaths:        a.FilePaths,
-		FileNames:        a.FileNames,
-		Description:      a.Description,
-		Multiple:         a.Multiple,
-		Accept:           a.Accept,
-		Remark:           a.Remark,
-		ScrollX:          a.ScrollX,
-		ScrollY:          a.ScrollY,
-		Method:           a.Method,
-		Status:           a.Status,
-		XHRID:            a.XHRID,
+		Type:                 a.Type,
+		Timestamp:            a.Timestamp,
+		Selector:             a.Selector,
+		XPath:                a.XPath,
+		Value:                a.Value,
+		URL:                  a.URL,
+		Duration:             a.Duration,
+		X:                    a.X,
+		Y:                    a.Y,
+		Text:                 a.Text,
+		TagName:              a.TagName,
+		Attrs:                a.Attrs,
+		Key:                  a.Key,
+		ExtractType:          a.ExtractType,
+		AttributeName:        a.AttributeName,
+		JSCode:               a.JSCode,
+		VariableName:         a.VariableName,
+		ExtractedData:        a.ExtractedData,
+		FilePaths:            a.FilePaths,
+		FileNames:            a.FileNames,
+		Description:          a.Description,
+		Multiple:             a.Multiple,
+		Accept:               a.Accept,
+		Remark:               a.Remark,
+		ScrollX:              a.ScrollX,
+		ScrollY:              a.ScrollY,
+		Method:               a.Method,
+		Status:               a.Status,
+		XHRID:                a.XHRID,
 		ScreenshotMode:       a.ScreenshotMode,
 		ScreenshotWidth:      a.ScreenshotWidth,
 		ScreenshotHeight:     a.ScreenshotHeight,
@@ -163,31 +163,31 @@ type ActionEvidence struct {
 
 // Script 自动化脚本
 type Script struct {
-	ID          string         `json:"id"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	URL         string         `json:"url"`     // 起始URL
-	Actions     []ScriptAction `json:"actions"` // 操作步骤
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	Tags        []string       `json:"tags"`        // 标签
-	Group       string         `json:"group"`       // 分组
-	Duration    int64          `json:"duration"`    // 录制时长（毫秒）
-	CanPublish    bool           `json:"can_publish"`    // 是否可作为发布器使用
-	CanFetch      bool           `json:"can_fetch"`      // 是否可作为抓取器使用
-	RequiresLogin bool           `json:"requires_login"` // 是否需要登录才能正常运行
+	ID            string         `gorm:"primaryKey;size:128" json:"id"`
+	Name          string         `gorm:"size:255;index" json:"name"`
+	Description   string         `gorm:"type:text" json:"description"`
+	URL           string         `gorm:"type:text" json:"url"`                      // 起始URL
+	Actions       []ScriptAction `gorm:"type:jsonb;serializer:json" json:"actions"` // 操作步骤
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	Tags          []string       `gorm:"type:jsonb;serializer:json" json:"tags"` // 标签
+	Group         string         `gorm:"column:group;size:255" json:"group"`     // 分组
+	Duration      int64          `json:"duration"`                               // 录制时长（毫秒）
+	CanPublish    bool           `json:"can_publish"`                            // 是否可作为发布器使用
+	CanFetch      bool           `json:"can_fetch"`                              // 是否可作为抓取器使用
+	RequiresLogin bool           `json:"requires_login"`                         // 是否需要登录才能正常运行
 
 	// 下载文件信息
-	DownloadedFiles []DownloadedFile `json:"downloaded_files,omitempty"` // 录制过程中下载的文件列表
+	DownloadedFiles []DownloadedFile `gorm:"type:jsonb;serializer:json" json:"downloaded_files,omitempty"` // 录制过程中下载的文件列表
 
 	// MCP 相关字段
-	IsMCPCommand          bool                   `json:"is_mcp_command"`          // 是否作为 MCP 命令对外提供
-	MCPCommandName        string                 `json:"mcp_command_name"`        // MCP 命令名称（如 "execute_script"）
-	MCPCommandDescription string                 `json:"mcp_command_description"` // MCP 命令描述
-	MCPInputSchema        map[string]interface{} `json:"mcp_input_schema"`        // MCP 命令输入参数 schema（JSON Schema 格式）
+	IsMCPCommand          bool                   `json:"is_mcp_command"`                                     // 是否作为 MCP 命令对外提供
+	MCPCommandName        string                 `gorm:"size:255" json:"mcp_command_name"`                   // MCP 命令名称（如 "execute_script"）
+	MCPCommandDescription string                 `gorm:"type:text" json:"mcp_command_description"`           // MCP 命令描述
+	MCPInputSchema        map[string]interface{} `gorm:"type:jsonb;serializer:json" json:"mcp_input_schema"` // MCP 命令输入参数 schema（JSON Schema 格式）
 
 	// 预设变量（可以在脚本中使用 ${变量名} 引用，也可以在外部调用时传入覆盖）
-	Variables map[string]string `json:"variables,omitempty"` // 预设变量，key 为变量名，value 为默认值
+	Variables map[string]string `gorm:"type:jsonb;serializer:json" json:"variables,omitempty"` // 预设变量，key 为变量名，value 为默认值
 }
 
 func (s *Script) GetActionsWithoutSemanticInfo() []ScriptAction {
@@ -234,7 +234,7 @@ func (s *Script) Copy() *Script {
 		Duration:              s.Duration,
 		CanPublish:            s.CanPublish,
 		CanFetch:              s.CanFetch,
-		RequiresLogin:        s.RequiresLogin,
+		RequiresLogin:         s.RequiresLogin,
 		DownloadedFiles:       downloadedFiles,
 		IsMCPCommand:          s.IsMCPCommand,
 		MCPCommandName:        s.MCPCommandName,

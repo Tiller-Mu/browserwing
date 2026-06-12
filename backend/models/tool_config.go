@@ -12,15 +12,15 @@ const (
 
 // ToolConfig 工具配置
 type ToolConfig struct {
-	ID          string                 `json:"id"`          // 工具唯一标识
-	Name        string                 `json:"name"`        // 工具名称
-	Type        ToolType               `json:"type"`        // 工具类型: preset | script
-	Description string                 `json:"description"` // 工具描述
-	Enabled     bool                   `json:"enabled"`     // 是否启用
-	Parameters  map[string]interface{} `json:"parameters"`  // 工具参数配置
-	ScriptID    string                 `json:"script_id"`   // 关联的脚本ID (仅 script 类型)
-	CreatedAt   time.Time              `json:"created_at"`  // 创建时间
-	UpdatedAt   time.Time              `json:"updated_at"`  // 更新时间
+	ID          string                 `gorm:"primaryKey;size:128" json:"id"`                // 工具唯一标识
+	Name        string                 `gorm:"size:255;index" json:"name"`                   // 工具名称
+	Type        ToolType               `gorm:"size:64;index" json:"type"`                    // 工具类型: preset | script
+	Description string                 `gorm:"type:text" json:"description"`                 // 工具描述
+	Enabled     bool                   `json:"enabled"`                                      // 是否启用
+	Parameters  map[string]interface{} `gorm:"type:jsonb;serializer:json" json:"parameters"` // 工具参数配置
+	ScriptID    string                 `gorm:"size:128;index" json:"script_id"`              // 关联的脚本ID (仅 script 类型)
+	CreatedAt   time.Time              `json:"created_at"`                                   // 创建时间
+	UpdatedAt   time.Time              `json:"updated_at"`                                   // 更新时间
 }
 
 // PresetToolMetadata 预设工具元数据（用于描述工具支持的参数）

@@ -16,7 +16,6 @@ import (
 	"github.com/browserwing/browserwing/models"
 	"github.com/browserwing/browserwing/pkg/logger"
 	"github.com/browserwing/browserwing/services/browser"
-	"github.com/browserwing/browserwing/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/go-rod/rod/lib/proto"
 	"gorm.io/gorm"
@@ -182,11 +181,11 @@ func (h *ProjectHandlers) GetProjectAuthState(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := loadProjectVersion(projectID, versionID); err != nil {
+	if _, err := h.loadProjectVersion(projectID, versionID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project or version not found"})
 		return
 	}
-	auth, err := loadActiveProjectAuthState(projectID, versionID)
+	auth, err := h.loadActiveProjectAuthState(projectID, versionID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -203,7 +202,7 @@ func (h *ProjectHandlers) CaptureProjectAuthState(c *gin.Context) {
 	if !ok {
 		return
 	}
-	version, err := loadProjectVersion(projectID, versionID)
+	version, err := h.loadProjectVersion(projectID, versionID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project or version not found"})
 		return
@@ -215,7 +214,7 @@ func (h *ProjectHandlers) CaptureProjectAuthState(c *gin.Context) {
 		return
 	}
 	if req.CapturedPageID != 0 {
-		if _, err := loadPageInVersion(versionID, req.CapturedPageID); err != nil {
+		if _, err := h.loadPageInVersion(versionID, req.CapturedPageID); err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, or page not found"})
 			return
 		}
@@ -262,7 +261,7 @@ func (h *ProjectHandlers) CaptureProjectAuthState(c *gin.Context) {
 		return
 	}
 
-	if err := storage.DB.Transaction(func(tx *gorm.DB) error {
+	if err := h.gormDB().Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("project_id = ? AND version_id = ? AND status = ?", projectID, versionID, "active").
 			Delete(&models.ProjectAuthState{}).Error; err != nil {
 			return err
@@ -280,11 +279,11 @@ func (h *ProjectHandlers) DeleteProjectAuthState(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := loadProjectVersion(projectID, versionID); err != nil {
+	if _, err := h.loadProjectVersion(projectID, versionID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project or version not found"})
 		return
 	}
-	if err := storage.DB.Where("project_id = ? AND version_id = ? AND status = ?", projectID, versionID, "active").
+	if err := h.gormDB().Where("project_id = ? AND version_id = ? AND status = ?", projectID, versionID, "active").
 		Delete(&models.ProjectAuthState{}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -297,12 +296,12 @@ func (h *ProjectHandlers) GetPageRecordingContext(c *gin.Context) {
 	if !ok {
 		return
 	}
-	version, page, err := loadGenerationPageContext(projectID, versionID, pageID)
+	version, page, err := loadGenerationPageContext(h.gormDB(), projectID, versionID, pageID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, or page not found"})
 		return
 	}
-	auth, err := loadActiveProjectAuthState(projectID, versionID)
+	auth, err := h.loadActiveProjectAuthState(projectID, versionID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -323,7 +322,7 @@ func (h *ProjectHandlers) StartPageRecordingSession(c *gin.Context) {
 	if !ok {
 		return
 	}
-	version, page, err := loadGenerationPageContext(projectID, versionID, pageID)
+	version, page, err := loadGenerationPageContext(h.gormDB(), projectID, versionID, pageID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, or page not found"})
 		return
@@ -347,7 +346,7 @@ func (h *ProjectHandlers) StartPageRecordingSession(c *gin.Context) {
 
 	var auth *models.ProjectAuthState
 	if meta.AuthContext == authContextProjectSaved {
-		auth, err = loadActiveProjectAuthState(projectID, versionID)
+		auth, err = h.loadActiveProjectAuthState(projectID, versionID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -444,27 +443,27 @@ func parseProjectVersionIDs(c *gin.Context) (uint, uint, bool) {
 	return projectID, versionID, true
 }
 
-func loadProjectVersion(projectID, versionID uint) (models.ProjectVersion, error) {
+func (h *ProjectHandlers) loadProjectVersion(projectID, versionID uint) (models.ProjectVersion, error) {
 	var project models.Project
-	if err := storage.DB.First(&project, projectID).Error; err != nil {
+	if err := h.gormDB().First(&project, projectID).Error; err != nil {
 		return models.ProjectVersion{}, err
 	}
 	var version models.ProjectVersion
-	if err := storage.DB.Where("id = ? AND project_id = ?", versionID, projectID).First(&version).Error; err != nil {
+	if err := h.gormDB().Where("id = ? AND project_id = ?", versionID, projectID).First(&version).Error; err != nil {
 		return models.ProjectVersion{}, err
 	}
 	return version, nil
 }
 
-func loadPageInVersion(versionID, pageID uint) (models.TestPage, error) {
+func (h *ProjectHandlers) loadPageInVersion(versionID, pageID uint) (models.TestPage, error) {
 	var page models.TestPage
-	err := storage.DB.Where("id = ? AND version_id = ?", pageID, versionID).First(&page).Error
+	err := h.gormDB().Where("id = ? AND version_id = ?", pageID, versionID).First(&page).Error
 	return page, err
 }
 
-func loadActiveProjectAuthState(projectID, versionID uint) (*models.ProjectAuthState, error) {
+func (h *ProjectHandlers) loadActiveProjectAuthState(projectID, versionID uint) (*models.ProjectAuthState, error) {
 	var auth models.ProjectAuthState
-	err := storage.DB.Where("project_id = ? AND version_id = ? AND status = ?", projectID, versionID, "active").
+	err := h.gormDB().Where("project_id = ? AND version_id = ? AND status = ?", projectID, versionID, "active").
 		Order("captured_at desc, id desc").First(&auth).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {

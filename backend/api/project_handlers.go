@@ -16,27 +16,31 @@ import (
 
 // ProjectHandlers 包含了项目和版本相关的 API 处理器
 type ProjectHandlers struct {
-	boltDB         *storage.BoltDB
+	store          storage.Store
 	config         *config.Config
 	testCaseRunner *testCaseRunnerHolder
 	projectAuth    *projectAuthRuntimeHolder
 }
 
 // NewProjectHandlers 创建处理器实例
-func NewProjectHandlers(boltDB *storage.BoltDB, cfg *config.Config, runnerHolder *testCaseRunnerHolder, authHolder *projectAuthRuntimeHolder) *ProjectHandlers {
+func NewProjectHandlers(store storage.Store, cfg *config.Config, runnerHolder *testCaseRunnerHolder, authHolder *projectAuthRuntimeHolder) *ProjectHandlers {
 	var holder *testCaseRunnerHolder
 	holder = runnerHolder
 	return &ProjectHandlers{
-		boltDB:         boltDB,
+		store:          store,
 		config:         cfg,
 		testCaseRunner: holder,
 		projectAuth:    authHolder,
 	}
 }
 
+func (h *ProjectHandlers) gormDB() *gorm.DB {
+	return h.store.GormDB()
+}
+
 func (h *ProjectHandlers) ListProjects(c *gin.Context) {
 	var projects []models.Project
-	if err := storage.DB.Preload("Versions").Order("created_at desc").Find(&projects).Error; err != nil {
+	if err := h.gormDB().Preload("Versions").Order("created_at desc").Find(&projects).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -64,7 +68,7 @@ func (h *ProjectHandlers) CreateProject(c *gin.Context) {
 		Description: req.Description,
 	}
 
-	if err := storage.DB.Create(&project).Error; err != nil {
+	if err := h.gormDB().Create(&project).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -76,7 +80,7 @@ func (h *ProjectHandlers) CreateProject(c *gin.Context) {
 		Description: "Default initial version",
 		BaseURL:     req.BaseURL,
 	}
-	storage.DB.Create(&defaultVersion)
+	h.gormDB().Create(&defaultVersion)
 
 	c.JSON(http.StatusOK, project)
 }
@@ -89,8 +93,14 @@ func (h *ProjectHandlers) DeleteProject(c *gin.Context) {
 		return
 	}
 
-	// Cascade delete is configured in models
-	if err := storage.DB.Delete(&models.Project{}, id).Error; err != nil {
+	err = h.gormDB().Transaction(func(tx *gorm.DB) error {
+		projectID := uint(id)
+		if err := tx.Where("project_id = ?", projectID).Delete(&models.ProjectAuthState{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&models.Project{}, projectID).Error
+	})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -117,7 +127,7 @@ func (h *ProjectHandlers) CreateVersion(c *gin.Context) {
 		return
 	}
 
-	if err := storage.DB.Create(&req).Error; err != nil {
+	if err := h.gormDB().Create(&req).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -143,7 +153,7 @@ func (h *ProjectHandlers) UpdateVersion(c *gin.Context) {
 	}
 
 	var version models.ProjectVersion
-	if err := storage.DB.First(&version, versionID).Error; err != nil {
+	if err := h.gormDB().First(&version, versionID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
 		return
 	}
@@ -154,7 +164,7 @@ func (h *ProjectHandlers) UpdateVersion(c *gin.Context) {
 	version.Description = req.Description
 	version.BaseURL = req.BaseURL
 
-	if err := storage.DB.Save(&version).Error; err != nil {
+	if err := h.gormDB().Save(&version).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -176,12 +186,12 @@ func (h *ProjectHandlers) DeleteVersion(c *gin.Context) {
 	}
 
 	var version models.ProjectVersion
-	if err := storage.DB.Where("id = ? AND project_id = ?", uint(versionID), uint(projectID)).First(&version).Error; err != nil {
+	if err := h.gormDB().Where("id = ? AND project_id = ?", uint(versionID), uint(projectID)).First(&version).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
 		return
 	}
 
-	if err := storage.DB.Transaction(func(tx *gorm.DB) error {
+	if err := h.gormDB().Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("project_id = ? AND version_id = ?", uint(projectID), uint(versionID)).
 			Delete(&models.ProjectAuthState{}).Error; err != nil {
 			return err
@@ -210,7 +220,7 @@ func (h *ProjectHandlers) CloneVersion(c *gin.Context) {
 		return
 	}
 
-	tx := storage.DB.Begin()
+	tx := h.gormDB().Begin()
 	defer func() {
 		if r := recover(); r != nil {
 			tx.Rollback()
@@ -300,7 +310,7 @@ func (h *ProjectHandlers) ListPages(c *gin.Context) {
 
 	var pages []models.TestPage
 	// 预加载关联的 Scripts 和 TestCases 以便前端展示统计信息
-	if err := storage.DB.Preload("Scripts").Preload("TestCases", func(db *gorm.DB) *gorm.DB {
+	if err := h.gormDB().Preload("Scripts").Preload("TestCases", func(db *gorm.DB) *gorm.DB {
 		return db.Select("id", "page_id", "title", "description", "status", "created_at", "updated_at").Order("updated_at desc, id desc")
 	}).Where("version_id = ?", versionID).Order("created_at desc").Find(&pages).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -329,7 +339,7 @@ func (h *ProjectHandlers) CreatePage(c *gin.Context) {
 		return
 	}
 
-	if err := storage.DB.Create(&req).Error; err != nil {
+	if err := h.gormDB().Create(&req).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -345,7 +355,7 @@ func (h *ProjectHandlers) DeletePage(c *gin.Context) {
 	}
 
 	// 级联删除会清理对应的 PageScript 和 TestCase
-	if err := storage.DB.Delete(&models.TestPage{}, pageID).Error; err != nil {
+	if err := h.gormDB().Delete(&models.TestPage{}, pageID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -357,7 +367,7 @@ func (h *ProjectHandlers) SavePageRecording(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, err := loadGenerationPageContext(projectID, versionID, pageID); err != nil {
+	if _, _, err := loadGenerationPageContext(h.gormDB(), projectID, versionID, pageID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, or page not found"})
 		return
 	}
@@ -400,7 +410,7 @@ func (h *ProjectHandlers) SavePageRecording(c *gin.Context) {
 		RecordingMetaJSON: recordingMetaJSON,
 	}
 
-	if err := storage.DB.Transaction(func(tx *gorm.DB) error {
+	if err := h.gormDB().Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("page_id = ?", pageID).Delete(&models.PageScript{}).Error; err != nil {
 			return err
 		}

@@ -506,7 +506,7 @@ func GenerateJWT(userID, username string, config *config.Config) (string, error)
 }
 
 // JWTAuthenticationMiddleware JWT认证中间件
-func JWTAuthenticationMiddleware(config *config.Config, db *storage.BoltDB) gin.HandlerFunc {
+func JWTAuthenticationMiddleware(config *config.Config, db storage.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !config.Auth.Enabled {
 			c.Next()
@@ -561,7 +561,7 @@ func JWTAuthenticationMiddleware(config *config.Config, db *storage.BoltDB) gin.
 }
 
 // ApiKeyAuthenticationMiddleware ApiKey认证中间件
-func ApiKeyAuthenticationMiddleware(config *config.Config, db *storage.BoltDB) gin.HandlerFunc {
+func ApiKeyAuthenticationMiddleware(config *config.Config, db storage.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !config.Auth.Enabled {
 			c.Next()
@@ -591,7 +591,7 @@ func ApiKeyAuthenticationMiddleware(config *config.Config, db *storage.BoltDB) g
 }
 
 // JWTOrApiKeyAuthenticationMiddleware JWT或ApiKey认证中间件（两者任一即可）
-func JWTOrApiKeyAuthenticationMiddleware(config *config.Config, db *storage.BoltDB) gin.HandlerFunc {
+func JWTOrApiKeyAuthenticationMiddleware(config *config.Config, db storage.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !config.Auth.Enabled {
 			c.Next()

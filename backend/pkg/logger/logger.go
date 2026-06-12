@@ -74,10 +74,10 @@ var defaultLogger Logger
 type LoggerConfig struct {
 	Level      string `json:"level,omitempty" yaml:"level,omitempty" toml:"level,omitempty"`
 	File       string `json:"file,omitempty" yaml:"file,omitempty" toml:"file,omitempty"`
-	MaxSize    int    `json:"max_size,omitempty" yaml:"max_size,omitempty" toml:"max_size,omitempty"`       // 单个日志文件最大大小(MB),默认100MB
+	MaxSize    int    `json:"max_size,omitempty" yaml:"max_size,omitempty" toml:"max_size,omitempty"`          // 单个日志文件最大大小(MB),默认100MB
 	MaxBackups int    `json:"max_backups,omitempty" yaml:"max_backups,omitempty" toml:"max_backups,omitempty"` // 保留的旧日志文件最大数量,默认3个
-	MaxAge     int    `json:"max_age,omitempty" yaml:"max_age,omitempty" toml:"max_age,omitempty"`          // 保留旧日志文件的最大天数,默认7天
-	Compress   bool   `json:"compress,omitempty" yaml:"compress,omitempty" toml:"compress,omitempty"`       // 是否压缩旧日志,默认false
+	MaxAge     int    `json:"max_age,omitempty" yaml:"max_age,omitempty" toml:"max_age,omitempty"`             // 保留旧日志文件的最大天数,默认7天
+	Compress   bool   `json:"compress,omitempty" yaml:"compress,omitempty" toml:"compress,omitempty"`          // 是否压缩旧日志,默认false
 }
 
 func InitLogger(cfg *LoggerConfig) {
@@ -87,12 +87,12 @@ func InitLogger(cfg *LoggerConfig) {
 		level = logrus.InfoLevel
 	}
 	log.SetLevel(level)
-	
+
 	// 配置 JSON 格式,方便提取 trace_id
 	log.SetFormatter(&logrus.JSONFormatter{
 		TimestampFormat: "2006-01-02 15:04:05",
 	})
-	
+
 	if cfg.File != "" {
 		// 设置默认值
 		maxSize := cfg.MaxSize
@@ -107,7 +107,7 @@ func InitLogger(cfg *LoggerConfig) {
 		if maxAge <= 0 {
 			maxAge = 7 // 默认保留 7 天
 		}
-		
+
 		// 使用 lumberjack 实现日志轮转
 		log.SetOutput(&lumberjack.Logger{
 			Filename:   cfg.File,
@@ -122,18 +122,30 @@ func InitLogger(cfg *LoggerConfig) {
 }
 
 func Warn(ctx context.Context, msg string, args ...any) {
+	if defaultLogger == nil {
+		return
+	}
 	defaultLogger.Warn(ctx, msg, args...)
 }
 
 func Error(ctx context.Context, msg string, args ...any) {
+	if defaultLogger == nil {
+		return
+	}
 	defaultLogger.Error(ctx, msg, args...)
 }
 
 func Info(ctx context.Context, msg string, args ...any) {
+	if defaultLogger == nil {
+		return
+	}
 	defaultLogger.Info(ctx, msg, args...)
 }
 
 func Debug(ctx context.Context, msg string, args ...any) {
+	if defaultLogger == nil {
+		return
+	}
 	defaultLogger.Debug(ctx, msg, args...)
 }
 

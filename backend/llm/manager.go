@@ -13,13 +13,13 @@ import (
 
 // Manager LLM 配置管理器,负责配置的热加载和管理
 type Manager struct {
-	db         *storage.BoltDB
+	db         storage.Store
 	extractors map[string]*Extractor // name -> Extractor
 	mu         sync.RWMutex
 }
 
 // NewManager 创建 LLM 管理器
-func NewManager(db *storage.BoltDB) *Manager {
+func NewManager(db storage.Store) *Manager {
 	return &Manager{
 		db:         db,
 		extractors: make(map[string]*Extractor),
@@ -169,17 +169,6 @@ func (m *Manager) Add(cfg *models.LLMConfigModel) error {
 		return err
 	}
 
-	// 如果设置为默认,清除其他配置的默认状态
-	if cfg.IsDefault {
-		if err := m.db.ClearDefaultLLMConfig(); err != nil {
-			return err
-		}
-		cfg.IsDefault = true
-		if err := m.db.UpdateLLMConfig(cfg); err != nil {
-			return err
-		}
-	}
-
 	// 如果启用,加载到内存
 	if cfg.IsActive {
 		return m.loadConfig(cfg)
@@ -190,12 +179,9 @@ func (m *Manager) Add(cfg *models.LLMConfigModel) error {
 
 // Update 更新 LLM 配置
 func (m *Manager) Update(cfg *models.LLMConfigModel) error {
-	// 如果设置为默认,清除其他配置的默认状态
-	if cfg.IsDefault {
-		if err := m.db.ClearDefaultLLMConfig(); err != nil {
-			return err
-		}
-		cfg.IsDefault = true
+	previousName := cfg.Name
+	if existing, err := m.db.GetLLMConfig(cfg.ID); err == nil && existing.Name != "" {
+		previousName = existing.Name
 	}
 
 	// 更新数据库
@@ -203,28 +189,38 @@ func (m *Manager) Update(cfg *models.LLMConfigModel) error {
 		return err
 	}
 
+	updated, err := m.db.GetLLMConfig(cfg.ID)
+	if err != nil {
+		return fmt.Errorf("failed to reload LLM config %s after update: %w", cfg.ID, err)
+	}
+
+	var extractor *Extractor
+	if updated.IsActive {
+		llmCfg := &config.LLMConfig{
+			Name:     updated.Name,
+			Provider: updated.Provider,
+			APIKey:   updated.APIKey,
+			Model:    updated.Model,
+			BaseURL:  updated.BaseURL,
+		}
+
+		extractor, err = NewExtractor(llmCfg, m.db)
+		if err != nil {
+			return fmt.Errorf("failed to load LLM config %s: %w", updated.Name, err)
+		}
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// 删除旧的 extractor
+	delete(m.extractors, previousName)
 	delete(m.extractors, cfg.Name)
+	delete(m.extractors, updated.Name)
 
 	// 如果启用,重新加载
-	if cfg.IsActive {
-		llmCfg := &config.LLMConfig{
-			Name:     cfg.Name,
-			Provider: cfg.Provider,
-			APIKey:   cfg.APIKey,
-			Model:    cfg.Model,
-			BaseURL:  cfg.BaseURL,
-		}
-
-		extractor, err := NewExtractor(llmCfg, m.db)
-		if err != nil {
-			return fmt.Errorf("failed to load LLM config %s: %w", cfg.Name, err)
-		}
-
-		m.extractors[cfg.Name] = extractor
+	if updated.IsActive {
+		m.extractors[updated.Name] = extractor
 	}
 
 	return nil

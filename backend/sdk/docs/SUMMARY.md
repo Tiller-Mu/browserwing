@@ -37,7 +37,7 @@ backend/sdk/
 ```go
 // 仅使用浏览器和脚本
 client, _ := sdk.New(&sdk.Config{
-    DatabasePath:  "./data/browserwing.db",
+    DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
     EnableBrowser: true,
     EnableScript:  true,
     EnableAgent:   false,
@@ -45,7 +45,7 @@ client, _ := sdk.New(&sdk.Config{
 
 // 启用所有功能
 client, _ := sdk.New(&sdk.Config{
-    DatabasePath:  "./data/browserwing.db",
+    DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
     EnableBrowser: true,
     EnableScript:  true,
     EnableAgent:   true,
@@ -238,7 +238,7 @@ response, _ := client.Agent().SendMessage(ctx, sessionID,
 
 SDK 完全基于现有项目的组件构建:
 
-- `storage.BoltDB`: 数据库管理
+- `storage.Store`: PostgreSQL 存储入口
 - `browser.Manager`: 浏览器管理
 - `llm.Manager`: LLM 管理
 - `agent.AgentManager`: Agent 管理
@@ -285,7 +285,7 @@ import (
 func main() {
     // 创建客户端
     client, err := sdk.New(&sdk.Config{
-        DatabasePath: "./data/browserwing.db",
+        DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
         EnableBrowser: true,
         EnableScript: true,
     })

@@ -10,7 +10,6 @@ import (
 
 	"github.com/browserwing/browserwing/models"
 	"github.com/browserwing/browserwing/services/playbot"
-	"github.com/browserwing/browserwing/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -72,12 +71,12 @@ func (h *ProjectHandlers) RefineTestCase(c *gin.Context) {
 	if !ok {
 		return
 	}
-	version, page, err := loadGenerationPageContextFromContext(c)
+	version, page, err := h.loadGenerationPageContextFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
 	}
-	testCase, err := loadTestCaseForPage(pageID, testCaseID)
+	testCase, err := h.loadTestCaseForPage(pageID, testCaseID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
@@ -100,7 +99,7 @@ func (h *ProjectHandlers) RefineTestCase(c *gin.Context) {
 		return
 	}
 
-	snapshot, intentPlan, warnings, err := loadRefinementPageContext(page.ID)
+	snapshot, intentPlan, warnings, err := loadRefinementPageContext(h.gormDB(), page.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -159,7 +158,7 @@ func (h *ProjectHandlers) RefineTestCase(c *gin.Context) {
 		RiskNotes:         riskNotes,
 		Status:            refinementStatusProposed,
 	}
-	if err := storage.DB.Create(&refinement).Error; err != nil {
+	if err := h.gormDB().Create(&refinement).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -176,17 +175,17 @@ func (h *ProjectHandlers) ListTestCaseRefinements(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, err := loadGenerationPageContextFromContext(c); err != nil {
+	if _, _, err := h.loadGenerationPageContextFromContext(c); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
 	}
-	if _, err := loadTestCaseForPage(pageID, testCaseID); err != nil {
+	if _, err := h.loadTestCaseForPage(pageID, testCaseID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
 	}
 
 	var refinements []models.LLMRefinement
-	if err := storage.DB.Where("test_case_id = ?", testCaseID).Order("created_at desc, id desc").Find(&refinements).Error; err != nil {
+	if err := h.gormDB().Where("test_case_id = ?", testCaseID).Order("created_at desc, id desc").Find(&refinements).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -202,15 +201,15 @@ func (h *ProjectHandlers) GetTestCaseRefinement(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, err := loadGenerationPageContextFromContext(c); err != nil {
+	if _, _, err := h.loadGenerationPageContextFromContext(c); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, testcase, or refinement not found"})
 		return
 	}
-	if _, err := loadTestCaseForPage(pageID, testCaseID); err != nil {
+	if _, err := h.loadTestCaseForPage(pageID, testCaseID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, testcase, or refinement not found"})
 		return
 	}
-	refinement, err := loadRefinementForTestCase(testCaseID, refinementID)
+	refinement, err := h.loadRefinementForTestCase(testCaseID, refinementID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, testcase, or refinement not found"})
 		return
@@ -228,14 +227,14 @@ func (h *ProjectHandlers) ApplyTestCaseRefinement(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, err := loadGenerationPageContextFromContext(c); err != nil {
+	if _, _, err := h.loadGenerationPageContextFromContext(c); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, testcase, or refinement not found"})
 		return
 	}
 
 	var savedCase models.TestCase
 	var savedRefinement models.LLMRefinement
-	err := storage.DB.Transaction(func(tx *gorm.DB) error {
+	err := h.gormDB().Transaction(func(tx *gorm.DB) error {
 		testCase, err := loadTestCaseForPageTx(tx, pageID, testCaseID)
 		if err != nil {
 			return err
@@ -313,13 +312,13 @@ func (h *ProjectHandlers) DiscardTestCaseRefinement(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, err := loadGenerationPageContextFromContext(c); err != nil {
+	if _, _, err := h.loadGenerationPageContextFromContext(c); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, testcase, or refinement not found"})
 		return
 	}
 
 	var savedRefinement models.LLMRefinement
-	err := storage.DB.Transaction(func(tx *gorm.DB) error {
+	err := h.gormDB().Transaction(func(tx *gorm.DB) error {
 		testCase, err := loadTestCaseForPageTx(tx, pageID, testCaseID)
 		if err != nil {
 			return err
@@ -365,8 +364,8 @@ func parseProjectVersionPageTestCaseRefinementIDs(c *gin.Context) (uint, uint, u
 	return projectID, versionID, pageID, testCaseID, refinementID, true
 }
 
-func loadRefinementForTestCase(testCaseID, refinementID uint) (models.LLMRefinement, error) {
-	return loadRefinementForTestCaseTx(storage.DB, testCaseID, refinementID)
+func (h *ProjectHandlers) loadRefinementForTestCase(testCaseID, refinementID uint) (models.LLMRefinement, error) {
+	return loadRefinementForTestCaseTx(h.gormDB(), testCaseID, refinementID)
 }
 
 func loadRefinementForTestCaseTx(db *gorm.DB, testCaseID, refinementID uint) (models.LLMRefinement, error) {
@@ -380,7 +379,7 @@ func (h *ProjectHandlers) loadRefinementExecutionReport(testCaseID uint, executi
 		return nil, nil
 	}
 	var execution models.TestExecution
-	if err := storage.DB.Where("id = ? AND test_case_id = ?", *executionID, testCaseID).First(&execution).Error; err != nil {
+	if err := h.gormDB().Where("id = ? AND test_case_id = ?", *executionID, testCaseID).First(&execution).Error; err != nil {
 		return nil, err
 	}
 	var report map[string]any
@@ -390,9 +389,9 @@ func (h *ProjectHandlers) loadRefinementExecutionReport(testCaseID uint, executi
 	return report, nil
 }
 
-func loadRefinementPageContext(pageID uint) (snapshot any, intentPlan any, warnings []map[string]string, err error) {
+func loadRefinementPageContext(db *gorm.DB, pageID uint) (snapshot any, intentPlan any, warnings []map[string]string, err error) {
 	var script models.PageScript
-	if err := storage.DB.Where("page_id = ?", pageID).Order("created_at desc, id desc").First(&script).Error; err != nil {
+	if err := db.Where("page_id = ?", pageID).Order("created_at desc, id desc").First(&script).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil, []map[string]string{{"code": "missing_page_script", "message": "No main flow recording is available"}}, nil
 		}

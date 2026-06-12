@@ -60,7 +60,7 @@ Client (主客户端)
 ```go
 type Client struct {
     config         *Config
-    db             *storage.BoltDB
+    db             storage.Store
     llmManager     *llm.Manager
     browserManager *browser.Manager
     mcpServer      *mcp.MCPServer
@@ -71,7 +71,7 @@ type Client struct {
 }
 
 type Config struct {
-    DatabasePath  string
+    DatabaseDSN  string
     EnableBrowser bool
     EnableScript  bool
     EnableAgent   bool
@@ -289,7 +289,7 @@ client.Agent().SendMessageStream(ctx, sessionID, "Tell me a joke",
 
 ```go
 client, _ := sdk.New(&sdk.Config{
-    DatabasePath: "./data/db",
+    DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
     EnableBrowser: true,
     EnableScript: true,
     EnableAgent: false,
@@ -306,7 +306,7 @@ client, _ := sdk.New(&sdk.Config{
 
 ```go
 client, _ := sdk.New(&sdk.Config{
-    DatabasePath: "./data/db",
+    DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
     EnableBrowser: true,
     EnableScript: true,
     EnableAgent: true,
@@ -324,7 +324,7 @@ client, _ := sdk.New(&sdk.Config{
 
 ```go
 client, _ := sdk.New(&sdk.Config{
-    DatabasePath: "./data/db",
+    DatabaseDSN:  "postgres://user:password@localhost:5432/PlayBot?sslmode=disable",
     EnableBrowser: false,
     EnableScript: false,
     EnableAgent: true,

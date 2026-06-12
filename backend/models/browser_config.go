@@ -4,21 +4,21 @@ import "time"
 
 // BrowserConfig 浏览器配置
 type BrowserConfig struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`        // 配置名称
-	Description string `json:"description"` // 配置描述
-	IsDefault   bool   `json:"is_default"`  // 是否为默认配置
+	ID          string `gorm:"primaryKey;size:128" json:"id"`
+	Name        string `gorm:"size:255;index" json:"name"`   // 配置名称
+	Description string `gorm:"type:text" json:"description"` // 配置描述
+	IsDefault   bool   `gorm:"index" json:"is_default"`      // 是否为默认配置
 
 	// 网站匹配规则
-	URLPattern string `json:"url_pattern"` // URL正则匹配模式，为空表示默认配置
+	URLPattern string `gorm:"type:text" json:"url_pattern"` // URL正则匹配模式，为空表示默认配置
 
 	// 浏览器行为配置
-	UserAgent  string   `json:"user_agent"`  // User Agent，为空使用默认
-	UseStealth *bool    `json:"use_stealth"` // 是否使用 Stealth 模式，nil表示使用默认
-	Headless   *bool    `json:"headless"`    // 是否使用 Headless 模式，nil表示使用默认(false)
-	NoSandbox  *bool    `json:"no_sandbox"`  // 是否禁用沙箱模式，nil表示使用默认（Linux默认true）
-	LaunchArgs []string `json:"launch_args"` // 启动参数，为空使用默认
-	Proxy      string   `json:"proxy"`       // 代理地址，为空使用默认
+	UserAgent  string   `json:"user_agent"`                                    // User Agent，为空使用默认
+	UseStealth *bool    `json:"use_stealth"`                                   // 是否使用 Stealth 模式，nil表示使用默认
+	Headless   *bool    `json:"headless"`                                      // 是否使用 Headless 模式，nil表示使用默认(false)
+	NoSandbox  *bool    `json:"no_sandbox"`                                    // 是否禁用沙箱模式，nil表示使用默认（Linux默认true）
+	LaunchArgs []string `gorm:"type:jsonb;serializer:json" json:"launch_args"` // 启动参数，为空使用默认
+	Proxy      string   `json:"proxy"`                                         // 代理地址，为空使用默认
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

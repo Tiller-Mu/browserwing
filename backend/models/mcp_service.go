@@ -23,20 +23,20 @@ const (
 
 // MCPService 外部MCP服务配置
 type MCPService struct {
-	ID          string            `json:"id"`          // 服务唯一标识
-	Name        string            `json:"name"`        // 服务名称
-	Description string            `json:"description"` // 服务描述
-	Type        MCPServiceType    `json:"type"`        // 服务类型: stdio | sse | http
-	Command     string            `json:"command"`     // 命令 (stdio类型)
-	Args        []string          `json:"args"`        // 命令参数 (stdio类型)
-	URL         string            `json:"url"`         // 服务URL (sse/http类型)
-	Env         map[string]string `json:"env"`         // 环境变量
-	Enabled     bool              `json:"enabled"`     // 是否启用
-	Status      MCPServiceStatus  `json:"status"`      // 连接状态
-	ToolCount   int               `json:"tool_count"`  // 发现的工具数量
-	LastError   string            `json:"last_error"`  // 最后的错误信息
-	CreatedAt   time.Time         `json:"created_at"`  // 创建时间
-	UpdatedAt   time.Time         `json:"updated_at"`  // 更新时间
+	ID          string            `gorm:"primaryKey;size:128" json:"id"`          // 服务唯一标识
+	Name        string            `gorm:"size:255;index" json:"name"`             // 服务名称
+	Description string            `gorm:"type:text" json:"description"`           // 服务描述
+	Type        MCPServiceType    `gorm:"size:64;index" json:"type"`              // 服务类型: stdio | sse | http
+	Command     string            `gorm:"type:text" json:"command"`               // 命令 (stdio类型)
+	Args        []string          `gorm:"type:jsonb;serializer:json" json:"args"` // 命令参数 (stdio类型)
+	URL         string            `gorm:"type:text" json:"url"`                   // 服务URL (sse/http类型)
+	Env         map[string]string `gorm:"type:jsonb;serializer:json" json:"env"`  // 环境变量
+	Enabled     bool              `json:"enabled"`                                // 是否启用
+	Status      MCPServiceStatus  `json:"status"`                                 // 连接状态
+	ToolCount   int               `json:"tool_count"`                             // 发现的工具数量
+	LastError   string            `json:"last_error"`                             // 最后的错误信息
+	CreatedAt   time.Time         `json:"created_at"`                             // 创建时间
+	UpdatedAt   time.Time         `json:"updated_at"`                             // 更新时间
 }
 
 // MCPDiscoveredTool MCP发现的工具信息

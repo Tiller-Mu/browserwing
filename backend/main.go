@@ -84,26 +84,13 @@ func main() {
 		cfg.Server.Host = envHost
 	}
 
-	// 确保数据库目录存在
-	dbDir := filepath.Dir(cfg.Database.Path)
-	err = os.MkdirAll(dbDir, 0o755)
+	// 初始化 PostgreSQL 统一 Store
+	db, cleanupStore, err := storage.NewStore(context.Background(), cfg)
 	if err != nil {
-		log.Fatalf("Failed to create database directory: %v", err)
+		log.Fatalf("Failed to initialize PostgreSQL Store: %v", err)
 	}
-
-	// 初始化 BoltDB (保留用于配置存储)
-	db, err := storage.NewBoltDB(cfg.Database.Path)
-	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
-	}
-	defer db.Close()
-	log.Println("✓ BoltDB initialization successful")
-
-	// 初始化 SQLite (用于测试平台核心业务数据)
-	if err := storage.InitSQLite(dbDir); err != nil {
-		log.Fatalf("Failed to initialize SQLite database: %v", err)
-	}
-	log.Println("✓ SQLite database initialization successful")
+	defer cleanupStore()
+	log.Println("✓ PostgreSQL Store initialization successful")
 
 	// 检查并更新系统提示词（自动升级未修改的prompt）
 	if err := db.CheckAndUpdateSystemPrompts(); err != nil {
@@ -256,7 +243,7 @@ func main() {
 }
 
 // setupGracefulShutdown 设置优雅退出，自动关闭浏览器
-func setupGracefulShutdown(browserManager *browser.Manager, db *storage.BoltDB, mcpServer mcp.IMCPServer, agentManager *agent.AgentManager, taskScheduler interface{}) {
+func setupGracefulShutdown(browserManager *browser.Manager, db storage.Store, mcpServer mcp.IMCPServer, agentManager *agent.AgentManager, taskScheduler interface{}) {
 	sigChan := make(chan os.Signal, 1)
 	// 监听 SIGINT (Ctrl+C) 和 SIGTERM
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -379,7 +366,7 @@ func isURLReachable(client *http.Client, url string) bool {
 }
 
 // initDefaultBrowserInstance 初始化默认浏览器实例
-func initDefaultBrowserInstance(db *storage.BoltDB, cfg *config.Config) error {
+func initDefaultBrowserInstance(db storage.Store, cfg *config.Config) error {
 	// 检查是否已存在默认实例
 	defaultInstance, err := db.GetDefaultBrowserInstance()
 	if err == nil && defaultInstance != nil {
@@ -531,7 +518,7 @@ func initDefaultBrowserInstance(db *storage.BoltDB, cfg *config.Config) error {
 }
 
 // initDefaultUser 初始化默认用户
-func initDefaultUser(db *storage.BoltDB, cfg *config.Config) error {
+func initDefaultUser(db storage.Store, cfg *config.Config) error {
 	// 检查是否已存在用户
 	users, err := db.ListUsers()
 	if err != nil {

@@ -34,7 +34,7 @@
 | P3 | 用例执行 | 已完成：单用例执行、保存结果、展示报告 |
 | P4 | 自然语言修改 | 已完成：自然语言生成修改建议，确认后应用并记录历史 |
 | P4.5 | 录制体验和项目登录态 | 已完成：页面列表、短录制流程、项目登录态、清洁会话和执行恢复 |
-| P4.6 | PostgreSQL 统一存储迁移 | 红测已通过审核：下一步实现 PostgreSQL Store、启动链路和调用方替换 |
+| P4.6 | PostgreSQL 统一存储迁移 | 实现已完成：PostgreSQL Store、启动链路和调用方替换已完成；开发者本地验证通过，最终 review 需提供 `PlayBot` DSN 复跑 |
 | P5 | 多用户和权限 | 后续阶段：项目数据归属、API 权限校验、用户隔离 |
 | P6 | 稳定化和发布 | 回归测试、文档、打包、发布检查 |
 
@@ -329,7 +329,7 @@ P4.5 已完成。录制体验与项目登录态契约已定稿、红测已通过
 
 ## 九、P4.6：PostgreSQL 统一存储迁移
 
-当前状态：红测已通过审核，等待业务开发者实现。
+当前状态：实现已完成；开发者本地使用 PostgreSQL `PlayBot` DSN 完成契约和标准验证，最终 review 环境需设置 `BROWSERWING_P46_POSTGRES_DSN` 后复跑。
 
 阶段设计：
 
@@ -370,11 +370,12 @@ P4.5 已完成。录制体验与项目登录态契约已定稿、红测已通过
 - 密钥入口：红测必须断言 LLM 加密密钥字段、环境变量优先级、base64/32 字节格式，以及不能复用 `auth.app_key`。
 - 回归：P1-P4.5 既有契约继续通过，不能改变生成、管理、执行、自然语言修改和登录态恢复语义。
 
-红测审核结论：
+实现验证结论：
 
 - `backend/p46_postgres_contract_test.go` 已覆盖 Store Operation Inventory 完整性、ContractTest 名称真实存在、旧 BoltDB/SQLite/global `storage.DB` 禁止入口、PostgreSQL `PlayBot` 配置、LLM API Key 加密存储、Playbot job JSON 密钥边界、Store 主要领域行为和 TestingPlatform P1-P4.5 业务数据访问。
-- 当前红测可以编译运行，并按预期在尚未实现 P4.6 的生产代码上打红。
-- 下一步由业务开发者按通过审核的红测和详细设计实现 PostgreSQL Store、启动链路、配置入口和生产调用方替换。
+- 生产代码已切换到 PostgreSQL Store 和受控 TestingPlatform GORM 入口；旧 BoltDB、SQLite 初始化入口和 `fix-headless` 旧维护命令已从生产代码移除。
+- 开发者本地验证记录：在 `BROWSERWING_P46_POSTGRES_DSN` 指向 PostgreSQL `PlayBot` 数据库时，`go test . -run TestP46 -count=1`、`go test ./api -count=1`、`go test ./...`、`pnpm run type-check`、`pnpm run build`、Playbot 最小导入和 `git diff --check` 均通过。
+- 最终 review 需要在审核环境提供指向 `PlayBot` 的 `BROWSERWING_P46_POSTGRES_DSN` 后复跑 PostgreSQL 行为契约；未设置 DSN 时，只能确认静态防遗漏和非 PostgreSQL 集成包结果。
 
 遗留边界：
 

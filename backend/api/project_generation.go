@@ -11,7 +11,6 @@ import (
 
 	"github.com/browserwing/browserwing/models"
 	"github.com/browserwing/browserwing/services/playbot"
-	"github.com/browserwing/browserwing/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -59,14 +58,14 @@ func (h *ProjectHandlers) GenerateTestCases(c *gin.Context) {
 		return
 	}
 
-	version, page, err := loadGenerationPageContext(projectID, versionID, pageID)
+	version, page, err := loadGenerationPageContext(h.gormDB(), projectID, versionID, pageID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, or page not found"})
 		return
 	}
 
 	var script models.PageScript
-	if err := storage.DB.Where("page_id = ?", page.ID).Order("created_at desc, id desc").First(&script).Error; err != nil {
+	if err := h.gormDB().Where("page_id = ?", page.ID).Order("created_at desc, id desc").First(&script).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "请先录制主流程后再生成测试用例"})
 			return
@@ -141,7 +140,7 @@ func (h *ProjectHandlers) GenerateTestCases(c *gin.Context) {
 		return
 	}
 
-	savedCases, err := saveGeneratedTestCases(page.ID, mode, blueprints)
+	savedCases, err := saveGeneratedTestCases(h.gormDB(), page.ID, mode, blueprints)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -180,19 +179,19 @@ func parseUintParam(c *gin.Context, name, message string) (uint, error) {
 	return uint(value), nil
 }
 
-func loadGenerationPageContext(projectID, versionID, pageID uint) (models.ProjectVersion, models.TestPage, error) {
+func loadGenerationPageContext(db *gorm.DB, projectID, versionID, pageID uint) (models.ProjectVersion, models.TestPage, error) {
 	var project models.Project
-	if err := storage.DB.First(&project, projectID).Error; err != nil {
+	if err := db.First(&project, projectID).Error; err != nil {
 		return models.ProjectVersion{}, models.TestPage{}, err
 	}
 
 	var version models.ProjectVersion
-	if err := storage.DB.Where("id = ? AND project_id = ?", versionID, projectID).First(&version).Error; err != nil {
+	if err := db.Where("id = ? AND project_id = ?", versionID, projectID).First(&version).Error; err != nil {
 		return models.ProjectVersion{}, models.TestPage{}, err
 	}
 
 	var page models.TestPage
-	if err := storage.DB.Where("id = ? AND version_id = ?", pageID, versionID).First(&page).Error; err != nil {
+	if err := db.Where("id = ? AND version_id = ?", pageID, versionID).First(&page).Error; err != nil {
 		return models.ProjectVersion{}, models.TestPage{}, err
 	}
 
@@ -214,7 +213,7 @@ func parseRequiredJSON(raw string, message string) (any, error) {
 }
 
 func (h *ProjectHandlers) loadGenerationLLMConfig(id string) (*models.LLMConfigModel, error) {
-	if h.boltDB == nil {
+	if h.store == nil {
 		return nil, fmt.Errorf("LLM 配置存储未初始化")
 	}
 
@@ -223,9 +222,9 @@ func (h *ProjectHandlers) loadGenerationLLMConfig(id string) (*models.LLMConfigM
 		err error
 	)
 	if strings.TrimSpace(id) != "" {
-		cfg, err = h.boltDB.GetLLMConfig(strings.TrimSpace(id))
+		cfg, err = h.store.GetLLMConfig(strings.TrimSpace(id))
 	} else {
-		cfg, err = h.boltDB.GetDefaultLLMConfig()
+		cfg, err = h.store.GetDefaultLLMConfig()
 	}
 	if err != nil {
 		return nil, fmt.Errorf("LLM 配置不存在或未启用")
@@ -308,9 +307,9 @@ func parsePlaybotGeneratedCases(stdout string, inheritedAuthContext string) ([]g
 	return blueprints, nil
 }
 
-func saveGeneratedTestCases(pageID uint, mode string, blueprints []generatedTestCaseBlueprint) ([]models.TestCase, error) {
+func saveGeneratedTestCases(db *gorm.DB, pageID uint, mode string, blueprints []generatedTestCaseBlueprint) ([]models.TestCase, error) {
 	saved := make([]models.TestCase, 0, len(blueprints))
-	err := storage.DB.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		if mode == "replace" {
 			if err := tx.Where("page_id = ?", pageID).Delete(&models.TestCase{}).Error; err != nil {
 				return err

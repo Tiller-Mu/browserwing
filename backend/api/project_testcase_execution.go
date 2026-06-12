@@ -13,8 +13,8 @@ import (
 
 	"github.com/browserwing/browserwing/models"
 	"github.com/browserwing/browserwing/services/testcase_executor"
-	"github.com/browserwing/browserwing/storage"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 const (
@@ -66,12 +66,12 @@ func (h *ProjectHandlers) RunTestCase(c *gin.Context) {
 	if !ok {
 		return
 	}
-	version, page, err := loadGenerationPageContextFromContext(c)
+	version, page, err := h.loadGenerationPageContextFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
 	}
-	testCase, err := loadTestCaseForPage(pageID, testCaseID)
+	testCase, err := h.loadTestCaseForPage(pageID, testCaseID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
@@ -94,7 +94,7 @@ func (h *ProjectHandlers) RunTestCase(c *gin.Context) {
 	var authSummary map[string]any
 	var authStateJSON string
 	if input["auth_context"] == authContextProjectSaved {
-		auth, err := loadActiveProjectAuthState(version.ProjectID, version.ID)
+		auth, err := h.loadActiveProjectAuthState(version.ProjectID, version.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -131,7 +131,7 @@ func (h *ProjectHandlers) RunTestCase(c *gin.Context) {
 	}
 	attachAuthContextToRunnerResult(result, input, authSummary)
 
-	execution, err := saveTestCaseExecution(testCase.ID, result)
+	execution, err := saveTestCaseExecution(h.gormDB(), testCase.ID, result)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -149,11 +149,11 @@ func (h *ProjectHandlers) ListTestCaseExecutions(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, err := loadGenerationPageContextFromContext(c); err != nil {
+	if _, _, err := h.loadGenerationPageContextFromContext(c); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
 	}
-	if _, err := loadTestCaseForPage(pageID, testCaseID); err != nil {
+	if _, err := h.loadTestCaseForPage(pageID, testCaseID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
 	}
@@ -170,7 +170,7 @@ func (h *ProjectHandlers) ListTestCaseExecutions(c *gin.Context) {
 	}
 
 	var executions []models.TestExecution
-	if err := storage.DB.Where("test_case_id = ?", testCaseID).
+	if err := h.gormDB().Where("test_case_id = ?", testCaseID).
 		Order("created_at desc, id desc").
 		Limit(limit).
 		Find(&executions).Error; err != nil {
@@ -197,17 +197,17 @@ func (h *ProjectHandlers) GetTestCaseExecution(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	if _, _, err := loadGenerationPageContextFromContext(c); err != nil {
+	if _, _, err := h.loadGenerationPageContextFromContext(c); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, testcase, or execution not found"})
 		return
 	}
-	if _, err := loadTestCaseForPage(pageID, testCaseID); err != nil {
+	if _, err := h.loadTestCaseForPage(pageID, testCaseID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, testcase, or execution not found"})
 		return
 	}
 
 	var execution models.TestExecution
-	if err := storage.DB.Where("id = ? AND test_case_id = ?", executionID, testCaseID).First(&execution).Error; err != nil {
+	if err := h.gormDB().Where("id = ? AND test_case_id = ?", executionID, testCaseID).First(&execution).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, testcase, or execution not found"})
 		return
 	}
@@ -526,7 +526,7 @@ func resolveExecutionURL(baseURL, rawPath string) (string, error) {
 	return base.ResolveReference(next).String(), nil
 }
 
-func saveTestCaseExecution(testCaseID uint, result map[string]any) (models.TestExecution, error) {
+func saveTestCaseExecution(db *gorm.DB, testCaseID uint, result map[string]any) (models.TestExecution, error) {
 	status := strings.TrimSpace(stringFromAny(firstRunnerValue(result, "status", "Status")))
 	if status != testcase_executor.StatusPassed && status != testcase_executor.StatusFailed && status != testcase_executor.StatusError {
 		return models.TestExecution{}, fmt.Errorf("TestCase runner returned invalid status")
@@ -547,7 +547,7 @@ func saveTestCaseExecution(testCaseID uint, result map[string]any) (models.TestE
 		DurationMs:   intFromAny(firstRunnerValue(result, "duration_ms", "DurationMs")),
 		ReportData:   string(reportJSON),
 	}
-	if err := storage.DB.Create(&execution).Error; err != nil {
+	if err := db.Create(&execution).Error; err != nil {
 		return models.TestExecution{}, err
 	}
 	return execution, nil

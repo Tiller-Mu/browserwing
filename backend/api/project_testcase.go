@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/browserwing/browserwing/models"
-	"github.com/browserwing/browserwing/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -57,13 +56,13 @@ func (h *ProjectHandlers) ListTestCases(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, err := loadGenerationPageContextFromContext(c); err != nil {
+	if _, _, err := h.loadGenerationPageContextFromContext(c); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, or page not found"})
 		return
 	}
 
 	var testCases []models.TestCase
-	if err := storage.DB.Where("page_id = ?", pageID).Order("updated_at desc, id desc").Find(&testCases).Error; err != nil {
+	if err := h.gormDB().Where("page_id = ?", pageID).Order("updated_at desc, id desc").Find(&testCases).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -84,7 +83,7 @@ func (h *ProjectHandlers) CreateTestCase(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, err := loadGenerationPageContextFromContext(c); err != nil {
+	if _, _, err := h.loadGenerationPageContextFromContext(c); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, or page not found"})
 		return
 	}
@@ -101,7 +100,7 @@ func (h *ProjectHandlers) CreateTestCase(c *gin.Context) {
 		return
 	}
 
-	if err := storage.DB.Create(&finalCase).Error; err != nil {
+	if err := h.gormDB().Create(&finalCase).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -119,12 +118,12 @@ func (h *ProjectHandlers) GetTestCase(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, err := loadGenerationPageContextFromContext(c); err != nil {
+	if _, _, err := h.loadGenerationPageContextFromContext(c); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
 	}
 
-	testCase, err := loadTestCaseForPage(pageID, testCaseID)
+	testCase, err := h.loadTestCaseForPage(pageID, testCaseID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
@@ -142,7 +141,7 @@ func (h *ProjectHandlers) UpdateTestCase(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, err := loadGenerationPageContextFromContext(c); err != nil {
+	if _, _, err := h.loadGenerationPageContextFromContext(c); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
 	}
@@ -154,7 +153,7 @@ func (h *ProjectHandlers) UpdateTestCase(c *gin.Context) {
 	}
 
 	var saved models.TestCase
-	err := storage.DB.Transaction(func(tx *gorm.DB) error {
+	err := h.gormDB().Transaction(func(tx *gorm.DB) error {
 		testCase, err := loadTestCaseForPageTx(tx, pageID, testCaseID)
 		if err != nil {
 			return err
@@ -194,12 +193,12 @@ func (h *ProjectHandlers) DeleteTestCase(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, err := loadGenerationPageContextFromContext(c); err != nil {
+	if _, _, err := h.loadGenerationPageContextFromContext(c); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, page, or testcase not found"})
 		return
 	}
 
-	err := storage.DB.Transaction(func(tx *gorm.DB) error {
+	err := h.gormDB().Transaction(func(tx *gorm.DB) error {
 		testCase, err := loadTestCaseForPageTx(tx, pageID, testCaseID)
 		if err != nil {
 			return err
@@ -218,12 +217,12 @@ func (h *ProjectHandlers) DeleteTestCase(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "TestCase deleted successfully"})
 }
 
-func loadGenerationPageContextFromContext(c *gin.Context) (models.ProjectVersion, models.TestPage, error) {
+func (h *ProjectHandlers) loadGenerationPageContextFromContext(c *gin.Context) (models.ProjectVersion, models.TestPage, error) {
 	projectID, versionID, pageID, ok := parseProjectVersionPageIDs(c)
 	if !ok {
 		return models.ProjectVersion{}, models.TestPage{}, fmt.Errorf("invalid path parameters")
 	}
-	return loadGenerationPageContext(projectID, versionID, pageID)
+	return loadGenerationPageContext(h.gormDB(), projectID, versionID, pageID)
 }
 
 func parseProjectVersionPageTestCaseIDs(c *gin.Context) (uint, uint, uint, uint, bool) {
@@ -238,8 +237,8 @@ func parseProjectVersionPageTestCaseIDs(c *gin.Context) (uint, uint, uint, uint,
 	return projectID, versionID, pageID, testCaseID, true
 }
 
-func loadTestCaseForPage(pageID, testCaseID uint) (models.TestCase, error) {
-	return loadTestCaseForPageTx(storage.DB, pageID, testCaseID)
+func (h *ProjectHandlers) loadTestCaseForPage(pageID, testCaseID uint) (models.TestCase, error) {
+	return loadTestCaseForPageTx(h.gormDB(), pageID, testCaseID)
 }
 
 func loadTestCaseForPageTx(db *gorm.DB, pageID, testCaseID uint) (models.TestCase, error) {

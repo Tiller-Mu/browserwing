@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,8 +20,8 @@ import (
 	"github.com/browserwing/browserwing/models"
 	"github.com/browserwing/browserwing/storage"
 	"github.com/gin-gonic/gin"
-	"github.com/glebarez/sqlite"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
@@ -278,32 +279,148 @@ type generateContractEnv struct {
 	stderrFile string
 }
 
+type generateContractStore struct {
+	storage.Store
+	db         *gorm.DB
+	llmConfigs map[string]*models.LLMConfigModel
+}
+
+func newGenerateContractStore(db *gorm.DB) *generateContractStore {
+	return &generateContractStore{
+		db:         db,
+		llmConfigs: make(map[string]*models.LLMConfigModel),
+	}
+}
+
+func (s *generateContractStore) Close() error {
+	return nil
+}
+
+func (s *generateContractStore) GormDB() *gorm.DB {
+	return s.db
+}
+
+func (s *generateContractStore) SaveLLMConfig(config *models.LLMConfigModel) error {
+	if config == nil {
+		return fmt.Errorf("LLM config is required")
+	}
+	cp := *config
+	if cp.IsDefault {
+		for id, existing := range s.llmConfigs {
+			if id != cp.ID {
+				existing.IsDefault = false
+			}
+		}
+	}
+	s.llmConfigs[cp.ID] = &cp
+	return nil
+}
+
+func (s *generateContractStore) GetLLMConfig(id string) (*models.LLMConfigModel, error) {
+	if cfg, ok := s.llmConfigs[id]; ok {
+		cp := *cfg
+		return &cp, nil
+	}
+	return nil, fmt.Errorf("LLM config not found")
+}
+
+func (s *generateContractStore) GetDefaultLLMConfig() (*models.LLMConfigModel, error) {
+	for _, cfg := range s.llmConfigs {
+		if cfg.IsDefault && cfg.IsActive {
+			cp := *cfg
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("Default LLM config not found")
+}
+
+func (s *generateContractStore) ListLLMConfigs() ([]*models.LLMConfigModel, error) {
+	configs := make([]*models.LLMConfigModel, 0, len(s.llmConfigs))
+	for _, cfg := range s.llmConfigs {
+		cp := *cfg
+		configs = append(configs, &cp)
+	}
+	return configs, nil
+}
+
+func newGenerateContractGormDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	baseDSN := strings.TrimSpace(os.Getenv("BROWSERWING_P46_POSTGRES_DSN"))
+	if baseDSN == "" {
+		t.Skip("generate contract tests require BROWSERWING_P46_POSTGRES_DSN targeting PostgreSQL database PlayBot")
+	}
+
+	schema := fmt.Sprintf("generate_contract_%d", atomic.AddUint64(&generateContractSequence, 1))
+	adminDB, err := gorm.Open(postgres.Open(baseDSN), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
+	if err != nil {
+		t.Fatalf("open PostgreSQL admin connection: %v", err)
+	}
+	adminSQL, err := adminDB.DB()
+	if err != nil {
+		t.Fatalf("get PostgreSQL admin sql handle: %v", err)
+	}
+	if err := adminDB.Exec("CREATE SCHEMA " + quotePostgresIdentifier(schema)).Error; err != nil {
+		t.Fatalf("create PostgreSQL test schema %s: %v", schema, err)
+	}
+	t.Cleanup(func() {
+		if err := adminDB.Exec("DROP SCHEMA IF EXISTS " + quotePostgresIdentifier(schema) + " CASCADE").Error; err != nil {
+			t.Fatalf("drop PostgreSQL test schema %s: %v", schema, err)
+		}
+		_ = adminSQL.Close()
+	})
+
+	db, err := gorm.Open(postgres.Open(postgresDSNWithSearchPath(t, baseDSN, schema)), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
+	if err != nil {
+		t.Fatalf("open PostgreSQL test schema connection: %v", err)
+	}
+	testSQL, err := db.DB()
+	if err != nil {
+		t.Fatalf("get PostgreSQL test sql handle: %v", err)
+	}
+	t.Cleanup(func() { _ = testSQL.Close() })
+	return db
+}
+
+func postgresDSNWithSearchPath(t *testing.T, rawDSN, schema string) string {
+	t.Helper()
+	option := "-c search_path=" + schema
+	if strings.Contains(rawDSN, "://") {
+		parsed, err := url.Parse(rawDSN)
+		if err != nil {
+			t.Fatalf("parse PostgreSQL DSN: %v", err)
+		}
+		query := parsed.Query()
+		if existing := strings.TrimSpace(query.Get("options")); existing != "" {
+			option = existing + " " + option
+		}
+		query.Set("options", option)
+		parsed.RawQuery = query.Encode()
+		return parsed.String()
+	}
+	return strings.TrimSpace(rawDSN) + " options='" + option + "'"
+}
+
+func quotePostgresIdentifier(value string) string {
+	return "\"" + strings.ReplaceAll(value, "\"", "\"\"") + "\""
+}
+
 func newGenerateContractEnv(t *testing.T) *generateContractEnv {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
-	dbName := fmt.Sprintf("file:generate_contract_%d?mode=memory&cache=shared", atomic.AddUint64(&generateContractSequence, 1))
-	db, err := gorm.Open(sqlite.Open(dbName), &gorm.Config{
-		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
-	})
-	if err != nil {
-		t.Fatalf("open in-memory sqlite: %v", err)
-	}
+	db := newGenerateContractGormDB(t)
 	if err := models.AutoMigrate(db); err != nil {
 		t.Fatalf("migrate testing models: %v", err)
 	}
 
-	oldDB := storage.DB
-	storage.DB = db
-	t.Cleanup(func() { storage.DB = oldDB })
-
 	tmpDir := t.TempDir()
-	boltDB, err := storage.NewBoltDB(filepath.Join(tmpDir, "browserwing-test.bolt"))
-	if err != nil {
-		t.Fatalf("open temp bolt db: %v", err)
-	}
-	t.Cleanup(func() { _ = boltDB.Close() })
-	if err := boltDB.SaveLLMConfig(&models.LLMConfigModel{
+	store := newGenerateContractStore(db)
+	if err := store.SaveLLMConfig(&models.LLMConfigModel{
 		ID:        "default-test-llm",
 		Name:      "Default test LLM",
 		Provider:  "custom",
@@ -319,7 +436,7 @@ func newGenerateContractEnv(t *testing.T) *generateContractEnv {
 	}
 
 	handler := &Handler{
-		db:        boltDB,
+		db:        store,
 		mcpServer: newNoopMCPServer(),
 		config: &config.Config{
 			Auth: &config.AuthConfig{

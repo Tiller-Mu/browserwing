@@ -26,17 +26,17 @@ type ExploreEvent struct {
 
 // ExploreSession represents a single AI exploration session
 type ExploreSession struct {
-	ID              string           `json:"id"`
-	TaskDesc        string           `json:"task_desc"`
-	StartURL        string           `json:"start_url"`
-	LLMConfigID     string           `json:"llm_config_id"`
-	InstanceID      string           `json:"instance_id"`
-	Status          string           `json:"status"` // running, completed, failed, stopped
-	StartTime       time.Time        `json:"start_time"`
-	EndTime         time.Time        `json:"end_time,omitempty"`
+	ID              string            `json:"id"`
+	TaskDesc        string            `json:"task_desc"`
+	StartURL        string            `json:"start_url"`
+	LLMConfigID     string            `json:"llm_config_id"`
+	InstanceID      string            `json:"instance_id"`
+	Status          string            `json:"status"` // running, completed, failed, stopped
+	StartTime       time.Time         `json:"start_time"`
+	EndTime         time.Time         `json:"end_time,omitempty"`
 	RawOps          []models.OpRecord `json:"raw_ops,omitempty"`
-	GeneratedScript *models.Script   `json:"generated_script,omitempty"`
-	Error           string           `json:"error,omitempty"`
+	GeneratedScript *models.Script    `json:"generated_script,omitempty"`
+	Error           string            `json:"error,omitempty"`
 	StreamChan      chan ExploreEvent `json:"-"`
 	cancelFunc      context.CancelFunc
 }
@@ -56,11 +56,11 @@ type Explorer struct {
 	browserManager *Manager
 	agentManager   AgentManagerInterface
 	execRecorder   ExecutorRecorderInterface
-	db             *storage.BoltDB
+	db             storage.Store
 }
 
 // NewExplorer creates a new Explorer instance
-func NewExplorer(browserMgr *Manager, db *storage.BoltDB) *Explorer {
+func NewExplorer(browserMgr *Manager, db storage.Store) *Explorer {
 	return &Explorer{
 		sessions:       make(map[string]*ExploreSession),
 		browserManager: browserMgr,

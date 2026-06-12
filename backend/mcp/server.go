@@ -22,7 +22,7 @@ import (
 
 // MCPServer 使用 mcp-go 库实现的 MCP 服务器
 type MCPServer struct {
-	storage       *storage.BoltDB
+	storage       storage.Store
 	browserMgr    *browser.Manager
 	scripts       map[string]*models.Script // scriptID -> Script
 	scriptsByName map[string]*models.Script // commandName -> Script
@@ -41,7 +41,7 @@ type MCPServer struct {
 }
 
 // NewMCPServer 创建使用 mcp-go 的 MCP 服务器
-func NewMCPServer(storage *storage.BoltDB, browserMgr *browser.Manager) *MCPServer {
+func NewMCPServer(storage storage.Store, browserMgr *browser.Manager) *MCPServer {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	s := &MCPServer{

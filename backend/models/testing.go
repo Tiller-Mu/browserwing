@@ -8,24 +8,26 @@ import (
 
 // Project 代表一个顶级的测试项目（例如：“统一考试平台”）
 type Project struct {
-	ID          uint             `gorm:"primaryKey" json:"id"`
-	Name        string           `gorm:"size:255;not null;unique" json:"name"`
-	Description string           `gorm:"type:text" json:"description"`
-	CreatedAt   time.Time        `json:"created_at"`
-	UpdatedAt   time.Time        `json:"updated_at"`
-	Versions    []ProjectVersion `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
+	ID          uint               `gorm:"primaryKey" json:"id"`
+	Name        string             `gorm:"size:255;not null;unique" json:"name"`
+	Description string             `gorm:"type:text" json:"description"`
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
+	Versions    []ProjectVersion   `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
+	AuthStates  []ProjectAuthState `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE;" json:"-"`
 }
 
 // ProjectVersion 代表项目下的某个版本（例如：“v1.0”），版本支持整体克隆
 type ProjectVersion struct {
-	ID          uint       `gorm:"primaryKey" json:"id"`
-	ProjectID   uint       `gorm:"index;not null" json:"project_id"`
-	VersionName string     `gorm:"size:100;not null" json:"version_name"`
-	Description string     `gorm:"type:text" json:"description"`
-	BaseURL     string     `gorm:"size:255" json:"base_url"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	Pages       []TestPage `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE;" json:"pages,omitempty"`
+	ID          uint               `gorm:"primaryKey" json:"id"`
+	ProjectID   uint               `gorm:"index;not null" json:"project_id"`
+	VersionName string             `gorm:"size:100;not null" json:"version_name"`
+	Description string             `gorm:"type:text" json:"description"`
+	BaseURL     string             `gorm:"size:255" json:"base_url"`
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
+	Pages       []TestPage         `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE;" json:"pages,omitempty"`
+	AuthStates  []ProjectAuthState `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE;" json:"-"`
 }
 
 // TestPage 代表某个具体的测试页面或功能点模块（例如：“登录页”、“成绩查询页”）

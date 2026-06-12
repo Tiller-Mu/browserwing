@@ -25,13 +25,13 @@ type AgentExecutor interface {
 
 // DefaultTaskExecutor 默认任务执行器
 type DefaultTaskExecutor struct {
-	db            *storage.BoltDB
+	db            storage.Store
 	scriptPlayer  ScriptPlayer
 	agentExecutor AgentExecutor
 }
 
 // NewDefaultTaskExecutor 创建默认任务执行器
-func NewDefaultTaskExecutor(db *storage.BoltDB, scriptPlayer ScriptPlayer, agentExecutor AgentExecutor) *DefaultTaskExecutor {
+func NewDefaultTaskExecutor(db storage.Store, scriptPlayer ScriptPlayer, agentExecutor AgentExecutor) *DefaultTaskExecutor {
 	return &DefaultTaskExecutor{
 		db:            db,
 		scriptPlayer:  scriptPlayer,
@@ -102,12 +102,12 @@ type AgentManagerInterface interface{}
 
 // RealScriptPlayer 真实脚本播放器（使用浏览器管理器）
 type RealScriptPlayer struct {
-	db             *storage.BoltDB
+	db             storage.Store
 	browserManager interface{} // 使用 interface{} 避免循环依赖
 }
 
 // NewRealScriptPlayer 创建真实脚本播放器
-func NewRealScriptPlayer(db *storage.BoltDB, browserManager interface{}) *RealScriptPlayer {
+func NewRealScriptPlayer(db storage.Store, browserManager interface{}) *RealScriptPlayer {
 	return &RealScriptPlayer{
 		db:             db,
 		browserManager: browserManager,
@@ -253,7 +253,7 @@ func (e *RealAgentExecutor) ExecuteAgentTask(ctx context.Context, sessionID, llm
 		CreateSession(llmConfigID string) *agent.ChatSession
 		SendMessage(ctx context.Context, sessionID, userMessage string, streamChan chan<- agent.StreamChunk) error
 	}
-	
+
 	am, ok := e.agentManager.(agentMgr)
 	if !ok {
 		// 记录详细错误信息帮助调试
@@ -267,13 +267,13 @@ func (e *RealAgentExecutor) ExecuteAgentTask(ctx context.Context, sessionID, llm
 		// 会话不存在，创建新会话
 		log.Printf("[RealAgentExecutor] Session %s not found, creating new session with LLM: %s", sessionID, llmID)
 		session = am.CreateSession(llmID)
-		sessionID = session.ID  // 使用新创建的会话 ID
+		sessionID = session.ID // 使用新创建的会话 ID
 		log.Printf("[RealAgentExecutor] Created new session with ID: %s", sessionID)
 	}
 
 	// 创建一个通道来接收流式响应（但我们不需要流式，只要最终结果）
 	streamChan := make(chan agent.StreamChunk, 100)
-	
+
 	// 在 goroutine 中收集响应
 	responseChan := make(chan string, 1)
 	go func() {
@@ -296,17 +296,17 @@ func (e *RealAgentExecutor) ExecuteAgentTask(ctx context.Context, sessionID, llm
 	// 等待响应收集完成
 	response := <-responseChan
 	log.Printf("[RealAgentExecutor] Agent response received (length: %d)", len(response))
-	
+
 	return response, nil
 }
 
 // SimplScriptPlayer 简单脚本播放器（用于测试或简化场景）
 type SimpleScriptPlayer struct {
-	db *storage.BoltDB
+	db storage.Store
 }
 
 // NewSimpleScriptPlayer 创建简单脚本播放器
-func NewSimpleScriptPlayer(db *storage.BoltDB) *SimpleScriptPlayer {
+func NewSimpleScriptPlayer(db storage.Store) *SimpleScriptPlayer {
 	return &SimpleScriptPlayer{db: db}
 }
 

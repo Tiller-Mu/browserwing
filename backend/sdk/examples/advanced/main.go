@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"time"
 
 	"github.com/browserwing/browserwing/models"
@@ -12,7 +13,7 @@ import (
 func main() {
 	// 创建 SDK 客户端
 	client, err := sdk.New(&sdk.Config{
-		DatabasePath:  "./data/browserwing.db",
+		DatabaseDSN:   databaseDSN(),
 		EnableBrowser: true,
 		EnableScript:  true,
 		EnableAgent:   false,
@@ -95,7 +96,7 @@ func main() {
 
 	for i, url := range urls {
 		log.Printf("Visiting page %d: %s", i+1, url)
-		
+
 		script := &sdk.Script{
 			Name:        "Visit " + url,
 			Description: "Simple page visit",
@@ -126,14 +127,14 @@ func main() {
 		} else {
 			log.Printf("  ✓ Status: %s, Duration: %dms", result.Status, result.Duration)
 		}
-		
+
 		// 短暂延迟
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	// 场景 3: 定期监控
 	log.Println("\n=== Scenario 3: Periodic monitoring ===")
-	
+
 	monitorScript := &sdk.Script{
 		Name:        "Monitor Example.com",
 		Description: "Check if example.com is accessible",
@@ -172,13 +173,13 @@ func main() {
 			log.Printf("  ✗ Error: %v", err)
 			continue
 		}
-		
+
 		log.Printf("  ✓ Status: %s", result.Status)
 		log.Printf("  Duration: %d ms", result.Duration)
 		if len(result.ExtractedData) > 0 {
 			log.Printf("  Data: %v", result.ExtractedData)
 		}
-		
+
 		if i < 3 {
 			time.Sleep(2 * time.Second)
 		}
@@ -186,7 +187,7 @@ func main() {
 
 	// 场景 4: 查看所有脚本和执行历史
 	log.Println("\n=== Scenario 4: Script overview ===")
-	
+
 	// 列出所有脚本
 	scripts, err := client.Script().List(ctx)
 	if err != nil {
@@ -204,7 +205,7 @@ func main() {
 		log.Printf("Error listing executions: %v", err)
 	} else {
 		log.Printf("\nTotal executions: %d", len(executions))
-		
+
 		// 统计成功和失败
 		success := 0
 		failed := 0
@@ -216,7 +217,7 @@ func main() {
 			}
 		}
 		log.Printf("  Success: %d, Failed: %d", success, failed)
-		
+
 		// 显示最近的几次执行
 		log.Println("\nRecent executions:")
 		count := len(executions)
@@ -235,4 +236,12 @@ func main() {
 	log.Println("Note: To clean up example scripts, you can delete them using client.Script().Delete(ctx, scriptID)")
 
 	log.Println("\n✓ Advanced example completed!")
+}
+
+func databaseDSN() string {
+	dsn := os.Getenv("BROWSERWING_SDK_POSTGRES_DSN")
+	if dsn == "" {
+		log.Fatal("set BROWSERWING_SDK_POSTGRES_DSN to a PostgreSQL DSN targeting database PlayBot")
+	}
+	return dsn
 }

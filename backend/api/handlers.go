@@ -39,7 +39,7 @@ type MCPHTTPHandler interface {
 }
 
 type Handler struct {
-	db             *storage.BoltDB
+	db             storage.Store
 	browserManager *browser.Manager
 	executor       *executor2.Executor // Executor 实例
 	config         *config.Config
@@ -65,7 +65,7 @@ type VersionInfo struct {
 }
 
 func NewHandler(
-	db *storage.BoltDB,
+	db storage.Store,
 	browserMgr *browser.Manager,
 	cfg *config.Config,
 	llmMgr *llm.Manager,
@@ -973,6 +973,30 @@ func (h *Handler) GetPlayResult(c *gin.Context) {
 
 // ============= LLM 配置管理相关处理器 =============
 
+func redactLLMConfig(config *models.LLMConfigModel) *models.LLMConfigModel {
+	if config == nil {
+		return nil
+	}
+	redacted := *config
+	redacted.APIKey = ""
+	return &redacted
+}
+
+func redactLLMConfigs(configs []*models.LLMConfigModel) []*models.LLMConfigModel {
+	redacted := make([]*models.LLMConfigModel, 0, len(configs))
+	for _, cfg := range configs {
+		redacted = append(redacted, redactLLMConfig(cfg))
+	}
+	return redacted
+}
+
+func redactLLMSecret(text string, apiKey string) string {
+	if apiKey == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, apiKey, "<redacted>")
+}
+
 // ListLLMConfigs 列出所有 LLM 配置
 func (h *Handler) ListLLMConfigs(c *gin.Context) {
 	configs, err := h.db.ListLLMConfigs()
@@ -981,7 +1005,7 @@ func (h *Handler) ListLLMConfigs(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"configs": configs})
+	c.JSON(http.StatusOK, gin.H{"configs": redactLLMConfigs(configs)})
 }
 
 // GetLLMConfig 获取单个 LLM 配置
@@ -994,7 +1018,7 @@ func (h *Handler) GetLLMConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, config)
+	c.JSON(http.StatusOK, redactLLMConfig(config))
 }
 
 // CreateLLMConfig 创建 LLM 配置
@@ -1035,7 +1059,7 @@ func (h *Handler) CreateLLMConfig(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, req)
+	c.JSON(http.StatusOK, redactLLMConfig(&req))
 }
 
 // UpdateLLMConfig 更新 LLM 配置
@@ -1067,7 +1091,7 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, req)
+	c.JSON(http.StatusOK, redactLLMConfig(&req))
 }
 
 // DeleteLLMConfig 删除 LLM 配置
@@ -1110,7 +1134,7 @@ func (h *Handler) TestLLMConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "llm.messages.testError",
-			"error":   err.Error(),
+			"error":   redactLLMSecret(err.Error(), req.APIKey),
 		})
 		return
 	}
@@ -1129,7 +1153,7 @@ func (h *Handler) TestLLMConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "llm.messages.testError",
-			"error":   "Failed to create agent: " + err.Error(),
+			"error":   "Failed to create agent: " + redactLLMSecret(err.Error(), req.APIKey),
 		})
 		return
 	}
@@ -1137,11 +1161,11 @@ func (h *Handler) TestLLMConfig(c *gin.Context) {
 	// 使用非流式方法测试
 	response, err := ag.Run(ctx, testPrompt)
 	if err != nil {
-		logger.Error(ctx, "LLM test failed: %v", err)
+		logger.Error(ctx, "LLM test failed: %v", redactLLMSecret(err.Error(), req.APIKey))
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "llm.messages.testError",
-			"error":   err.Error(),
+			"error":   redactLLMSecret(err.Error(), req.APIKey),
 		})
 		return
 	}

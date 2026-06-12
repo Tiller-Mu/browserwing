@@ -92,12 +92,12 @@ cd basic  # 或 agent/advanced
 go mod tidy
 ```
 
-### 3. 创建数据目录
+### 3. 配置 PostgreSQL DSN
 
-示例会在当前目录创建 `data` 文件夹存储数据库:
+P4.6 后 SDK 只连接 PostgreSQL `PlayBot` 数据库，不再创建本地数据库文件。运行示例前设置 DSN:
 
 ```bash
-mkdir -p data
+export BROWSERWING_SDK_POSTGRES_DSN="postgres://user:password@localhost:5432/PlayBot?sslmode=disable"
 ```
 
 ## 运行所有示例
@@ -151,7 +151,7 @@ go run main.go
 
 ```go
 client, err := sdk.New(&sdk.Config{
-    DatabasePath:  "./custom/path/db.db",  // 自定义数据库路径
+    DatabaseDSN:   os.Getenv("BROWSERWING_SDK_POSTGRES_DSN"), // PostgreSQL PlayBot DSN
     EnableBrowser: true,
     EnableScript:  true,
     EnableAgent:   false,
