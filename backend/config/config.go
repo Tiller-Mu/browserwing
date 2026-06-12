@@ -131,6 +131,15 @@ func Load(path string) (*Config, error) {
 	}
 
 	// 确保所有必需的配置项都有值
+	if cfg.Server == nil {
+		cfg.Server = &ServerConfig{}
+	}
+	if cfg.Server.Port == "" {
+		cfg.Server.Port = "8080"
+	}
+	if cfg.Server.Host == "" {
+		cfg.Server.Host = "0.0.0.0"
+	}
 	if cfg.Browser == nil {
 		cfg.Browser = &BrowserConfig{}
 	}
