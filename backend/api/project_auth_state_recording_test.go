@@ -536,6 +536,7 @@ type contractP45Runtime struct {
 	failNextSave                bool
 	hasGlobalBrowserCookieStore bool
 	events                      []string
+	stopResult                  map[string]any
 }
 
 func newContractP45Runtime() *contractP45Runtime {
@@ -566,6 +567,18 @@ func (r *contractP45Runtime) StartPageRecording(_ context.Context, input map[str
 	}
 	r.events = append(r.events, "open_target_url", "start_recording")
 	return map[string]any{"recording_session_id": "contract-recording-session"}, nil
+}
+
+func (r *contractP45Runtime) StopPageRecording(_ context.Context, _ map[string]any) (map[string]any, error) {
+	r.events = append(r.events, "stop_recording")
+	if r.stopResult != nil {
+		return r.stopResult, nil
+	}
+	return map[string]any{
+		"actions":      []map[string]any{},
+		"dom_snapshot": map[string]any{},
+		"artifacts":    []map[string]any{},
+	}, nil
 }
 
 func (r *contractP45Runtime) PrepareTestExecution(_ context.Context, _ map[string]any) error {

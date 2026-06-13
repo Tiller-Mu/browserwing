@@ -271,6 +271,7 @@ type testCaseSnapshot struct {
 
 type generateContractEnv struct {
 	db         *gorm.DB
+	store      *generateContractStore
 	router     *gin.Engine
 	handler    *Handler
 	tmpDir     string
@@ -283,12 +284,14 @@ type generateContractStore struct {
 	storage.Store
 	db         *gorm.DB
 	llmConfigs map[string]*models.LLMConfigModel
+	users      map[string]*models.User
 }
 
 func newGenerateContractStore(db *gorm.DB) *generateContractStore {
 	return &generateContractStore{
 		db:         db,
 		llmConfigs: make(map[string]*models.LLMConfigModel),
+		users:      make(map[string]*models.User),
 	}
 }
 
@@ -316,6 +319,35 @@ func (s *generateContractStore) SaveLLMConfig(config *models.LLMConfigModel) err
 	return nil
 }
 
+func (s *generateContractStore) UpdateLLMConfig(config *models.LLMConfigModel) error {
+	if config == nil {
+		return fmt.Errorf("LLM config is required")
+	}
+	existing, ok := s.llmConfigs[config.ID]
+	if !ok {
+		return fmt.Errorf("LLM config not found")
+	}
+	cp := *config
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = existing.CreatedAt
+	}
+	if cp.APIKey == "" {
+		cp.APIKey = existing.APIKey
+		cp.APIKeyCiphertext = existing.APIKeyCiphertext
+		cp.APIKeyNonce = existing.APIKeyNonce
+		cp.APIKeyKeyID = existing.APIKeyKeyID
+	}
+	return s.SaveLLMConfig(&cp)
+}
+
+func (s *generateContractStore) DeleteLLMConfig(id string) error {
+	if _, ok := s.llmConfigs[id]; !ok {
+		return fmt.Errorf("LLM config not found")
+	}
+	delete(s.llmConfigs, id)
+	return nil
+}
+
 func (s *generateContractStore) GetLLMConfig(id string) (*models.LLMConfigModel, error) {
 	if cfg, ok := s.llmConfigs[id]; ok {
 		cp := *cfg
@@ -334,6 +366,13 @@ func (s *generateContractStore) GetDefaultLLMConfig() (*models.LLMConfigModel, e
 	return nil, fmt.Errorf("Default LLM config not found")
 }
 
+func (s *generateContractStore) ClearDefaultLLMConfig() error {
+	for _, cfg := range s.llmConfigs {
+		cfg.IsDefault = false
+	}
+	return nil
+}
+
 func (s *generateContractStore) ListLLMConfigs() ([]*models.LLMConfigModel, error) {
 	configs := make([]*models.LLMConfigModel, 0, len(s.llmConfigs))
 	for _, cfg := range s.llmConfigs {
@@ -341,6 +380,70 @@ func (s *generateContractStore) ListLLMConfigs() ([]*models.LLMConfigModel, erro
 		configs = append(configs, &cp)
 	}
 	return configs, nil
+}
+
+func (s *generateContractStore) CreateUser(user *models.User) error {
+	if user == nil {
+		return fmt.Errorf("user is required")
+	}
+	cp := *user
+	if cp.ID == "" {
+		cp.ID = cp.Username
+	}
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now()
+	}
+	cp.UpdatedAt = time.Now()
+	s.users[cp.ID] = &cp
+	return nil
+}
+
+func (s *generateContractStore) GetUser(id string) (*models.User, error) {
+	if user, ok := s.users[id]; ok {
+		cp := *user
+		return &cp, nil
+	}
+	return nil, fmt.Errorf("user not found")
+}
+
+func (s *generateContractStore) GetUserByUsername(username string) (*models.User, error) {
+	for _, user := range s.users {
+		if user.Username == username {
+			cp := *user
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("user not found")
+}
+
+func (s *generateContractStore) ListUsers() ([]*models.User, error) {
+	users := make([]*models.User, 0, len(s.users))
+	for _, user := range s.users {
+		cp := *user
+		users = append(users, &cp)
+	}
+	return users, nil
+}
+
+func (s *generateContractStore) UpdateUser(user *models.User) error {
+	if user == nil {
+		return fmt.Errorf("user is required")
+	}
+	if _, ok := s.users[user.ID]; !ok {
+		return fmt.Errorf("user not found")
+	}
+	cp := *user
+	cp.UpdatedAt = time.Now()
+	s.users[cp.ID] = &cp
+	return nil
+}
+
+func (s *generateContractStore) DeleteUser(id string) error {
+	if _, ok := s.users[id]; !ok {
+		return fmt.Errorf("user not found")
+	}
+	delete(s.users, id)
+	return nil
 }
 
 func newGenerateContractGormDB(t *testing.T) *gorm.DB {
@@ -448,6 +551,7 @@ func newGenerateContractEnv(t *testing.T) *generateContractEnv {
 
 	env := &generateContractEnv{
 		db:         db,
+		store:      store,
 		router:     SetupRouter(handler, nil, nil, false, false),
 		handler:    handler,
 		tmpDir:     tmpDir,
@@ -493,7 +597,7 @@ func (e *generateContractEnv) installFakePlaybotCommand(t *testing.T) {
 		fakePython += ".cmd"
 		script := strings.Join([]string{
 			"@echo off",
-			"if defined BROWSERWING_FAKE_PLAYBOT_CALLS_FILE echo call>>\"%BROWSERWING_FAKE_PLAYBOT_CALLS_FILE%\"",
+			"if defined BROWSERWING_FAKE_PLAYBOT_CALLS_FILE echo call %*>>\"%BROWSERWING_FAKE_PLAYBOT_CALLS_FILE%\"",
 			"if defined BROWSERWING_FAKE_PLAYBOT_STDERR_FILE type \"%BROWSERWING_FAKE_PLAYBOT_STDERR_FILE%\" 1>&2",
 			"if defined BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE type \"%BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE%\"",
 			"if defined BROWSERWING_FAKE_PLAYBOT_EXIT_CODE exit /b %BROWSERWING_FAKE_PLAYBOT_EXIT_CODE%",
@@ -506,7 +610,7 @@ func (e *generateContractEnv) installFakePlaybotCommand(t *testing.T) {
 	} else {
 		script := strings.Join([]string{
 			"#!/bin/sh",
-			"if [ -n \"$BROWSERWING_FAKE_PLAYBOT_CALLS_FILE\" ]; then echo call >> \"$BROWSERWING_FAKE_PLAYBOT_CALLS_FILE\"; fi",
+			"if [ -n \"$BROWSERWING_FAKE_PLAYBOT_CALLS_FILE\" ]; then echo \"call $*\" >> \"$BROWSERWING_FAKE_PLAYBOT_CALLS_FILE\"; fi",
 			"if [ -n \"$BROWSERWING_FAKE_PLAYBOT_STDERR_FILE\" ]; then cat \"$BROWSERWING_FAKE_PLAYBOT_STDERR_FILE\" >&2; fi",
 			"if [ -n \"$BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE\" ]; then cat \"$BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE\"; fi",
 			"exit ${BROWSERWING_FAKE_PLAYBOT_EXIT_CODE:-0}",
@@ -754,14 +858,23 @@ func (e *generateContractEnv) setPlaybotFailure(t *testing.T, stderr string) {
 
 func (e *generateContractEnv) playbotCalls(t *testing.T) int {
 	t.Helper()
-	data, err := os.ReadFile(e.callsFile)
+	data, err := e.playbotCallLog(t)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0
 	}
 	if err != nil {
 		t.Fatalf("read fake Playbot calls file: %v", err)
 	}
-	return strings.Count(string(data), "call")
+	return strings.Count(data, "call")
+}
+
+func (e *generateContractEnv) playbotCallLog(t *testing.T) (string, error) {
+	t.Helper()
+	data, err := os.ReadFile(e.callsFile)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func (e *generateContractEnv) requirePlaybotCalls(t *testing.T, want int) {

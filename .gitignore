@@ -47,6 +47,7 @@ venv/
 /dist/
 /bin/
 .gocache/
+.gocache-test/
 
 # Test artifacts
 /test-results/
