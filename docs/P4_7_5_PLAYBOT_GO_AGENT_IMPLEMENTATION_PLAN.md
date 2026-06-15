@@ -2,7 +2,7 @@
 
 本文档是 `docs/P4_7_5_PLAYBOT_BLUEPRINT_QUALITY_DESIGN.md` 的实施拆分。它不是新的业务契约来源；如果本文档和详细设计冲突，以详细设计为准并退回规划者修订。
 
-当前状态：待评审。评审通过后，用例编写者先按本文档写契约红测；红测通过审核前，业务开发者不得实现生产代码。
+当前状态：实施计划已通过 review，契约红测已落地并通过审核，等待业务开发者按红测实现生产代码。实现前不得为了让红测通过而加入 test-only 假实现。
 
 ## 一、实施原则
 
@@ -15,7 +15,7 @@
 - 后端不使用 LLM 裁决是否保存、是否替换旧资产、是否补上下文或是否重录。
 - `docs/CONTRACT_RECORDS.md` 只在红测、实现和审核通过后更新。
 
-当前仓库尚无 `playbot-agent` 目录。P4.7.5 红测可以创建该目录和测试文件，并允许以缺符号、缺包或断言失败的方式打红；不得为了让红测通过而加入 test-only 假实现。
+当前红测已创建 `playbot-agent` 独立 Go module 骨架、后端 `playbotagent` adapter 测试目录和 P4.7.5 合同测试文件。当前预期红态应来自缺生产 CLI、协议、compiler、quality、agent 编排、后端 adapter 或 Handler seam，不应来自语法错误、格式错误、DSN skip 或环境缓存权限问题。
 
 ## 二、推荐目录和边界
 
@@ -45,7 +45,7 @@ backend/services/playbotagent/
 - `PlaybotJob` / `PlaybotResult` 必须是稳定 JSON 协议。
 - 如后端需要复用协议类型，只能依赖无运行时副作用的最小协议包或 JSON schema。
 - 后端不得链接 agent runtime、LLM client、prompt engine 或编译器实现。
-- `go.work` 当前只包含 `./backend`；P4.7.5 实现阶段如新增独立 Go 模块，应把 `./playbot-agent` 纳入工作区或明确使用独立目录验证命令。
+- `go.work` 已纳入 `./backend` 和 `./playbot-agent`，便于红测和后续实现阶段统一验证。
 
 ## 三、红测总顺序
 
@@ -78,6 +78,7 @@ backend/services/playbotagent/
 - `PlaybotJob.schema_version` 必须存在且可校验。
 - `PlaybotResult.schema_version`、`status`、`code`、`context_trace` 必须存在且可校验。
 - `status` 只允许 `success`、`failed`、`context_required`。
+- `backend_approved_context` 是 `context_required` 后端批准重跑的正式输入字段；首次 job 必须省略或为空，二次 job 中每项至少包含 `kind`、`scope`、`source` 和 `payload`。
 - `llm_runtime_config` 不得序列化 API Key 明文，只允许 provider、endpoint、model、config id、超时、重试和脱敏摘要。
 - `PlaybotJob` JSON、临时 job 文件、fixture 和调试产物不得包含 LLM API Key、Cookie、Storage value。
 - LLM API Key 必须从受控 secret channel 读取，例如环境变量、只读 secret file descriptor、进程私有 secret provider 或后续 RPC metadata。
@@ -102,7 +103,7 @@ go test ./internal/protocol ./cmd/browserwing-playbot-agent -run TestP475 -count
 
 当前预期红态：
 
-- `playbot-agent` 尚不存在，初始红测可以因目录、包或目标符号不存在而失败。
+- `playbot-agent` module 和测试文件已存在，当前应因 CLI main package 或协议、quality、compiler、agent 生产符号缺失而失败。
 
 ### 4.2 Go agent 录制质量和 Blueprint compiler
 
@@ -161,6 +162,7 @@ go test ./internal/quality ./internal/compiler -run TestP475 -count=1
 - `PlaybotJob` 不包含 LLM API Key、Cookie、Storage value 或本地绝对路径。
 - LLM API Key 通过受控 secret channel 传给 agent，不写入 job JSON。
 - agent 返回 `context_required + retryable` 时，后端只按确定性规则补上下文并有限重跑。
+- 后端补上下文重跑时，二次 `PlaybotJob` 必须通过 `backend_approved_context` 携带已批准片段；该字段只允许由后端写入，不能包含 API Key、Cookie、Storage value 或本地绝对路径。
 - agent 返回录制质量硬错误时，后端不调用 LLM 猜测、不创建 TestCase、`replace` 不删除旧 TestCase。
 - `context_trace` 必须被后端记录到可审计位置，且不得泄露密钥或本地绝对路径。
 
@@ -183,8 +185,8 @@ go test ./api -run TestP475 -count=1
 
 当前预期红态：
 
-- `backend/services/playbotagent` 尚不存在。
-- 现有生成接口仍走 Python playbot service。
+- `backend/services/playbotagent` 测试文件已存在，当前应因 adapter 生产符号缺失而失败。
+- 现有生成和 refine 接口仍走 Python playbot service，后端 API 红测应先红在缺 Go agent seam 或现有路径不满足 P4.7.5 合同。
 
 ### 4.4 后端严格保存校验和资产保护
 
@@ -293,19 +295,20 @@ go test ./services/testcase_executor -run TestP475 -count=1
 
 1. 新增 `playbot-agent` 独立 Go module、CLI 入口和协议类型。
 2. 实现 `PlaybotJob` / `PlaybotResult` JSON schema、状态码和脱敏日志框架。
-3. 实现 secret channel，确保 API Key 不进入 job JSON、fixture、临时 job 文件和普通日志。
-4. 实现录制质量校验和机器可判定错误。
-5. 实现 Blueprint compiler 和 agent 侧 executable validator。
-6. 实现 LLM client 接口和可测试 fake，先让 compiler/协议红测不依赖真实 LLM。
-7. 实现 agent generate / optimize / repair_proposal 编排。
-8. 新增后端 `playbotagent` adapter，支持独立二进制调用和 fake client 注入。
-9. 后端生成接口改为组装 `PlaybotJob` 并调用 Go agent adapter。
-10. 后端 refine 接口改为 optimize 模式调用 Go agent adapter。
-11. 后端保存前新增严格最终字段校验，再复用现有执行归一化。
-12. 后端处理 `context_required`、录制质量错误、agent validation failed 和进程级失败。
-13. 确认 `RunTestCase` 仍只走 Go runner，不接入 agent。
-14. 移除正式路径对 Python `playbot-engine` 的生成/优化依赖；历史配置可保留为兼容或清理项，但不得被正式入口调用。
-15. 更新阶段验证说明；最终审核通过后再写 `docs/CONTRACT_RECORDS.md`。
+3. 实现 `backend_approved_context` 协议字段，确保它只在后端批准的 `context_required` 重跑 job 中出现。
+4. 实现 secret channel，确保 API Key 不进入 job JSON、fixture、临时 job 文件和普通日志。
+5. 实现录制质量校验和机器可判定错误。
+6. 实现 Blueprint compiler 和 agent 侧 executable validator。
+7. 实现 LLM client 接口和可测试 fake，先让 compiler/协议红测不依赖真实 LLM。
+8. 实现 agent generate / optimize / repair_proposal 编排。
+9. 新增后端 `playbotagent` adapter，支持独立二进制调用和 fake client 注入。
+10. 后端生成接口改为组装 `PlaybotJob` 并调用 Go agent adapter。
+11. 后端 refine 接口改为 optimize 模式调用 Go agent adapter。
+12. 后端保存前新增严格最终字段校验，再复用现有执行归一化。
+13. 后端处理 `context_required`、录制质量错误、agent validation failed 和进程级失败。
+14. 确认 `RunTestCase` 仍只走 Go runner，不接入 agent。
+15. 移除正式路径对 Python `playbot-engine` 的生成/优化依赖；历史配置可保留为兼容或清理项，但不得被正式入口调用。
+16. 更新阶段验证说明；最终审核通过后再写 `docs/CONTRACT_RECORDS.md`。
 
 ## 六、验证矩阵
 
@@ -348,6 +351,7 @@ pnpm run build
 - 是否仍把 Python worker 或 Python execution engine 放进正式路径。
 - 是否把 agent 做成第二个后端，直接查库或缓存业务事实。
 - 是否让后端用 LLM 做保存、重录、补上下文或替换资产的裁决。
+- 是否让 `backend_approved_context` 变成长期缓存、自由上下文通道或密钥泄露通道。
 - 是否让 `PlaybotJob` JSON、fixture、临时文件或日志携带密钥明文。
 - 是否把 RecordingArtifact 元数据当成生成事实源。
 - 是否把现有宽松执行归一化等同于 Playbot 新生成 Blueprint 的保存标准。
@@ -356,7 +360,7 @@ pnpm run build
 
 ## 八、交付定义
 
-P4.7.5 实施计划通过评审后，才进入用例编写者红测阶段。
+P4.7.5 红测已完成并通过 review，下一步进入生产实现阶段。
 
 P4.7.5 实现通过最终审核时必须满足：
 

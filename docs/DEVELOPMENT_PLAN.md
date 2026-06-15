@@ -450,7 +450,7 @@ P4.6 完成后，不直接进入 P5。已先通过 P4.7 收口 LLM 统一配置�
 
 ## 十一、P4.7.5：Playbot Go Agent 与 Blueprint 质量边界重构
 
-当前状态：设计已落地，待文档审核；尚未进入红测和生产实现。P4.7.5 的契约记录暂不写入 `docs/CONTRACT_RECORDS.md`，等红测、实现和审核通过后再沉淀。
+当前状态：设计和红测已落地并通过 review，等待业务开发者按红测实现。P4.7.5 的契约记录暂不写入 `docs/CONTRACT_RECORDS.md`，等生产实现和最终审核通过后再沉淀。
 
 阶段设计：
 
@@ -479,6 +479,7 @@ P4.6 完成后，不直接进入 P5。已先通过 P4.7 收口 LLM 统一配置�
 - 后端是上下文事实源管理者和裁决者，负责权限、状态、事务、锁定、脱敏、审计、LLM 配置选择和保存裁决。
 - 独立 Go agent 是上下文消费、LLM 编排和 Blueprint 编译者，只在单次任务内做临时摘要、裁剪和 prompt packing，不长期缓存对话上下文，不直接查库。
 - `PlaybotJob` JSON 不得包含 LLM API Key、Cookie、Storage value 或其他密钥明文；LLM API Key 必须通过受控 secret channel 传递，不能落入 job 文件、fixture 或普通日志。
+- `backend_approved_context` 是后端在 `context_required + retryable` 后批准补上下文重跑的正式 `PlaybotJob` 字段；首次 job 省略或为空，二次 job 中每项至少包含 `kind`、`scope`、`source` 和 `payload`，且不得携带密钥、Cookie、Storage value 或本地绝对路径。
 - 后端保存 TestCase 前必须先按 P4.7.5 最终 Blueprint 字段标准做严格保存校验，再复用执行归一化能力，确认 active Blueprint 能被 Go runner input 逻辑消费。
 - Playbot 能力拆为 `generate`、`optimize`、`execute`、`repair_proposal` 四类。
 - `generate` 基于录制结果和用户说明生成新的 TestCase Blueprint。
@@ -536,6 +537,7 @@ stdout 只能输出 `PlaybotResult` JSON，stderr 只能输出脱敏日志。后
 
 - 当前执行归一化为兼容历史 Blueprint，允许 `navigate` 缺 `url` 时回退页面 URL，也允许 `target_hint` 作为定位兼容输入；P4.7.5 的 Playbot 生成保存入口不得只依赖该宽松归一化。
 - agent 返回 `context_required + retryable` 时，后端只按确定性规则补上下文并有限重跑。
+- 后端补上下文重跑时，必须通过 `backend_approved_context` 携带已批准片段；该字段不能成为 agent 长期记忆或新的业务事实源。
 - agent 返回录制质量硬错误时，后端不调用 LLM 猜测、不创建 TestCase，`replace` 不删除旧 TestCase。
 - `preview` 模式下 active Blueprint 无法通过严格保存校验或执行归一化时返回错误。
 - `append` 模式下 active Blueprint 无法通过严格保存校验或执行归一化时不创建新 TestCase。
@@ -550,6 +552,7 @@ stdout 只能输出 `PlaybotResult` JSON，stderr 只能输出脱敏日志。后
 - unsupported action 不得保存。
 - `replace` 模式下可执行校验失败不得删除旧 TestCase。
 - 独立 Go agent stdout 只输出 `PlaybotResult` JSON，stderr 只输出脱敏日志。
+- `backend_approved_context` 只允许在后端批准的 context retry job 中出现，并且必须与 agent 上一轮 `requested_context` 匹配。
 - `PlaybotJob` JSON、临时 job 文件、测试 fixture 和调试产物不得包含 LLM API Key 明文。
 - Go agent 能把录制 click/input/navigate 编译为 Go 标准 Blueprint。
 - `recorded_selector`、role/text、placeholder 优先保留到 `target`。

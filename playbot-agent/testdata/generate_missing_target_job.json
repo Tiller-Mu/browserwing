@@ -1,0 +1,52 @@
+{
+  "schema_version": "p4.7.5",
+  "mode": "generate",
+  "request_id": "p475-missing-target-fixture",
+  "project_scope": {
+    "project_id": 10,
+    "version_id": 20,
+    "page_id": 30
+  },
+  "page_context": {
+    "url": "https://example.invalid/orders",
+    "description": "orders page"
+  },
+  "recording_source": {
+    "source_page_script_id": "ps-fixture",
+    "action_trace": [
+      {
+        "type": "click",
+        "intent_reason": "Click the primary save button"
+      }
+    ],
+    "dom_snapshot": {
+      "elements": [
+        {
+          "role": "button",
+          "text": "Save"
+        }
+      ]
+    },
+    "recording_meta": {
+      "schema_version": 1,
+      "recording_kind": "business_flow",
+      "auth_context": "clean",
+      "target_url": "https://example.invalid/orders"
+    }
+  },
+  "llm_runtime_config": {
+    "provider": "custom",
+    "endpoint": "https://llm.invalid/v1",
+    "model": "contract-model",
+    "config_id": "p475-default",
+    "redacted_summary": "custom contract-model",
+    "secret_channel": {
+      "kind": "env",
+      "name": "BROWSERWING_PLAYBOT_LLM_API_KEY"
+    }
+  },
+  "limits": {
+    "max_actions": 20,
+    "max_dom_nodes": 200
+  }
+}

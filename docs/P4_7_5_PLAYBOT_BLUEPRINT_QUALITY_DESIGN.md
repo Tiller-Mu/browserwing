@@ -224,11 +224,27 @@ stderr: 脱敏日志
 - `project_scope`。
 - `page_context`。
 - `recording_source`。
+- `backend_approved_context`。该字段仅在 agent 返回 `context_required + retryable` 后的受控重跑 job 中出现，首次 job 必须省略或为空。
 - `existing_blueprint`。
 - `execution_report`。
 - `user_instruction`。
 - `llm_runtime_config`。该字段只能包含 provider、endpoint、model、config id、超时、重试和脱敏后的配置摘要，不得包含 API Key 明文。
 - `limits`。
+
+`backend_approved_context` 是后端补上下文的唯一协议载体，不是 agent 的长期记忆，也不是新的业务事实源。字段形态为数组，每一项至少包含：
+
+- `kind`：补充上下文类型，例如 `dom_snapshot`、`action_trace`、`recording_meta` 或 `page_context`。
+- `scope`：对应 `requested_context.scope`，例如录制动作 ref id、DOM 片段 id 或页面范围。
+- `source`：上下文来源，例如 `page_script.dom_snapshot` 或受保护流程内的 `recording_session.actions`。
+- `payload`：后端按确定性规则裁剪后的上下文片段。
+
+约束：
+
+- `backend_approved_context` 只能由后端写入，agent 不得在结果中要求直接落库该字段。
+- 每一项必须对应上一轮 `requested_context` 中后端允许补充的请求，不能携带未被请求或未被后端批准的自由上下文。
+- 内容必须来自有效 PageScript，或受保护流程内的 stopped RecordingSession；不得来自 RecordingArtifact 元数据单独推导。
+- 内容不得包含 LLM API Key、Cookie、Storage value 或本地绝对路径。
+- 二次重跑仍必须受次数上限约束；重复请求同一上下文不得无限循环。
 
 `PlaybotResult` 至少包含：
 
@@ -268,7 +284,7 @@ success
 
 context_required + retryable
   -> 后端判断是否存在可补上下文
-  -> 补 job 后重跑一次或有限次数
+  -> 通过 backend_approved_context 补 job 后重跑一次或有限次数
 
 recording_quality_error
   -> 不调用 LLM 猜测
@@ -288,6 +304,8 @@ blueprint_validation_failed
 - `recording_snapshot_unusable`：如果有可用 PageScript 快照版本，可以补快照重跑；如果没有，拒绝生成。
 - `recording_auth_context_conflict`：不重跑，不让 LLM 猜；拒绝生成，要求用户重新选择登录态或重录。
 - `blueprint_validation_failed`：不保存 TestCase，可进入 repair proposal 草案，但不自动改资产。
+
+后端补上下文时必须把批准后的片段写入下一次 `PlaybotJob.backend_approved_context`，并保留 agent 原始 `requested_context` 作为裁决依据。`backend_approved_context` 只能补足后端已经掌握、允许传给 agent 的录制事实片段，不能补 Cookie/Storage 明文，也不能让 agent 通过反复请求扩大到不相关页面或资产。
 
 LLM 可以参与建议层，例如解释录制质量差的原因、生成重录建议、生成 `repair_proposal` 草案，但不能参与裁决层。
 
@@ -518,6 +536,7 @@ P4.7.5 继续沿用 Go 后端 runner 作为正式执行入口。
 - RecordingMeta 非法时，拒绝生成并保持旧资产不变。
 - auth_context 与录制上下文冲突时，拒绝生成并保持旧资产不变。
 - agent 返回 `context_required + retryable` 时，后端只按确定性规则补上下文并有限重跑。
+- 后端补上下文重跑时，二次 `PlaybotJob` 必须通过 `backend_approved_context` 携带已批准片段；首次 job 不得预置该字段。
 - agent 返回录制质量硬错误时，后端不调用 LLM 猜测、不创建 TestCase、`replace` 不删除旧 TestCase。
 - agent 返回 success 时，后端仍必须执行严格保存校验和执行归一化。
 - Playbot 生成的 active TestCase 必须能通过 Go 后端执行归一化。
@@ -530,6 +549,7 @@ Go agent 红测必须覆盖：
 
 - 独立二进制 stdout 只输出 `PlaybotResult` JSON，stderr 只输出脱敏日志。
 - `PlaybotJob` / `PlaybotResult` schema version 必须可校验。
+- `backend_approved_context` 只允许在后端批准的 `context_required` 重跑 job 中出现，且不得泄露密钥、Cookie、Storage value 或本地绝对路径。
 - `PlaybotJob` JSON、临时 job 文件、测试 fixture 和调试产物不得包含 LLM API Key 明文。
 - LLM API Key 必须通过受控 secret channel 传递；日志、错误、context trace 和 `PlaybotResult` 不得泄露密钥。
 - 如实现使用临时 secret 文件，必须验证权限受限且执行后清理。
