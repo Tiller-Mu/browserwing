@@ -35,8 +35,9 @@
 | P4 | 自然语言修改 | 已完成：自然语言生成修改建议，确认后应用并记录历史 |
 | P4.5 | 录制体验和项目登录态 | 已完成：页面列表、短录制流程、项目登录态、清洁会话和执行恢复 |
 | P4.6 | PostgreSQL 统一存储迁移 | 实现已完成：PostgreSQL Store、启动链路和调用方替换已完成；开发者本地验证通过，最终 review 需提供 `PlayBot` DSN 复跑 |
-| P4.7 | LLM 统一配置和录制数据管理 | 后续阶段：统一 AI 能力配置、录制会话和录制产物元数据 |
-| P4.8 | 录制到智能生成用例端到端收口 | 后续阶段：拉通页面录制、保存主流程、选择 LLM、生成 TestCase 的完整体验 |
+| P4.7 | LLM 统一配置和录制数据管理 | 已完成：统一 AI 能力配置、录制会话和录制产物元数据 |
+| P4.7.5 | Playbot Go Agent 与 Blueprint 质量边界重构 | 当前阶段：独立 Go agent 基于录制事实源生成 Go runner 可执行 Blueprint，拆清后端裁决、agent 编排、runner 执行边界 |
+| P4.8 | 录制到智能生成用例端到端收口 | 后续阶段：在 P4.7.5 输出标准稳定后，拉通页面录制、保存主流程、选择 LLM、生成 TestCase 的完整体验 |
 | P5 | 多用户和权限 | 后续阶段：项目数据归属、API 权限校验、用户隔离 |
 | P6 | 稳定化和发布 | 回归测试、文档、打包、发布检查 |
 
@@ -281,7 +282,7 @@ POST /api/v1/projects/:id/versions/:vid/pages/:pid/test-cases/:tcid/refinements/
 
 下一步：
 
-P4.7 已完成。LLM 统一配置、录制会话数据库管理、录制草稿持久化、取消/失败保护和录制产物元数据契约已通过红测、实现和复核。下一步进入 P4.8，拉通“页面录制 -> 保存主流程 -> 选择 LLM -> 智能生成 TestCase”的端到端体验；P4.8 后再进入 P5 多用户和权限规划。
+P4.7 已完成。LLM 统一配置、录制会话数据库管理、录制草稿持久化、取消/失败保护和录制产物元数据契约已通过红测、实现和复核。下一步先进入 P4.7.5，收口 Playbot 基于录制事实源产出 Go runner 可执行 Blueprint 的质量边界；P4.7.5 完成后再进入 P4.8，拉通“页面录制 -> 保存主流程 -> 选择 LLM -> 智能生成 TestCase”的端到端体验；P4.8 后再进入 P5 多用户和权限规划。
 
 ## 八、P4.5：录制体验和项目登录态
 
@@ -387,11 +388,11 @@ P4.7 已完成。LLM 统一配置、录制会话数据库管理、录制草稿�
 
 后续衔接：
 
-P4.6 完成后，不直接进入 P5。已先通过 P4.7 收口 LLM 统一配置和录制数据管理，下一步通过 P4.8 拉通录制到智能生成用例的端到端体验。P5 多用户权限应基于 PostgreSQL 统一存储、Store 边界、LLM 全局配置口径和录制会话数据边界继续设计。
+P4.6 完成后，不直接进入 P5。已先通过 P4.7 收口 LLM 统一配置和录制数据管理，下一步通过 P4.7.5 收口 Playbot Blueprint 输出质量和能力边界，再通过 P4.8 拉通录制到智能生成用例的端到端体验。P5 多用户权限应基于 PostgreSQL 统一存储、Store 边界、LLM 全局配置口径、录制会话数据边界和可执行 Blueprint 标准继续设计。
 
 ## 十、P4.7：LLM 统一配置和录制数据管理
 
-当前状态：已完成。P4.7 设计、红测、实现、复核和契约记录已收口；下一步进入 P4.8。
+当前状态：已完成。P4.7 设计、红测、实现、复核和契约记录已收口；下一步进入 P4.7.5 文档审核、红测和实现。
 
 阶段设计：
 
@@ -444,9 +445,150 @@ P4.6 完成后，不直接进入 P5。已先通过 P4.7 收口 LLM 统一配置�
 
 - P4.7 不做完整 P5 用户权限和成员角色。
 - P4.7 不把大文件二进制直接写入 PostgreSQL。
+- P4.7 不做 Playbot Blueprint 输出质量重构，该能力放入 P4.7.5。
 - P4.7 不做最终页面体验收口，端到端路径优化放入 P4.8。
 
-## 十一、P4.8：录制到智能生成用例端到端收口
+## 十一、P4.7.5：Playbot Go Agent 与 Blueprint 质量边界重构
+
+当前状态：设计已落地，待文档审核；尚未进入红测和生产实现。P4.7.5 的契约记录暂不写入 `docs/CONTRACT_RECORDS.md`，等红测、实现和审核通过后再沉淀。
+
+阶段设计：
+
+- `docs/P4_7_5_PLAYBOT_BLUEPRINT_QUALITY_DESIGN.md`
+
+目标：
+
+在 P4.7 的 LLM 配置和录制数据底座上，一步到位把 Playbot 改为独立 Go agent。后端通过独立二进制调用 agent，agent 基于真实页面录制结果生成或优化 Go 后端 runner 可执行的 BrowserWing Blueprint。P4.7.5 完成前，不应把 P4.8 的端到端体验建立在 LLM 可能猜测补齐、Python worker 输出、后端保存前不验证可执行性或 agent 隐藏上下文缓存的基础上。
+
+核实结论：
+
+- Go 后端 runner 可以执行有头浏览器中的 BrowserWing Blueprint 用例，但它不是 Playwright `.spec.ts` 或 `.py` 文件执行器。
+- `RunTestCase` 正式路径执行的是 Blueprint steps，背后通过 Go `testcase_executor.Runner` 和基于 `go-rod/rod` 的浏览器执行器运行。
+- 有头执行能力来自 Go BrowserManager/BrowserInstance 的浏览器启动配置；当前 `RunTestCase.headless` 字段未实际成为按次切换有头/无头的执行事实源。
+- P4.7.5 不新增原生 Playwright spec runner，不让 Python `playbot-engine` 或独立 Go agent 成为正式产品执行路径。
+
+核心要求：
+
+- 页面录制结果是 Playbot 生成用例的输入事实源，包括 `ActionTrace`、`DOMSnapshot`、`RecordingMeta`、selector、role、text、placeholder、DOM fragment、录制 URL、登录态上下文和关键页面状态。
+- 生成用例优先基于当前页面有效 PageScript；若使用 stopped RecordingSession，必须先保存为 PageScript，或在同一受保护事务/锁定流程中完成 `session -> PageScript -> TestCase`。
+- RecordingArtifact 元数据只能作为诊断、溯源或附件摘要，不能单独满足生成前置条件，也不能替代 `ActionTrace`、`DOMSnapshot` 或 `RecordingMeta`。
+- Go 后端执行 Blueprint 是唯一对外执行标准。
+- Playbot agent 改为独立 Go agent，优先通过独立二进制调用；RPC 常驻服务后置。
+- Python `playbot-engine` 不进入正式生成、优化或执行路径，只能作为历史实验工具或迁移参考。
+- 后端是上下文事实源管理者和裁决者，负责权限、状态、事务、锁定、脱敏、审计、LLM 配置选择和保存裁决。
+- 独立 Go agent 是上下文消费、LLM 编排和 Blueprint 编译者，只在单次任务内做临时摘要、裁剪和 prompt packing，不长期缓存对话上下文，不直接查库。
+- `PlaybotJob` JSON 不得包含 LLM API Key、Cookie、Storage value 或其他密钥明文；LLM API Key 必须通过受控 secret channel 传递，不能落入 job 文件、fixture 或普通日志。
+- 后端保存 TestCase 前必须先按 P4.7.5 最终 Blueprint 字段标准做严格保存校验，再复用执行归一化能力，确认 active Blueprint 能被 Go runner input 逻辑消费。
+- Playbot 能力拆为 `generate`、`optimize`、`execute`、`repair_proposal` 四类。
+- `generate` 基于录制结果和用户说明生成新的 TestCase Blueprint。
+- `optimize` 基于现有 Blueprint 和用户 prompt 生成 proposed 优化版本，只创建 proposed LLMRefinement，不直接修改 active TestCase。
+- `execute` 继续由 Go 后端 runner 负责。
+- `repair_proposal` 只预留“失败报告 -> 修复建议草案”，暂不自动修改资产。
+- 后端不使用 LLM 裁决是否保存、是否替换旧资产、是否补上下文或是否重录；这些决定只按 agent 结构化结果和确定性规则处理。
+
+录制质量错误：
+
+- `recording_action_missing_target`
+- `recording_action_missing_value`
+- `recording_navigation_missing_url`
+- `recording_snapshot_unusable`
+- `recording_meta_invalid`
+- `recording_auth_context_conflict`
+
+如果录制结果缺少生成可执行 Blueprint 所需的信息，不允许让 LLM 猜测补齐。系统应返回录制质量错误，不创建 TestCase，不删除旧 TestCase。
+
+Blueprint 输出标准：
+
+- `navigate` 使用 `url`。
+- `fill`、`select`、`expect_text` 使用 `value`。
+- 定位信息使用 `target`。
+- `target_hint` 只能作为内部兼容输入或中间信息，不能成为最终唯一事实源。
+- `intent_reason` 只能作为内部解释或中间信息，最终应转成 `description` 或丢弃。
+- `auth_context` 继承 PageScript recording meta，不能由 Playbot 自行改写为非法值。
+- unsupported action 不得保存为 active TestCase。
+- 缺少可执行定位字段的交互步骤不得保存为 active TestCase。
+
+独立 Go agent 输出管线：
+
+```text
+PlaybotJob
+-> recording quality validation
+-> context packing / token budget
+-> normalized semantic plan
+-> LLM generated / optimized semantic cases
+-> executable Blueprint compiler
+-> executable Blueprint validator
+-> PlaybotResult JSON
+```
+
+调用形态优先采用独立二进制：
+
+```powershell
+browserwing-playbot-agent --mode generate --input job.json
+browserwing-playbot-agent --mode optimize --input job.json
+browserwing-playbot-agent --mode repair-proposal --input job.json
+```
+
+stdout 只能输出 `PlaybotResult` JSON，stderr 只能输出脱敏日志。后续如升级 RPC，必须复用同一套 `PlaybotJob` / `PlaybotResult` 协议。
+
+后端保存保护：
+
+- 当前执行归一化为兼容历史 Blueprint，允许 `navigate` 缺 `url` 时回退页面 URL，也允许 `target_hint` 作为定位兼容输入；P4.7.5 的 Playbot 生成保存入口不得只依赖该宽松归一化。
+- agent 返回 `context_required + retryable` 时，后端只按确定性规则补上下文并有限重跑。
+- agent 返回录制质量硬错误时，后端不调用 LLM 猜测、不创建 TestCase，`replace` 不删除旧 TestCase。
+- `preview` 模式下 active Blueprint 无法通过严格保存校验或执行归一化时返回错误。
+- `append` 模式下 active Blueprint 无法通过严格保存校验或执行归一化时不创建新 TestCase。
+- `replace` 模式下 active Blueprint 无法通过严格保存校验或执行归一化时不删除旧 TestCase。
+- 错误响应不得泄露 API Key、Cookie、Storage value 或本地绝对路径。
+
+红测要求：
+
+- 录制结果缺少目标、输入值、导航 URL、可用快照或合法 RecordingMeta 时，拒绝生成并保持旧资产不变。
+- Playbot 生成的 active TestCase 必须能通过 Go 后端执行归一化。
+- `navigate` 只给 `value` 不给 `url` 时不得保存。
+- unsupported action 不得保存。
+- `replace` 模式下可执行校验失败不得删除旧 TestCase。
+- 独立 Go agent stdout 只输出 `PlaybotResult` JSON，stderr 只输出脱敏日志。
+- `PlaybotJob` JSON、临时 job 文件、测试 fixture 和调试产物不得包含 LLM API Key 明文。
+- Go agent 能把录制 click/input/navigate 编译为 Go 标准 Blueprint。
+- `recorded_selector`、role/text、placeholder 优先保留到 `target`。
+- `optimize` 只创建 proposed LLMRefinement，不直接修改 TestCase。
+- Python `playbot-engine` 不参与正式生成、优化或执行路径。
+- 独立 Go agent 不参与正式 `RunTestCase` 路径。
+- 有头执行以 Go BrowserManager/BrowserInstance 为准；P4.7.5 不新增 Playwright spec runner。
+
+验收：
+
+- Go 后端生成契约测试通过。
+- Go 后端执行归一化契约测试通过。
+- Go Playbot agent 协议和 compiler fixture 测试通过。
+- 独立 Go agent 二进制可被后端调用，stdout/stderr 契约稳定。
+- Python `playbot-engine` 不在正式生成、优化或执行路径中。
+- 录制质量错误能明确区分生成问题和录制问题。
+- 现有 P1-P4.7 生成、refine、run、LLM 配置和 RecordingSession 契约不回归。
+
+建议验证入口：
+
+```powershell
+cd backend
+go test ./api -run TestGenerateTestCases -count=1
+go test ./api -run TestRunTestCase -count=1
+go test ./api -run TestRefineTestCase -count=1
+
+cd ..\playbot-agent
+go test ./...
+go build ./...
+```
+
+遗留边界：
+
+- P4.7.5 不做 P4.8 端到端页面体验。
+- P4.7.5 不做自动修复写回。
+- P4.7.5 不做原生 Playwright 文件执行。
+- P4.7.5 不修复 `RunTestCase.headless` 字段未实际生效的问题；如需按次切换有头/无头，应另设契约和实现。
+- P4.7.5 第一版不要求 RPC 常驻服务，独立二进制协议稳定后再考虑演进。
+
+## 十二、P4.8：录制到智能生成用例端到端收口
 
 当前状态：规划中。
 
@@ -493,7 +635,7 @@ P4.6 完成后，不直接进入 P5。已先通过 P4.7 收口 LLM 统一配置�
 - P4.8 不做多用户项目权限，只保证后续 P5 可以基于清晰入口加权限。
 - P4.8 不把 Playbot 和录制页 AI 引擎合并。
 
-## 十二、P5：多用户和权限
+## 十三、P5：多用户和权限
 
 目标：
 
@@ -534,7 +676,7 @@ P4.6 完成后，不直接进入 P5。已先通过 P4.7 收口 LLM 统一配置�
 - editor 可以编辑和执行。
 - owner/admin 可以管理成员。
 
-## 十三、P6：稳定化和发布
+## 十四、P6：稳定化和发布
 
 目标：
 
@@ -568,6 +710,8 @@ uv sync --all-extras
 D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; print('ok')"
 ```
 
+P4.7.5 完成后，Playbot 发布验证入口再切换为独立 Go agent 的 `go test ./...` 和 `go build ./...`。
+
 ### 人工验收
 
 需要覆盖：
@@ -597,7 +741,7 @@ D:\depends\python\venvs\browserwing-playbot\Scripts\python.exe -c "import cli; p
 - Playbot 环境配置说明。
 - API 文档。
 
-## 十四、建议开发顺序
+## 十五、建议开发顺序
 
 第一轮：
 
@@ -667,6 +811,16 @@ P4.7 已完成。
 
 第八轮：
 
+1. 规划者编写并定稿 P4.7.5 Playbot Go Agent 与 Blueprint 质量边界重构详细设计。
+2. 业务开发者 review P4.7.5 设计可行性，重点反馈独立二进制调用、Go agent 协议、Go runner 归一化、生成接口和 refine 接口影响。
+3. 用例编写者先写录制质量错误、Go agent 协议、Blueprint 可执行校验、保存保护、Go compiler fixture 和能力边界红测。
+4. 代码审核者审核红测。
+5. 业务开发者实现独立 Go agent、后端调用适配、保存前可执行校验和能力边界保护。
+6. 代码审核者复核并跑相关验证。
+7. 规划者更新计划、契约记录和遗留风险。
+
+第九轮：
+
 1. 规划者编写并定稿 P4.8 录制到智能生成用例端到端收口详细设计。
 2. 业务开发者 review P4.8 设计可行性，重点反馈页面入口组织、录制状态恢复和前后端接口复用。
 3. 用例编写者先写空项目到生成用例主路径、无 LLM、无主流程、生成失败保护、页面列表入口和登录态路径红测。
@@ -675,7 +829,7 @@ P4.7 已完成。
 6. 代码审核者复核并跑相关验证。
 7. 规划者更新计划、契约记录和遗留风险。
 
-第九轮：
+第十轮：
 
 1. 规划者编写 P5 多用户权限详细设计。
 2. 业务开发者 review P5 设计可行性。
@@ -685,13 +839,13 @@ P4.7 已完成。
 6. 代码审核者复核并跑相关验证。
 7. 规划者更新计划、契约记录和遗留风险。
 
-第十轮：
+第十一轮：
 
 1. 用例编写者补全跨栈回归用例和人工验收清单。
 2. 业务开发者修复前端 type-check、构建、Playbot 依赖和发布文档问题。
 3. 代码审核者做发布前最终 review 和标准入口验证。
 
-## 十五、当前已知风险
+## 十六、当前已知风险
 
 ### Playbot 生成结果不稳定
 
@@ -699,7 +853,9 @@ P4.7 已完成。
 
 - 强制结构化输出。
 - Go 侧增加 schema 校验。
-- 保存失败原始输出，便于调试。
+- P4.7.5 改为独立 Go agent，强制 agent 输出 `PlaybotResult`，并在 agent 内编译为 Go 可执行 Blueprint。
+- 后端保存前复用执行归一化能力，拒绝不可执行 active Blueprint。
+- 保存失败的脱敏摘要或受控原始输出，便于调试且不泄露 API Key、Cookie、Storage value 或本地绝对路径。
 
 ### 元素定位不稳定
 
@@ -740,6 +896,7 @@ P4.7 已完成。
 
 - 先通过 P4.6 统一 PostgreSQL 存储。
 - 通过 P4.7 收口全局 LLM 配置、录制会话和录制产物元数据。
+- 通过 P4.7.5 收口 Playbot 基于录制事实源产出可执行 Blueprint 的质量边界。
 - 通过 P4.8 拉通录制到智能生成用例的主流程，避免 P5 在半成品流程上叠加权限。
 - 先加 Project 归属。
 - 再统一封装权限校验。
@@ -753,7 +910,7 @@ P4.7 已完成。
 - 补足 TestCase、Execution、Refinement 类型。
 - 每阶段跑 type-check。
 
-## 十六、阶段完成定义
+## 十七、阶段完成定义
 
 每个阶段完成时必须满足：
 
