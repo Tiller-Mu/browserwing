@@ -123,8 +123,8 @@ export function createP45RecordingController(options: {
       projectId: number,
       versionId: number,
       pageId: number,
-      payload: { recording_kind: P45RecordingKind; auth_context: P45AuthContext },
-    ) => Promise<unknown>;
+      payload: { recording_kind: P45RecordingKind; auth_context: P45AuthContext; target_url?: string },
+    ) => Promise<{ data?: { recording_session_id?: string; recording_meta?: { target_url?: string; auth_state_id?: number | null } } }>;
   };
   navigate: (to: string) => void;
 }) {
@@ -136,11 +136,16 @@ export function createP45RecordingController(options: {
       authStateId?: number | null;
       targetUrl?: string;
     }) {
-      const response = await options.api.startPageRecordingSession(options.projectId, options.versionId, input.pageId, {
+      const targetUrl = input.targetUrl?.trim();
+      const startPayload: { recording_kind: P45RecordingKind; auth_context: P45AuthContext; target_url?: string } = {
         recording_kind: input.recordingKind,
         auth_context: input.authContext,
-      });
-      const data = (response as { data?: { recording_meta?: { target_url?: string; auth_state_id?: number | null } } }).data;
+      };
+      if (targetUrl && /^https?:\/\//i.test(targetUrl)) {
+        startPayload.target_url = targetUrl;
+      }
+      const response = await options.api.startPageRecordingSession(options.projectId, options.versionId, input.pageId, startPayload);
+      const data = response.data;
       const params = new URLSearchParams({
         projectId: String(options.projectId),
         versionId: String(options.versionId),
@@ -149,9 +154,11 @@ export function createP45RecordingController(options: {
         authContext: input.authContext,
       });
       const authStateId = data?.recording_meta?.auth_state_id ?? input.authStateId;
-      const targetUrl = data?.recording_meta?.target_url || input.targetUrl;
+      const resolvedTargetUrl = data?.recording_meta?.target_url || input.targetUrl;
+      const recordingSessionId = data?.recording_session_id;
       if (authStateId != null) params.set('authStateId', String(authStateId));
-      if (targetUrl) params.set('targetUrl', targetUrl);
+      if (resolvedTargetUrl) params.set('targetUrl', resolvedTargetUrl);
+      if (recordingSessionId) params.set('recordingSessionId', recordingSessionId);
       options.navigate(`/browser?${params.toString()}`);
     },
   };
@@ -162,11 +169,13 @@ export function buildP45SaveRecordingPayload(input: {
   actionTrace: string;
   domSnapshot: string;
   recordingMeta: P45RecordingMeta;
+  recordingSessionId?: string | null;
 }): SavePageRecordingRequest {
   return {
     name: input.name,
     action_trace: input.actionTrace,
     dom_snapshot: input.domSnapshot,
+    recording_session_id: input.recordingSessionId || undefined,
     recording_meta: {
       schema_version: 1,
       recording_kind: input.recordingMeta.recording_kind,

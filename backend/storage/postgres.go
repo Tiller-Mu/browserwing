@@ -389,12 +389,27 @@ func (s *PostgresStore) seedDefaultUser(cfg *config.Config) error {
 		return err
 	}
 	if len(users) > 0 {
+		hasAdmin := false
+		for _, user := range users {
+			if user != nil && user.IsAdmin {
+				hasAdmin = true
+				break
+			}
+		}
+		if !hasAdmin {
+			if existing, err := s.GetUserByUsername(cfg.Auth.DefaultUsername); err == nil {
+				existing.IsAdmin = true
+				existing.UpdatedAt = time.Now()
+				return s.UpdateUser(existing)
+			}
+		}
 		return nil
 	}
 	user := &models.User{
 		ID:        uuid.New().String(),
 		Username:  cfg.Auth.DefaultUsername,
 		Password:  cfg.Auth.DefaultPassword,
+		IsAdmin:   true,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}

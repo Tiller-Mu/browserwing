@@ -803,9 +803,11 @@ func TestP47RecordingSessionSyncPersistsActionsAndRejectsTerminalStates(t *testi
 		"auth_context": "clean",
 		"status":       "recording",
 		"action_count": 2,
-		"actions_json": `"create-order"`,
 		"dom_snapshot": `"Orders"`,
 	})
+	row := env.latestP47RecordingSessionRow(t, project.ID, version.ID, page.ID)
+	p47RequireRecordingAction(t, row, 0, "click", "#create-order")
+	p47RequireRecordingAction(t, row, 1, "fill", "#email")
 
 	if err := env.db.Table("recording_sessions").
 		Where("project_id = ? AND version_id = ? AND page_id = ?", project.ID, version.ID, page.ID).
@@ -825,8 +827,189 @@ func TestP47RecordingSessionSyncPersistsActionsAndRejectsTerminalStates(t *testi
 		"page_id":      page.ID,
 		"status":       "saved",
 		"action_count": 2,
-		"actions_json": `"create-order"`,
 	})
+	row = env.latestP47RecordingSessionRow(t, project.ID, version.ID, page.ID)
+	p47RequireRecordingAction(t, row, 0, "click", "#create-order")
+}
+
+func TestP47CancelRecordingSessionCancelsActiveSessionAndProtectsPageScript(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	siblingPage := env.seedPageInVersion(t, version.ID, "cancel sibling page")
+	oldScript := env.seedMainFlowWithRecordingMeta(t, page.ID, map[string]any{
+		"schema_version": 1,
+		"recording_kind": "business_flow",
+		"auth_context":   "clean",
+	})
+	oldSnapshot := env.snapshotPageScript(t, oldScript.ID)
+	fakeRuntime := newContractP45Runtime()
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
+
+	start := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, map[string]any{
+		"recording_kind": "business_flow",
+		"auth_context":   "clean",
+		"target_url":     "https://example.invalid/app/orders",
+	})
+	env.requireStatus(t, start, http.StatusOK)
+	sessionID := strings.TrimSpace(fmt.Sprint(env.decodeObject(t, start)["recording_session_id"]))
+	sessionPath := fmt.Sprintf(
+		"/api/v1/projects/%d/versions/%d/pages/%d/recording-session/%s",
+		project.ID, version.ID, page.ID, sessionID,
+	)
+
+	sync := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/sync", map[string]any{
+		"actions": []map[string]any{
+			{"type": "click", "selector": "#create-order", "timestamp": 1},
+		},
+		"dom_snapshot": map[string]any{"title": "Draft order flow"},
+	}, "")
+	env.requireStatus(t, sync, http.StatusOK)
+	fakeRuntime.requireEvents(t, "new_clean_context", "open_target_url", "start_recording")
+
+	scopeMismatch := env.p47JSONRequest(t, http.MethodPost, fmt.Sprintf(
+		"/api/v1/projects/%d/versions/%d/pages/%d/recording-session/%s/cancel",
+		project.ID, version.ID, siblingPage.ID, sessionID,
+	), nil, "")
+	env.requireStatus(t, scopeMismatch, http.StatusNotFound)
+	env.requireJSONError(t, scopeMismatch)
+	env.requireP47RecordingSession(t, map[string]any{
+		"project_id":     project.ID,
+		"version_id":     version.ID,
+		"page_id":        page.ID,
+		"status":         "recording",
+		"action_count":   1,
+		"dom_snapshot":   `"Draft order flow"`,
+		"actions_json":   "#create-order",
+		"target_url":     "https://example.invalid/app/orders",
+		"auth_context":   "clean",
+		"recording_kind": "business_flow",
+	})
+	env.requirePageScriptUnchanged(t, oldSnapshot, "scope-mismatched cancel must not mutate old PageScript")
+	fakeRuntime.requireNoEvent(t, "stop_recording")
+
+	cancel := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/cancel", nil, "")
+	env.requireStatus(t, cancel, http.StatusOK)
+	body := env.decodeObject(t, cancel)
+	if body["status"] != "cancelled" {
+		t.Fatalf("cancel response status = %v, want cancelled; body: %s", body["status"], cancel.Body.String())
+	}
+	fakeRuntime.requireEvents(t, "new_clean_context", "open_target_url", "start_recording", "stop_recording")
+	env.requireP47RecordingSession(t, map[string]any{
+		"project_id":   project.ID,
+		"version_id":   version.ID,
+		"page_id":      page.ID,
+		"status":       "cancelled",
+		"action_count": 1,
+		"actions_json": "#create-order",
+	})
+	env.requirePageScriptUnchanged(t, oldSnapshot, "cancelled RecordingSession must not replace old PageScript")
+	env.requireSinglePageScript(t, page.ID)
+	row := env.latestP47RecordingSessionRow(t, project.ID, version.ID, page.ID)
+	p47RequireEmptyTimestamp(t, row, "saved_at")
+
+	repeatedCancel := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/cancel", nil, "")
+	env.requireStatus(t, repeatedCancel, http.StatusConflict)
+	env.requireJSONError(t, repeatedCancel)
+	fakeRuntime.requireEvents(t, "new_clean_context", "open_target_url", "start_recording", "stop_recording")
+
+	rejectedSync := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/sync", map[string]any{
+		"actions": []map[string]any{{"type": "click", "selector": "#should-not-save"}},
+	}, "")
+	env.requireStatus(t, rejectedSync, http.StatusConflict)
+	env.requireJSONError(t, rejectedSync)
+
+	rejectedSave := env.savePageRecording(t, project.ID, version.ID, page.ID, map[string]any{
+		"recording_session_id": sessionID,
+		"recording_meta": map[string]any{
+			"schema_version": 1,
+			"recording_kind": "business_flow",
+			"auth_context":   "clean",
+		},
+	})
+	env.requireStatus(t, rejectedSave, http.StatusConflict)
+	env.requireJSONError(t, rejectedSave)
+	env.requirePageScriptUnchanged(t, oldSnapshot, "cancelled RecordingSession sync/save must not pollute old PageScript")
+	env.requireP47RecordingSession(t, map[string]any{
+		"project_id":   project.ID,
+		"version_id":   version.ID,
+		"page_id":      page.ID,
+		"status":       "cancelled",
+		"action_count": 1,
+		"actions_json": "#create-order",
+	})
+	fakeRuntime.requireEvents(t, "new_clean_context", "open_target_url", "start_recording", "stop_recording")
+}
+
+func TestP47CancelRecordingSessionAllowsStoppedUnsavedSession(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	oldScript := env.seedMainFlowWithRecordingMeta(t, page.ID, map[string]any{
+		"schema_version": 1,
+		"recording_kind": "business_flow",
+		"auth_context":   "clean",
+	})
+	oldSnapshot := env.snapshotPageScript(t, oldScript.ID)
+	fakeRuntime := newContractP45Runtime()
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
+
+	start := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, map[string]any{
+		"recording_kind": "business_flow",
+		"auth_context":   "clean",
+		"target_url":     "https://example.invalid/app/orders",
+	})
+	env.requireStatus(t, start, http.StatusOK)
+	sessionID := strings.TrimSpace(fmt.Sprint(env.decodeObject(t, start)["recording_session_id"]))
+	sessionPath := fmt.Sprintf(
+		"/api/v1/projects/%d/versions/%d/pages/%d/recording-session/%s",
+		project.ID, version.ID, page.ID, sessionID,
+	)
+
+	sync := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/sync", map[string]any{
+		"actions": []map[string]any{{"type": "click", "selector": "#stopped-draft", "timestamp": 1}},
+	}, "")
+	env.requireStatus(t, sync, http.StatusOK)
+	stop := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/stop", map[string]any{
+		"dom_snapshot": map[string]any{"title": "Stopped draft"},
+	}, "")
+	env.requireStatus(t, stop, http.StatusOK)
+	env.requireP47RecordingSession(t, map[string]any{
+		"project_id": project.ID,
+		"version_id": version.ID,
+		"page_id":    page.ID,
+		"status":     "stopped",
+	})
+
+	cancel := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/cancel", nil, "")
+	env.requireStatus(t, cancel, http.StatusOK)
+	body := env.decodeObject(t, cancel)
+	if body["status"] != "cancelled" {
+		t.Fatalf("cancel stopped response status = %v, want cancelled; body: %s", body["status"], cancel.Body.String())
+	}
+	env.requirePageScriptUnchanged(t, oldSnapshot, "cancelling a stopped unsaved session must not generate a PageScript")
+	env.requireSinglePageScript(t, page.ID)
+	env.requireP47RecordingSession(t, map[string]any{
+		"project_id":   project.ID,
+		"version_id":   version.ID,
+		"page_id":      page.ID,
+		"status":       "cancelled",
+		"action_count": 1,
+		"actions_json": "#stopped-draft",
+	})
+	row := env.latestP47RecordingSessionRow(t, project.ID, version.ID, page.ID)
+	p47RequireNonZeroTimestamp(t, row, "stopped_at")
+	p47RequireEmptyTimestamp(t, row, "saved_at")
+
+	rejectedSave := env.savePageRecording(t, project.ID, version.ID, page.ID, map[string]any{
+		"recording_session_id": sessionID,
+		"recording_meta": map[string]any{
+			"schema_version": 1,
+			"recording_kind": "business_flow",
+			"auth_context":   "clean",
+		},
+	})
+	env.requireStatus(t, rejectedSave, http.StatusConflict)
+	env.requireJSONError(t, rejectedSave)
+	env.requirePageScriptUnchanged(t, oldSnapshot, "cancelled stopped session must not be saveable later")
 }
 
 func TestP47SaveRecordingSessionReplacesPageScriptWithRecordingMeta(t *testing.T) {
@@ -878,26 +1061,68 @@ func TestP47SaveRecordingSessionReplacesPageScriptWithRecordingMeta(t *testing.T
 	if saved.ID == oldScript.ID {
 		t.Fatalf("saved PageScript reused old ID %d, want replacement", oldScript.ID)
 	}
-	if !strings.Contains(saved.ActionTrace, "create-order") {
-		t.Fatalf("saved PageScript ActionTrace = %s, want session actions", saved.ActionTrace)
-	}
+	p47RequireActionTraceAction(t, saved.ActionTrace, 0, "click", "#create-order")
 	if !strings.Contains(saved.DOMSnapshot, "Orders stopped") {
 		t.Fatalf("saved PageScript DOMSnapshot = %s, want stopped snapshot", saved.DOMSnapshot)
 	}
 	p47RequireRecordingMeta(t, pageScriptRecordingMetaJSON(t, &saved), "business_flow", "clean")
 	env.requireP47RecordingSession(t, map[string]any{
-		"project_id":   project.ID,
-		"version_id":   version.ID,
-		"page_id":      page.ID,
-		"status":       "saved",
-		"actions_json": `"create-order"`,
+		"project_id": project.ID,
+		"version_id": version.ID,
+		"page_id":    page.ID,
+		"status":     "saved",
 	})
 	row := env.latestP47RecordingSessionRow(t, project.ID, version.ID, page.ID)
+	p47RequireRecordingAction(t, row, 0, "click", "#create-order")
 	p47RequireNonZeroTimestamp(t, row, "saved_at")
 
 	if strings.Contains(save.Body.String(), oldSnapshot.ActionTrace) || strings.Contains(save.Body.String(), oldSnapshot.DOMSnapshot) {
 		t.Fatalf("save response leaked replaced PageScript payload: %s", save.Body.String())
 	}
+}
+
+func TestP47SaveRecordingSessionRequiresStoppedSession(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	oldScript := env.seedMainFlowWithRecordingMeta(t, page.ID, map[string]any{
+		"schema_version": 1,
+		"recording_kind": "business_flow",
+		"auth_context":   "clean",
+	})
+	oldSnapshot := env.snapshotPageScript(t, oldScript.ID)
+	fakeRuntime := newContractP45Runtime()
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
+
+	start := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, map[string]any{
+		"recording_kind": "business_flow",
+		"auth_context":   "clean",
+		"target_url":     "https://example.invalid/app/orders",
+	})
+	env.requireStatus(t, start, http.StatusOK)
+	sessionID := strings.TrimSpace(fmt.Sprint(env.decodeObject(t, start)["recording_session_id"]))
+
+	save := env.savePageRecording(t, project.ID, version.ID, page.ID, map[string]any{
+		"recording_session_id": sessionID,
+		"recording_meta": map[string]any{
+			"schema_version": 1,
+			"recording_kind": "business_flow",
+			"auth_context":   "clean",
+		},
+	})
+	env.requireStatus(t, save, http.StatusConflict)
+	env.requireJSONError(t, save)
+	fakeRuntime.requireEvents(t, "new_clean_context", "open_target_url", "start_recording")
+	env.requirePageScriptUnchanged(t, oldSnapshot, "saving an active RecordingSession must not replace the previous main flow")
+	env.requireSinglePageScript(t, page.ID)
+	env.requireP47RecordingSession(t, map[string]any{
+		"project_id": project.ID,
+		"version_id": version.ID,
+		"page_id":    page.ID,
+		"status":     "recording",
+	})
+	row := env.latestP47RecordingSessionRow(t, project.ID, version.ID, page.ID)
+	p47RequireEmptyTimestamp(t, row, "stopped_at")
+	p47RequireEmptyTimestamp(t, row, "saved_at")
 }
 
 func TestP47CancelledFailedAndInvalidMetaDoNotReplacePageScript(t *testing.T) {
@@ -1393,6 +1618,54 @@ func p47UintFromAny(value any) uint {
 	default:
 		return 0
 	}
+}
+
+func p47RequireRecordingAction(t *testing.T, row map[string]any, index int, wantType, wantSelector string) {
+	t.Helper()
+	actions := p47ParseActionsJSON(t, p47RowValue(row, "actions_json"))
+	if index < 0 || index >= len(actions) {
+		t.Fatalf("RecordingSession actions_json has %d actions, want index %d; row: %+v", len(actions), index, row)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(actions[index]["type"])); got != wantType {
+		t.Fatalf("RecordingSession actions_json[%d].type = %q, want %q; actions: %+v", index, got, wantType, actions)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(actions[index]["selector"])); got != wantSelector {
+		t.Fatalf("RecordingSession actions_json[%d].selector = %q, want %q; actions: %+v", index, got, wantSelector, actions)
+	}
+}
+
+func p47RequireActionTraceAction(t *testing.T, raw string, index int, wantType, wantSelector string) {
+	t.Helper()
+	actions := p47ParseActionsJSON(t, raw)
+	if index < 0 || index >= len(actions) {
+		t.Fatalf("PageScript ActionTrace has %d actions, want index %d; raw: %s", len(actions), index, raw)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(actions[index]["type"])); got != wantType {
+		t.Fatalf("PageScript ActionTrace[%d].type = %q, want %q; actions: %+v", index, got, wantType, actions)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(actions[index]["selector"])); got != wantSelector {
+		t.Fatalf("PageScript ActionTrace[%d].selector = %q, want %q; actions: %+v", index, got, wantSelector, actions)
+	}
+}
+
+func p47ParseActionsJSON(t *testing.T, raw any) []map[string]any {
+	t.Helper()
+	var data []byte
+	switch typed := raw.(type) {
+	case string:
+		data = []byte(typed)
+	case []byte:
+		data = typed
+	case json.RawMessage:
+		data = []byte(typed)
+	default:
+		data = []byte(fmt.Sprint(typed))
+	}
+	var actions []map[string]any
+	if err := json.Unmarshal(data, &actions); err != nil {
+		t.Fatalf("parse actions JSON %q: %v", string(data), err)
+	}
+	return actions
 }
 
 func p47RequireNonZeroTimestamp(t *testing.T, row map[string]any, column string) {

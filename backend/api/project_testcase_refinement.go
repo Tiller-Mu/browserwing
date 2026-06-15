@@ -116,6 +116,9 @@ func (h *ProjectHandlers) RefineTestCase(c *gin.Context) {
 
 	llmConfig, err := h.loadGenerationLLMConfig(req.LLMConfigID)
 	if err != nil {
+		if writeLLMConfigError(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

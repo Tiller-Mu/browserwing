@@ -8,15 +8,19 @@ import (
 	"net/url"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/browserwing/browserwing/config"
 	"github.com/browserwing/browserwing/llm"
 	"github.com/browserwing/browserwing/models"
 	"github.com/browserwing/browserwing/pkg/logger"
+	"github.com/browserwing/browserwing/storage"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
+	"gorm.io/gorm"
 )
 
 //go:embed scripts/recorder.js
@@ -35,6 +39,10 @@ var xhrInterceptorScript string
 // DBInterface 定义需要的数据库接口
 type DBInterface interface {
 	ListLLMConfigs() ([]*models.LLMConfigModel, error)
+}
+
+type recordingDraftDB interface {
+	GormDB() *gorm.DB
 }
 
 type RecordingStorageScope struct {
@@ -72,6 +80,7 @@ type Recorder struct {
 	syncTicker       *time.Ticker
 	syncStopChan     chan bool
 	lastSyncedCount  int
+	lastSyncedDraft  string
 	apiServerPort    string                  // API 服务器端口
 	llmManager       *llm.Manager            // LLM 管理器
 	db               DBInterface             // 数据库接口
@@ -251,8 +260,23 @@ func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url strin
 	if r.db != nil {
 		configs, listErr := r.db.ListLLMConfigs()
 		if listErr == nil && len(configs) > 0 {
+			usable := make([]map[string]any, 0, len(configs))
+			for _, cfg := range configs {
+				if cfg == nil || !cfg.IsActive {
+					continue
+				}
+				usable = append(usable, map[string]any{
+					"id":         cfg.ID,
+					"name":       cfg.Name,
+					"provider":   cfg.Provider,
+					"model":      cfg.Model,
+					"base_url":   cfg.BaseURL,
+					"is_default": cfg.IsDefault,
+					"is_active":  cfg.IsActive,
+				})
+			}
 			// 将配置转换为 JSON
-			configsJSON, marshalErr := json.Marshal(configs)
+			configsJSON, marshalErr := json.Marshal(usable)
 			if marshalErr == nil {
 				configsJSONStr := string(configsJSON)
 				// 转义 JSON 字符串以安全注入到 JavaScript 中
@@ -264,7 +288,7 @@ func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url strin
 				if evalErr != nil {
 					logger.Warn(ctx, "Failed to inject LLM configs: %v", evalErr)
 				} else {
-					logger.Info(ctx, "✓ Injected %d LLM configs for AI control", len(configs))
+					logger.Info(ctx, "✓ Injected %d LLM configs for AI control", len(usable))
 				}
 			}
 		}
@@ -328,6 +352,7 @@ func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url strin
 	syncStopChan := make(chan bool)
 	r.syncStopChan = syncStopChan
 	r.lastSyncedCount = 0
+	r.lastSyncedDraft = ""
 
 	go r.syncActionsFromBrowser(recordingCtx, syncTicker, syncStopChan)
 
@@ -439,16 +464,18 @@ func (r *Recorder) syncActionsFromBrowser(ctx context.Context, ticker *time.Tick
 					return actions[i].Timestamp < actions[j].Timestamp
 				})
 
-				if len(actions) > r.lastSyncedCount {
-					// 只保存新增的操作
-					if len(actions) > r.lastSyncedCount {
-						newActions := actions[r.lastSyncedCount:]
-						r.actions = append(r.actions, newActions...)
-						if len(newActions) > 0 {
-							logger.Info(ctx, "Synced %d new actions, total %d actions", len(newActions), len(r.actions))
-						}
-						r.lastSyncedCount = len(actions)
+				draftJSON, marshalErr := json.Marshal(actions)
+				if marshalErr == nil && string(draftJSON) != r.lastSyncedDraft {
+					newCount := len(actions) - r.lastSyncedCount
+					r.actions = actions
+					r.lastSyncedCount = len(actions)
+					r.lastSyncedDraft = string(draftJSON)
+					if newCount > 0 {
+						logger.Info(ctx, "Synced %d new actions, total %d actions", newCount, len(r.actions))
+					} else {
+						logger.Info(ctx, "Synced recording draft update, total %d actions", len(r.actions))
 					}
+					r.persistRecordingDraft(ctx, actions, r.lastSyncedDraft)
 				}
 			}
 			r.mu.Unlock()
@@ -459,6 +486,43 @@ func (r *Recorder) syncActionsFromBrowser(ctx context.Context, ticker *time.Tick
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func (r *Recorder) persistRecordingDraft(ctx context.Context, actions []models.ScriptAction, actionsJSON string) {
+	if r.storageScope == nil || r.storageScope.isZero() || len(actions) == 0 {
+		return
+	}
+	draftDB, ok := any(r.db).(recordingDraftDB)
+	if !ok || draftDB.GormDB() == nil {
+		return
+	}
+	sessionID, err := strconv.ParseUint(strings.TrimSpace(r.storageScope.RecordingSessionID), 10, 32)
+	if err != nil || sessionID == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	result := draftDB.GormDB().Model(&models.RecordingSession{}).
+		Where(
+			"id = ? AND project_id = ? AND version_id = ? AND page_id = ? AND status = ?",
+			uint(sessionID),
+			r.storageScope.ProjectID,
+			r.storageScope.VersionID,
+			r.storageScope.PageID,
+			"recording",
+		).
+		Updates(map[string]any{
+			"actions_json":   actionsJSON,
+			"action_count":   len(actions),
+			"last_synced_at": now,
+			"updated_at":     now,
+		})
+	if result.Error != nil {
+		logger.Warn(ctx, "Failed to persist recording draft actions: %v", result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
+		logger.Warn(ctx, "Recording draft sync skipped because session scope is not recording")
 	}
 }
 
@@ -498,6 +562,7 @@ func (r *Recorder) checkAndProcessAIRequestOnPage(ctx context.Context, page *rod
 	description, _ := requestData["description"].(string)
 	userPrompt, _ := requestData["user_prompt"].(string)
 	requestType, _ := requestData["type"].(string) // "extract" 或 "formfill"
+	llmConfigID, _ := requestData["llm_config_id"].(string)
 
 	// 支持新的多区域格式和旧的单HTML格式
 	var html string
@@ -553,17 +618,16 @@ func (r *Recorder) checkAndProcessAIRequestOnPage(ctx context.Context, page *rod
 	// 处理表单填充请求
 	if requestType == "formfill" {
 		logger.Info(ctx, "Received AI form fill request, HTML length: %d", len(html))
-		r.handleFormFillRequest(ctx, page, html, finalDescription)
+		r.handleFormFillRequest(ctx, page, html, finalDescription, llmConfigID)
 		return
 	}
 
 	// 处理数据提取请求（默认）
 	logger.Info(ctx, "Received AI extraction request, HTML length: %d", len(html))
 
-	// 获取默认 LLM 提取器
-	extractor, err := r.llmManager.GetDefault()
+	extractor, err := r.extractorForRuntimeConfig(ctx, llmConfigID)
 	if err != nil {
-		logger.Error(ctx, "Failed to get default LLM: %v", err)
+		logger.Error(ctx, "Failed to resolve LLM config: %v", err)
 		_, _ = r.page.Eval(fmt.Sprintf(`() => {
 			window.__aiExtractionResponse__ = {
 				success: false,
@@ -615,11 +679,10 @@ func escapeJSString(s string) string {
 }
 
 // handleFormFillRequest 处理表单填充请求（在指定页面）
-func (r *Recorder) handleFormFillRequest(ctx context.Context, page *rod.Page, html, description string) {
-	// 获取默认 LLM 提取器
-	extractor, err := r.llmManager.GetDefault()
+func (r *Recorder) handleFormFillRequest(ctx context.Context, page *rod.Page, html, description string, llmConfigID string) {
+	extractor, err := r.extractorForRuntimeConfig(ctx, llmConfigID)
 	if err != nil {
-		logger.Error(ctx, "Failed to get default LLM: %v", err)
+		logger.Error(ctx, "Failed to resolve LLM config: %v", err)
 		_, _ = page.Eval(fmt.Sprintf(`() => {
 			window.__aiFormFillResponse__ = {
 				success: false,
@@ -662,13 +725,65 @@ func (r *Recorder) handleFormFillRequest(ctx context.Context, page *rod.Page, ht
 	logger.Info(ctx, "✓ AI form fill response set to page")
 }
 
-// StopRecording 停止录制并返回操作列表
-func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, error) {
+func (r *Recorder) extractorForRuntimeConfig(ctx context.Context, llmConfigID string) (*llm.Extractor, error) {
+	if r.llmManager == nil {
+		return nil, fmt.Errorf("LLM manager is not configured")
+	}
+	if store, ok := any(r.db).(storage.Store); ok {
+		cfg, err := llm.ResolveRuntimeConfig(store, llmConfigID)
+		if err != nil {
+			return nil, err
+		}
+		if extractor, ok := r.llmManager.Get(cfg.Name); ok {
+			return extractor, nil
+		}
+		if extractor, ok := r.llmManager.Get(cfg.ID); ok {
+			return extractor, nil
+		}
+		return llm.NewExtractor(&config.LLMConfig{
+			Name:     cfg.Name,
+			Provider: cfg.Provider,
+			APIKey:   cfg.APIKey,
+			Model:    cfg.Model,
+			BaseURL:  cfg.BaseURL,
+		}, store)
+	}
+	if strings.TrimSpace(llmConfigID) != "" {
+		if extractor, ok := r.llmManager.Get(strings.TrimSpace(llmConfigID)); ok {
+			return extractor, nil
+		}
+		return nil, fmt.Errorf("LLM config not found")
+	}
+	return r.llmManager.GetDefault()
+}
+
+// StopRecording 停止录制并返回操作和下载文件快照
+func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, []models.DownloadedFile, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.stopRecordingLocked(ctx)
+}
+
+// StopRecordingWithStorageScope stops a project-scoped recording only when the active
+// browser recorder is still bound to the requested database session scope.
+func (r *Recorder) StopRecordingWithStorageScope(ctx context.Context, scope RecordingStorageScope) ([]models.ScriptAction, []models.DownloadedFile, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if !r.isRecording {
-		return nil, fmt.Errorf("recording is not in progress")
+		return nil, nil, fmt.Errorf("recording is not in progress")
+	}
+	if scope.isZero() || r.storageScope == nil || !r.storageScope.matches(scope) {
+		return nil, nil, fmt.Errorf("recording scope mismatch")
+	}
+
+	return r.stopRecordingLocked(ctx)
+}
+
+func (r *Recorder) stopRecordingLocked(ctx context.Context) ([]models.ScriptAction, []models.DownloadedFile, error) {
+	if !r.isRecording {
+		return nil, nil, fmt.Errorf("recording is not in progress")
 	}
 
 	if r.recordingCancel != nil {
@@ -862,7 +977,7 @@ func (r *Recorder) StopRecording(ctx context.Context) ([]models.ScriptAction, er
 
 	logger.Info(ctx, "Final return of %d actions", len(actions))
 
-	return actions, nil
+	return actions, downloadedFiles, nil
 }
 
 func captureStorageStateFromRecordingPage(ctx context.Context, page *rod.Page, pageURL string) (map[string]any, error) {
@@ -1228,6 +1343,15 @@ func (r *Recorder) IsRecording() bool {
 	return r.isRecording
 }
 
+func (r *Recorder) CurrentStorageScope() (RecordingStorageScope, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.storageScope == nil || r.storageScope.isZero() {
+		return RecordingStorageScope{}, false
+	}
+	return *r.storageScope, true
+}
+
 // GetRecordingInfo 获取录制信息
 func (r *Recorder) GetRecordingInfo() map[string]interface{} {
 	r.mu.Lock()
@@ -1241,6 +1365,10 @@ func (r *Recorder) GetRecordingInfo() map[string]interface{} {
 		info["start_url"] = r.startURL
 		info["start_time"] = r.startTime.Format(time.RFC3339)
 		info["duration"] = time.Since(r.startTime).Seconds()
+		actions := make([]models.ScriptAction, len(r.actions))
+		copy(actions, r.actions)
+		info["actions"] = actions
+		info["count"] = len(actions)
 	}
 
 	return info

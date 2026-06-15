@@ -7,7 +7,7 @@ import Toast from '../components/Toast'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { useLanguage } from '../i18n'
 import { buildP45SaveRecordingPayload } from './p45RecordingUiContract'
-import type { P45AuthContext, P45RecordingKind, PageRecordingContextResponse } from '../api/project'
+import type { P45AuthContext, P45RecordingKind, PageRecordingContextResponse, StopPageRecordingSessionResponse } from '../api/project'
 
 interface BrowserStatus {
   is_running: boolean
@@ -28,6 +28,36 @@ interface RecordingStatus {
 
 type ProjectRecordingSaveAction = 'save_only' | 'save_and_capture_auth' | 'capture_auth_only'
 
+export const createRecordingCancelController = (options: {
+  api: {
+    cancelPageRecordingSession: typeof projectApi.cancelPageRecordingSession
+  }
+  clearLocalRecordingState: () => void | Promise<void>
+  setProjectRecordingSession?: (session: StopPageRecordingSessionResponse) => void
+}) => ({
+  cancelRecording: async (input: {
+    isProjectRecordingContext: boolean
+    projectId?: number | string | null
+    versionId?: number | string | null
+    pageId?: number | string | null
+    recordingSessionId?: string | null
+  }) => {
+    if (input.isProjectRecordingContext) {
+      if (!input.projectId || !input.versionId || !input.pageId || !input.recordingSessionId) {
+        throw new Error('缺少项目录制会话，请从页面管理重新开始录制')
+      }
+      const response = await options.api.cancelPageRecordingSession(
+        Number(input.projectId),
+        Number(input.versionId),
+        Number(input.pageId),
+        input.recordingSessionId,
+      )
+      options.setProjectRecordingSession?.(response.data)
+    }
+    await options.clearLocalRecordingState()
+  },
+})
+
 export default function BrowserManager() {
   const { t, language } = useLanguage()
   const navigate = useNavigate()
@@ -42,6 +72,7 @@ export default function BrowserManager() {
   const authContext = (searchParams.get('authContext') || 'clean') as P45AuthContext
   const authStateId = searchParams.get('authStateId')
   const targetUrlParam = searchParams.get('targetUrl') || ''
+  const recordingSessionId = searchParams.get('recordingSessionId') || ''
   const isProjectRecordingContext = Boolean(projectId && versionId && pageId)
 
   const [status, setStatus] = useState<BrowserStatus>({ is_running: false })
@@ -56,6 +87,7 @@ export default function BrowserManager() {
   const [savingScript, setSavingScript] = useState(false)
   const [openUrl, setOpenUrl] = useState('')
   const [pageRecordingContext, setPageRecordingContext] = useState<PageRecordingContextResponse | null>(null)
+  const [projectRecordingSession, setProjectRecordingSession] = useState<StopPageRecordingSessionResponse | null>(null)
   const [message, setMessage] = useState('')
   const [showToast, setShowToast] = useState(false)
   const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('info')
@@ -82,6 +114,15 @@ export default function BrowserManager() {
   const projectRecordingModeLabel = recordingKind === 'login_flow' ? '登录流程' : '业务流程'
   const projectAuthContextLabel = authContext === 'project_saved' ? '项目登录态' : '干净会话'
   const projectRecordingPageName = pageRecordingContext?.page?.name || (pageId ? `页面 #${pageId}` : '项目页面')
+  const hasProjectRecordingSession = Boolean(isProjectRecordingContext && recordingSessionId)
+  const projectRecordingSessionActive = Boolean(hasProjectRecordingSession && (!projectRecordingSession || projectRecordingSession.status === 'recording'))
+  const projectRecordingSessionStopped = Boolean(hasProjectRecordingSession && projectRecordingSession?.status === 'stopped')
+  const projectRecordingControlActive = recordingStatus.is_recording || projectRecordingSessionActive
+  const projectRecordingStatusLabel = projectRecordingSessionStopped
+    ? '已停止，待保存'
+    : projectRecordingControlActive
+      ? '录制中'
+      : '待录制'
 
   // 浏览器实例相关状态
   const [instances, setInstances] = useState<BrowserInstance[]>([])
@@ -127,6 +168,29 @@ export default function BrowserManager() {
         setPageRecordingContext(null)
       })
   }, [isProjectRecordingContext, projectId, versionId, pageId])
+
+  useEffect(() => {
+    if (!isProjectRecordingContext || !projectId || !versionId || !pageId || !recordingSessionId) {
+      setProjectRecordingSession(null)
+      return
+    }
+
+    projectApi.getPageRecordingSession(Number(projectId), Number(versionId), Number(pageId), recordingSessionId)
+      .then((response) => {
+        setProjectRecordingSession(response.data)
+        if (response.data.status === 'stopped') {
+          setRecordedActions(Array.from({ length: Number(response.data.action_count || 0) }, (_, index) => ({
+            type: 'recorded',
+            timestamp: index,
+            selector: '',
+          })))
+        }
+      })
+      .catch((err) => {
+        console.error('获取项目录制会话失败:', err)
+        setProjectRecordingSession(null)
+      })
+  }, [isProjectRecordingContext, projectId, versionId, pageId, recordingSessionId])
 
   useEffect(() => {
     // 初始化加载：先加载实例列表，再加载当前实例（以便自动选择默认实例）
@@ -281,17 +345,67 @@ export default function BrowserManager() {
     try {
       const response = await api.getRecordingStatus()
       const status: RecordingStatus = response.data
+
+      if (
+        isProjectRecordingContext &&
+        projectId &&
+        versionId &&
+        pageId &&
+        recordingSessionId &&
+        status.is_recording &&
+        Array.isArray(status.actions)
+      ) {
+        try {
+          const syncResponse = await projectApi.syncPageRecordingSession(
+            Number(projectId),
+            Number(versionId),
+            Number(pageId),
+            recordingSessionId,
+            { actions: status.actions },
+          )
+          setProjectRecordingSession(syncResponse.data)
+        } catch (syncErr) {
+          console.error('同步项目录制草稿失败:', syncErr)
+        }
+      }
       
       // 检测是否是页面内停止的录制
       if (status.in_page_stopped && !hasShownStopMessage) {
+        let stoppedCount = Number(status.count || status.actions?.length || 0)
+        let stoppedActions = status.actions || []
+        if (isProjectRecordingContext && projectId && versionId && pageId && recordingSessionId) {
+          try {
+            const stopResponse = await projectApi.stopPageRecordingSession(
+              Number(projectId),
+              Number(versionId),
+              Number(pageId),
+              recordingSessionId,
+              {},
+            )
+            setProjectRecordingSession(stopResponse.data)
+            stoppedCount = Number(stopResponse.data.action_count || stoppedCount)
+            if (stoppedActions.length === 0 && stoppedCount > 0) {
+              stoppedActions = Array.from({ length: stoppedCount }, (_, index) => ({
+                type: 'recorded',
+                timestamp: index,
+                selector: '',
+              }))
+            }
+          } catch (stopErr: any) {
+            console.error('同步项目录制停止状态失败:', stopErr)
+            showMessage(stopErr.response?.data?.error || stopErr.message || '同步项目录制停止状态失败', 'error')
+            setHasShownStopMessage(true)
+            return
+          }
+        }
         // 显示保存对话框
-        setRecordedActions(status.actions || [])
-        if (status.actions && status.actions.length > 0) {
+        setRecordedActions(stoppedActions)
+        if (stoppedCount > 0) {
           setShowSaveDialog(true)
         } else {
           await cleanRecordingState()
         }
-        showMessage(`${t('browser.messages.recordingStopped')} - ${t('browser.messages.recordStopSuccess', { count: status.count || 0 })}`, 'success')
+        showMessage(`${t('browser.messages.recordingStopped')} - ${t('browser.messages.recordStopSuccess', { count: stoppedCount })}`, 'success')
         setHasShownStopMessage(true) // 标记已显示消息
         
         // 立即清除后端的 in_page_stopped 状态，避免重复弹出
@@ -302,7 +416,7 @@ export default function BrowserManager() {
     } catch (err) {
       console.error('获取录制状态失败:', err)
     }
-  }, [hasShownStopMessage, showMessage, t])
+  }, [hasShownStopMessage, isProjectRecordingContext, pageId, projectId, recordingSessionId, showMessage, t, versionId])
 
   const loadScripts = async () => {
     try {
@@ -431,6 +545,44 @@ export default function BrowserManager() {
       setRecordingLoading(true)
       // 传递当前实例ID
       const instanceId = currentInstance?.id || ''
+      if (isProjectRecordingContext && projectId && versionId && pageId) {
+        if (recordingSessionId) {
+          if (projectRecordingSessionStopped) {
+            setShowSaveDialog(true)
+            showMessage('项目录制已停止，请保存或取消当前录制', 'info')
+          } else {
+            showMessage('当前项目录制会话已存在，请先停止或保存当前录制', 'info')
+          }
+          return
+        }
+        const response = await projectApi.startPageRecordingSession(Number(projectId), Number(versionId), Number(pageId), {
+          recording_kind: recordingKind,
+          auth_context: authContext,
+          target_url: projectRecordingTargetUrl,
+          browser_instance_id: instanceId,
+        })
+        const nextSessionId = response.data.recording_session_id
+        const params = new URLSearchParams(location.search)
+        if (nextSessionId) params.set('recordingSessionId', nextSessionId)
+        const nextTargetUrl = response.data.recording_meta?.target_url || projectRecordingTargetUrl
+        if (nextTargetUrl) params.set('targetUrl', nextTargetUrl)
+        setProjectRecordingSession({
+          id: Number(nextSessionId || 0),
+          recording_session_id: String(nextSessionId || ''),
+          project_id: Number(projectId),
+          version_id: Number(versionId),
+          page_id: Number(pageId),
+          recording_kind: recordingKind,
+          auth_context: authContext,
+          target_url: nextTargetUrl,
+          status: 'recording',
+          action_count: 0,
+        })
+        navigate(`/browser?${params.toString()}`, { replace: true })
+        showMessage('项目页面录制已开始', 'success')
+        await loadRecordingStatus()
+        return
+      }
       const response = await api.startRecording(instanceId)
       showMessage(t(response.data.message), 'success')
       await loadRecordingStatus()
@@ -445,6 +597,28 @@ export default function BrowserManager() {
   const handleStopRecording = async () => {
     try {
       setRecordingLoading(true)
+      if (isProjectRecordingContext && projectId && versionId && pageId) {
+        if (!recordingSessionId) {
+          showMessage('缺少项目录制会话，请从页面管理重新开始录制', 'error')
+          return
+        }
+        const response = await projectApi.stopPageRecordingSession(Number(projectId), Number(versionId), Number(pageId), recordingSessionId, {})
+        setProjectRecordingSession(response.data)
+        const actionCount = Number(response.data.action_count || 0)
+        setRecordedActions(Array.from({ length: actionCount }, (_, index) => ({
+          type: 'recorded',
+          timestamp: index,
+          selector: '',
+        })))
+        showMessage(`项目录制已停止 - ${t('browser.messages.recordStopSuccess', { count: actionCount })}`, 'success')
+        if (actionCount > 0) {
+          setShowSaveDialog(true)
+        } else {
+          await cleanRecordingState()
+        }
+        await loadRecordingStatus()
+        return
+      }
       const response = await api.stopRecording()
       setRecordedActions(response.data.actions || [])
       showMessage(`${t(response.data.message)} - ${t('browser.messages.recordStopSuccess', { count: response.data.count })}`, 'success')
@@ -504,6 +678,10 @@ export default function BrowserManager() {
       showMessage(t('browser.messages.scriptNameRequired'), 'error')
       return
     }
+    if (isPageRecordingContext && shouldSavePageScript && !recordingSessionId) {
+      showMessage('缺少项目录制会话，请从页面管理重新开始录制', 'error')
+      return
+    }
 
     try {
       setSavingScript(true)
@@ -527,6 +705,7 @@ export default function BrowserManager() {
                 auth_state_id: authStateId ? Number(authStateId) : null,
                 target_url: projectRecordingTargetUrl || recordingStatus.start_url || openUrl,
               },
+              recordingSessionId,
             })
           )
           savedMessage = response.data.message
@@ -575,6 +754,37 @@ export default function BrowserManager() {
     setScriptDescription('')
     setRecordedActions([])
     setHasShownStopMessage(false)
+  }
+
+  const handleCancelRecording = async () => {
+    try {
+      setSavingScript(true)
+      const controller = createRecordingCancelController({
+        api: projectApi,
+        clearLocalRecordingState: cleanRecordingState,
+        setProjectRecordingSession,
+      })
+      await controller.cancelRecording({
+        isProjectRecordingContext,
+        projectId,
+        versionId,
+        pageId,
+        recordingSessionId,
+      })
+      if (isProjectRecordingContext) {
+        showMessage('项目录制已取消', 'success')
+        navigateBackToProjectPages()
+      }
+    } catch (err: any) {
+      showMessage(
+        isProjectRecordingContext
+          ? (err.response?.data?.error || err.message || '取消项目录制失败')
+          : (err.message || '取消录制失败'),
+        'error',
+      )
+    } finally {
+      setSavingScript(false)
+    }
   }
 
   const handlePlayScript = async (scriptId: string) => {
@@ -731,9 +941,7 @@ export default function BrowserManager() {
                 </button>
               </div>
               <button
-                onClick={async () => {
-                  await cleanRecordingState()
-                }}
+                onClick={handleCancelRecording}
                 disabled={savingScript}
                 className="btn-ghost w-full"
               >
@@ -760,9 +968,7 @@ export default function BrowserManager() {
                 )}
               </button>
               <button
-                onClick={async () => {
-                  await cleanRecordingState()
-                }}
+                onClick={handleCancelRecording}
                 disabled={savingScript}
                 className="btn-ghost flex-1"
               >
@@ -821,8 +1027,8 @@ export default function BrowserManager() {
               </div>
               <div>
                 <div className="text-gray-500 dark:text-gray-400 mb-1">录制</div>
-                <div className={`font-semibold ${recordingStatus.is_recording ? 'text-indigo-700 dark:text-indigo-300' : 'text-gray-900 dark:text-gray-100'}`}>
-                  {recordingStatus.is_recording ? '录制中' : '待录制'}
+                <div className={`font-semibold ${projectRecordingControlActive ? 'text-indigo-700 dark:text-indigo-300' : projectRecordingSessionStopped ? 'text-amber-700 dark:text-amber-300' : 'text-gray-900 dark:text-gray-100'}`}>
+                  {projectRecordingStatusLabel}
                 </div>
               </div>
             </div>
@@ -847,7 +1053,7 @@ export default function BrowserManager() {
             </div>
 
             <div className="flex flex-wrap items-center gap-3 pt-2">
-              {recordingStatus.is_recording ? (
+              {projectRecordingControlActive ? (
                 <button
                   onClick={handleStopRecording}
                   disabled={recordingLoading}
@@ -855,6 +1061,15 @@ export default function BrowserManager() {
                 >
                   {recordingLoading ? <Loader className="w-5 h-5 animate-spin" /> : <Video className="w-5 h-5" />}
                   停止并保存
+                </button>
+              ) : projectRecordingSessionStopped ? (
+                <button
+                  onClick={() => setShowSaveDialog(true)}
+                  disabled={recordingLoading}
+                  className="btn-primary flex items-center gap-2"
+                >
+                  <Save className="w-5 h-5" />
+                  保存录制
                 </button>
               ) : !status.is_running ? (
                 <button
@@ -878,7 +1093,7 @@ export default function BrowserManager() {
                   {recordingKind === 'login_flow' && (
                     <button
                       onClick={handleCaptureProjectAuthState}
-                      disabled={savingAuthState || recordingStatus.is_recording}
+                      disabled={savingAuthState || projectRecordingControlActive}
                       className="btn-secondary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {savingAuthState ? <Loader className="w-5 h-5 animate-spin" /> : <ShieldCheck className="w-5 h-5" />}
@@ -1621,4 +1836,7 @@ export default function BrowserManager() {
 
 export const p45BrowserManagerContract = {
   buildSaveRecordingPayload: buildP45SaveRecordingPayload,
+  syncProjectRecordingDraft: projectApi.syncPageRecordingSession,
+  cancelProjectRecordingSession: projectApi.cancelPageRecordingSession,
+  createRecordingCancelController,
 }

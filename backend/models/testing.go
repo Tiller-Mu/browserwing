@@ -119,6 +119,47 @@ type ProjectAuthState struct {
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
+// RecordingSession 是项目页面录制过程的数据库事实源。
+type RecordingSession struct {
+	ID                uint      `gorm:"primaryKey" json:"id"`
+	ProjectID         uint      `gorm:"index:idx_recording_session_scope,not null" json:"project_id"`
+	VersionID         uint      `gorm:"index:idx_recording_session_scope,not null" json:"version_id"`
+	PageID            uint      `gorm:"index:idx_recording_session_scope,not null" json:"page_id"`
+	RecordingKind     string    `gorm:"size:50;not null" json:"recording_kind"`
+	AuthContext       string    `gorm:"size:50;not null" json:"auth_context"`
+	TargetURL         string    `gorm:"type:text" json:"target_url"`
+	Status            string    `gorm:"size:50;index;not null" json:"status"`
+	ActionsJSON       string    `gorm:"type:text" json:"actions_json"`
+	ActionCount       int       `json:"action_count"`
+	DOMSnapshot       string    `gorm:"type:text" json:"dom_snapshot"`
+	RecordingMetaJSON string    `gorm:"type:text" json:"recording_meta_json"`
+	ErrorMessage      string    `gorm:"type:text" json:"error_message"`
+	StartedAt         time.Time `json:"started_at"`
+	LastSyncedAt      time.Time `json:"last_synced_at"`
+	StoppedAt         time.Time `json:"stopped_at"`
+	SavedAt           time.Time `json:"saved_at"`
+	CreatedBy         string    `gorm:"size:128;index" json:"created_by"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// RecordingArtifact 保存录制大文件的受控元数据，不直接暴露本地绝对路径。
+type RecordingArtifact struct {
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	ProjectID          uint      `gorm:"index:idx_recording_artifact_scope,not null" json:"project_id"`
+	VersionID          uint      `gorm:"index:idx_recording_artifact_scope,not null" json:"version_id"`
+	PageID             uint      `gorm:"index:idx_recording_artifact_scope,not null" json:"page_id"`
+	RecordingSessionID uint      `gorm:"index;not null" json:"recording_session_id"`
+	ArtifactType       string    `gorm:"size:50;not null" json:"artifact_type"`
+	StorageBackend     string    `gorm:"size:50;not null" json:"storage_backend"`
+	StoragePath        string    `gorm:"type:text;not null" json:"storage_path"`
+	FileName           string    `gorm:"size:255" json:"file_name"`
+	MimeType           string    `gorm:"size:255" json:"mime_type"`
+	SizeBytes          int64     `json:"size_bytes"`
+	Sensitive          bool      `gorm:"default:false" json:"sensitive"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
 // AutoMigrate 注册所有的结构体至 GORM
 func AutoMigrate(db *gorm.DB) error {
 	return db.AutoMigrate(
@@ -130,5 +171,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&LLMRefinement{},
 		&TestExecution{},
 		&ProjectAuthState{},
+		&RecordingSession{},
+		&RecordingArtifact{},
 	)
 }

@@ -206,14 +206,15 @@ type Manager struct {
 	currentInstanceID string                             // 当前活动实例 ID
 
 	// 共享配置
-	defaultBrowserConfig   *models.BrowserConfig   // 默认浏览器配置
-	siteConfigs            []*models.BrowserConfig // 网站特定配置列表
-	lastRecordedActions    []models.ScriptAction   // 最后一次录制的动作(用于页面内停止录制)
-	lastRecordedStartURL   string                  // 最后一次录制的起始URL(用于页面内停止录制)
-	lastDownloadedFiles    []models.DownloadedFile // 最后一次录制下载的文件(用于页面内停止录制)
-	inPageRecordingStopped bool                    // 标记是否是页面内停止的录制
-	currentLanguage        string                  // 当前前端语言设置
-	downloadPath           string                  // 下载目录路径
+	defaultBrowserConfig      *models.BrowserConfig   // 默认浏览器配置
+	siteConfigs               []*models.BrowserConfig // 网站特定配置列表
+	lastRecordedActions       []models.ScriptAction   // 最后一次录制的动作(用于页面内停止录制)
+	lastRecordedStartURL      string                  // 最后一次录制的起始URL(用于页面内停止录制)
+	lastDownloadedFiles       []models.DownloadedFile // 最后一次录制下载的文件(用于页面内停止录制)
+	lastRecordingStorageScope *RecordingStorageScope  // 页面内停止结果绑定的项目录制作用域
+	inPageRecordingStopped    bool                    // 标记是否是页面内停止的录制
+	currentLanguage           string                  // 当前前端语言设置
+	downloadPath              string                  // 下载目录路径
 
 	// 向后兼容（废弃）
 	browser    *rod.Browser
@@ -578,11 +579,14 @@ func (m *Manager) start(ctx context.Context, loadGlobalCookieStore bool) error {
 		logger.Info(ctx, "Skipped global browser Cookie Store for isolated project recording")
 	}
 
-	downloadPath := "./downloads"
-	// 获取绝对路径
-	absDownloadPath, err := os.Getwd()
+	downloadRoot := "."
+	if m.config != nil && strings.TrimSpace(m.config.AssetsDir) != "" {
+		downloadRoot = m.config.AssetsDir
+	}
+	downloadPath := filepath.Join(downloadRoot, "downloads")
+	absDownloadPath, err := filepath.Abs(downloadPath)
 	if err == nil {
-		downloadPath = absDownloadPath + "/downloads"
+		downloadPath = absDownloadPath
 	}
 	// 判断文件夹是否存在，不存在则创建
 	if _, err := os.Stat(downloadPath); os.IsNotExist(err) {
@@ -1302,6 +1306,7 @@ func (m *Manager) startRecording(ctx context.Context, instanceID string, scope *
 	if err != nil {
 		return err
 	}
+	m.clearInPageRecordingStateLocked()
 
 	// StartRecording may be called without OpenPage, for example project-scoped
 	// isolated recording. Bind in-page controls to the recording lifecycle, not
@@ -1327,15 +1332,48 @@ func (m *Manager) StopRecording(ctx context.Context) ([]models.ScriptAction, []m
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	actions, err := m.recorder.StopRecording(ctx)
-	if err != nil {
-		return nil, nil, err
+	return m.recorder.StopRecording(ctx)
+}
+
+// StopRecordingWithStorageScope stops recording only when the active browser recorder
+// belongs to the requested persisted recording session scope.
+func (m *Manager) StopRecordingWithStorageScope(ctx context.Context, scope RecordingStorageScope) ([]models.ScriptAction, []models.DownloadedFile, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if actions, downloadedFiles, ok := m.consumeInPageStoppedRecordingLocked(scope); ok {
+		return actions, downloadedFiles, nil
 	}
+	return m.recorder.StopRecordingWithStorageScope(ctx, scope)
+}
 
-	// 获取下载文件信息
-	downloadedFiles := m.recorder.GetDownloadedFiles()
-
-	return actions, downloadedFiles, nil
+// RecordingArtifactStorageKey converts a browser download path into a storage key
+// relative to the configured artifact root.
+func (m *Manager) RecordingArtifactStorageKey(file models.DownloadedFile) string {
+	storagePath := strings.TrimSpace(file.FilePath)
+	if storagePath == "" {
+		return ""
+	}
+	if !filepath.IsAbs(storagePath) {
+		cleanRel := filepath.Clean(strings.TrimLeft(storagePath, `/\`))
+		if cleanRel == "." || cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(os.PathSeparator)) {
+			return ""
+		}
+		return filepath.ToSlash(cleanRel)
+	}
+	root := "."
+	if m.config != nil && strings.TrimSpace(m.config.AssetsDir) != "" {
+		root = m.config.AssetsDir
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(rootAbs, storagePath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 // IsRecording 检查是否正在录制
@@ -1373,11 +1411,28 @@ func (m *Manager) ConsumeLastRecordingStorageState(scope RecordingStorageScope) 
 // ClearInPageRecordingState 清除页面内录制状态(供前端保存或取消后调用)
 func (m *Manager) ClearInPageRecordingState() {
 	m.mu.Lock()
+	m.clearInPageRecordingStateLocked()
+	m.mu.Unlock()
+}
+
+func (m *Manager) consumeInPageStoppedRecordingLocked(scope RecordingStorageScope) ([]models.ScriptAction, []models.DownloadedFile, bool) {
+	if !m.inPageRecordingStopped || m.lastRecordingStorageScope == nil || !m.lastRecordingStorageScope.matches(scope) {
+		return nil, nil, false
+	}
+	actions := make([]models.ScriptAction, len(m.lastRecordedActions))
+	copy(actions, m.lastRecordedActions)
+	downloadedFiles := make([]models.DownloadedFile, len(m.lastDownloadedFiles))
+	copy(downloadedFiles, m.lastDownloadedFiles)
+	m.clearInPageRecordingStateLocked()
+	return actions, downloadedFiles, true
+}
+
+func (m *Manager) clearInPageRecordingStateLocked() {
 	m.inPageRecordingStopped = false
 	m.lastRecordedActions = nil
 	m.lastRecordedStartURL = ""
 	m.lastDownloadedFiles = nil
-	m.mu.Unlock()
+	m.lastRecordingStorageScope = nil
 }
 
 // PlayScript 回放脚本
@@ -1710,10 +1765,10 @@ func (m *Manager) checkInPageRecordingRequests(ctx context.Context, page *rod.Pa
 
 				// 获取录制信息(包含start_url)
 				recInfo := m.recorder.GetRecordingInfo()
+				stoppedScope, hasStoppedScope := m.recorder.CurrentStorageScope()
 
 				// 停止录制并获取下载文件信息
-				actions, err := m.recorder.StopRecording(ctx)
-				downloadedFiles := m.recorder.GetDownloadedFiles()
+				actions, downloadedFiles, err := m.recorder.StopRecording(ctx)
 
 				if err != nil {
 					logger.Error(ctx, "Failed to stop recording from in-page request: %v", err)
@@ -1725,6 +1780,11 @@ func (m *Manager) checkInPageRecordingRequests(ctx context.Context, page *rod.Pa
 					m.lastRecordedActions = actions
 					m.lastDownloadedFiles = downloadedFiles
 					m.inPageRecordingStopped = true
+					m.lastRecordingStorageScope = nil
+					if hasStoppedScope {
+						scope := stoppedScope
+						m.lastRecordingStorageScope = &scope
+					}
 					// 保存录制时的URL到持久化字段
 					if startURL, ok := recInfo["start_url"].(string); ok && startURL != "" {
 						m.lastRecordedStartURL = startURL

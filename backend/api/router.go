@@ -88,6 +88,10 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			projects.DELETE("/:id/versions/:vid/pages/:pid", projectHandlers.DeletePage)
 			projects.GET("/:id/versions/:vid/pages/:pid/recording-context", projectHandlers.GetPageRecordingContext)
 			projects.POST("/:id/versions/:vid/pages/:pid/recording-session", projectHandlers.StartPageRecordingSession)
+			projects.GET("/:id/versions/:vid/pages/:pid/recording-session/:sid", projectHandlers.GetRecordingSession)
+			projects.POST("/:id/versions/:vid/pages/:pid/recording-session/:sid/sync", projectHandlers.SyncRecordingSession)
+			projects.POST("/:id/versions/:vid/pages/:pid/recording-session/:sid/stop", projectHandlers.StopRecordingSession)
+			projects.POST("/:id/versions/:vid/pages/:pid/recording-session/:sid/cancel", projectHandlers.CancelRecordingSession)
 			projects.POST("/:id/versions/:vid/pages/:pid/recordings", projectHandlers.SavePageRecording)
 			projects.GET("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.ListTestCases)
 			projects.POST("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.CreateTestCase)
@@ -104,6 +108,7 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			projects.PUT("/:id/versions/:vid/pages/:pid/test-cases/:tcid", projectHandlers.UpdateTestCase)
 			projects.DELETE("/:id/versions/:vid/pages/:pid/test-cases/:tcid", projectHandlers.DeleteTestCase)
 		}
+		api.GET("/recording-artifacts/:artifact_id/download", projectHandlers.DownloadRecordingArtifact)
 
 		// 浏览器相关
 		browserAPI := api.Group("/browser")

@@ -600,8 +600,9 @@ func TestRefineTestCaseReusesExistingLLMConfigSelection(t *testing.T) {
 		name        string
 		llmConfigID string
 		config      *models.LLMConfigModel
+		wantCode    string
 	}{
-		{name: "missing config", llmConfigID: "missing-refine-llm"},
+		{name: "missing config", llmConfigID: "missing-refine-llm", wantCode: "llm_config_not_found"},
 		{name: "disabled config", llmConfigID: "disabled-refine-llm", config: &models.LLMConfigModel{
 			ID:        "disabled-refine-llm",
 			Name:      "Disabled refine LLM",
@@ -611,7 +612,7 @@ func TestRefineTestCaseReusesExistingLLMConfigSelection(t *testing.T) {
 			BaseURL:   "http://disabled-llm.invalid/v1",
 			IsActive:  false,
 			IsDefault: false,
-		}},
+		}, wantCode: "llm_config_disabled"},
 		{name: "missing api key", llmConfigID: "missing-key-refine-llm", config: &models.LLMConfigModel{
 			ID:       "missing-key-refine-llm",
 			Name:     "Missing key refine LLM",
@@ -619,7 +620,7 @@ func TestRefineTestCaseReusesExistingLLMConfigSelection(t *testing.T) {
 			Model:    "missing-key-model",
 			BaseURL:  "http://missing-key-llm.invalid/v1",
 			IsActive: true,
-		}},
+		}, wantCode: "llm_config_incomplete"},
 		{name: "missing model", llmConfigID: "missing-model-refine-llm", config: &models.LLMConfigModel{
 			ID:       "missing-model-refine-llm",
 			Name:     "Missing model refine LLM",
@@ -627,7 +628,7 @@ func TestRefineTestCaseReusesExistingLLMConfigSelection(t *testing.T) {
 			APIKey:   "missing-model-api-key",
 			BaseURL:  "http://missing-model-llm.invalid/v1",
 			IsActive: true,
-		}},
+		}, wantCode: "llm_config_incomplete"},
 		{name: "missing endpoint", llmConfigID: "missing-endpoint-refine-llm", config: &models.LLMConfigModel{
 			ID:       "missing-endpoint-refine-llm",
 			Name:     "Missing endpoint refine LLM",
@@ -635,7 +636,7 @@ func TestRefineTestCaseReusesExistingLLMConfigSelection(t *testing.T) {
 			APIKey:   "missing-endpoint-api-key",
 			Model:    "missing-endpoint-model",
 			IsActive: true,
-		}},
+		}, wantCode: "llm_config_incomplete"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -653,8 +654,9 @@ func TestRefineTestCaseReusesExistingLLMConfigSelection(t *testing.T) {
 				"llm_config_id": tc.llmConfigID,
 			})
 
-			env.requireStatus(t, res, http.StatusInternalServerError)
+			env.requireStatus(t, res, http.StatusBadRequest)
 			env.requireJSONError(t, res)
+			p47RequireLLMErrorCode(t, res, tc.wantCode)
 			if tc.config != nil && strings.TrimSpace(tc.config.APIKey) != "" {
 				requireResponseBodyOmits(t, res, tc.config.APIKey)
 			}
@@ -686,8 +688,9 @@ func TestRefineTestCaseReusesExistingLLMConfigSelection(t *testing.T) {
 			"prompt": "inactive default must not call playbot",
 		})
 
-		env.requireStatus(t, res, http.StatusInternalServerError)
+		env.requireStatus(t, res, http.StatusBadRequest)
 		env.requireJSONError(t, res)
+		p47RequireLLMErrorCode(t, res, "llm_config_missing_default")
 		requireResponseBodyOmits(t, res, "inactive-default-api-key")
 		if got := env.playbotCalls(t); got != beforeCalls {
 			t.Fatalf("Playbot calls = %d, want unchanged at %d", got, beforeCalls)

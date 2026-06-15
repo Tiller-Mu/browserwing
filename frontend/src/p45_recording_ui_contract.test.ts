@@ -1,4 +1,4 @@
-import type { TestPage } from './api/project';
+import { projectApi, type StopPageRecordingSessionResponse, type TestPage } from './api/project';
 import BrowserManager, { p45BrowserManagerContract } from './pages/BrowserManager';
 import {
 	buildP45AuthStateSummary,
@@ -56,6 +56,7 @@ interface P45StartRecordingCall {
   payload: {
     recording_kind: P45RecordingKind;
     auth_context: P45AuthContext;
+    target_url?: string;
 	};
 }
 
@@ -67,7 +68,26 @@ interface P45TestPageManagerPageContract {
 
 interface P45BrowserManagerPageContract {
 	buildSaveRecordingPayload: typeof buildP45SaveRecordingPayload;
+	syncProjectRecordingDraft: typeof projectApi.syncPageRecordingSession;
+	cancelProjectRecordingSession: typeof projectApi.cancelPageRecordingSession;
+	createRecordingCancelController: P45RecordingCancelControllerFactory;
 }
+
+type P45RecordingCancelControllerFactory = (options: {
+	api: {
+		cancelPageRecordingSession: typeof projectApi.cancelPageRecordingSession;
+	};
+	clearLocalRecordingState: () => void | Promise<void>;
+	setProjectRecordingSession?: (session: StopPageRecordingSessionResponse) => void;
+}) => {
+	cancelRecording: (input: {
+		isProjectRecordingContext: boolean;
+		projectId?: number | string | null;
+		versionId?: number | string | null;
+		pageId?: number | string | null;
+		recordingSessionId?: string | null;
+	}) => Promise<void>;
+};
 
 const projectId = 31;
 const versionId = 42;
@@ -104,6 +124,24 @@ assertSameReference(
 	browserManagerContract.buildSaveRecordingPayload,
 	buildP45SaveRecordingPayload,
 	'BrowserManager should consume the P4.5 save-recording payload helper',
+);
+assertSameReference(
+	browserManagerContract.syncProjectRecordingDraft,
+	projectApi.syncPageRecordingSession,
+	'BrowserManager should sync project recording drafts through RecordingSession during recording',
+);
+assertFunction(
+	projectApi.cancelPageRecordingSession,
+	'projectApi should expose cancelPageRecordingSession for project RecordingSession cancel',
+);
+assertFunction(
+	browserManagerContract.cancelProjectRecordingSession,
+	'BrowserManager should expose the project RecordingSession cancel API binding',
+);
+assertSameReference(
+	browserManagerContract.cancelProjectRecordingSession,
+	projectApi.cancelPageRecordingSession,
+	'BrowserManager should cancel project recording sessions through the backend cancel API',
 );
 
 const authState: P45ProjectAuthStateSummary = {
@@ -174,7 +212,7 @@ const controller = createP45RecordingController({
         pageId: callPageId,
         payload,
 			});
-			return { data: { recording_session_id: 'contract-session' } };
+			return { data: { recording_session_id: 'contract-session', recording_meta: { target_url: 'https://example.invalid/orders' } } };
 		},
 	},
 	navigate: (to: string) => {
@@ -186,6 +224,7 @@ await controller.startRecording({
   pageId: page.id,
   recordingKind: 'business_flow',
   authContext: 'clean',
+  targetUrl: 'https://example.invalid/orders',
 });
 
 assertDeepEqual(
@@ -197,11 +236,30 @@ assertDeepEqual(
     payload: {
       recording_kind: 'business_flow',
       auth_context: 'clean',
+      target_url: 'https://example.invalid/orders',
     },
   },
   'start recording should call API with recording_kind and auth_context',
 );
 assertEqual(navigations.length, 1, 'start recording should navigate into the browser recording surface');
+const recordingNavigation = new URL(navigations[0], 'https://browserwing.local');
+assertEqual(
+  recordingNavigation.searchParams.get('recordingSessionId'),
+  'contract-session',
+  'start recording navigation should retain recording_session_id for stop/save',
+);
+
+await controller.startRecording({
+  pageId: page.id,
+  recordingKind: 'business_flow',
+  authContext: 'clean',
+  targetUrl: '/orders',
+});
+assertEqual(
+  'target_url' in startCalls[1].payload,
+  false,
+  'relative page paths should let the backend resolve the project target_url',
+);
 
 const savePayload = buildP45SaveRecordingPayload({
   name: '业务主流程',
@@ -214,9 +272,124 @@ const savePayload = buildP45SaveRecordingPayload({
     auth_state_id: null,
     target_url: 'https://example.invalid/orders',
   },
+  recordingSessionId: 'contract-session',
 });
 assertEqual(savePayload.recording_meta.auth_context, 'clean', 'save recording should include recording_meta');
+assertEqual(savePayload.recording_session_id, 'contract-session', 'save recording should bind to RecordingSession');
 assertOmitsSecrets(savePayload, 'save recording payload');
+
+const projectCancelEvents: string[] = [];
+let resolveProjectCancel: ((value: { data: StopPageRecordingSessionResponse }) => void) | undefined;
+const projectCancelController = browserManagerContract.createRecordingCancelController({
+	api: {
+		cancelPageRecordingSession: async (
+			callProjectId: number,
+			callVersionId: number,
+			callPageId: number,
+			callSessionId: string,
+		) => {
+			projectCancelEvents.push(`cancel:${callProjectId}:${callVersionId}:${callPageId}:${callSessionId}`);
+			return new Promise((resolve) => {
+				resolveProjectCancel = resolve;
+			});
+		},
+	},
+	clearLocalRecordingState: () => {
+		projectCancelEvents.push('clear-local');
+	},
+	setProjectRecordingSession: (session) => {
+		projectCancelEvents.push(`session:${session.status}`);
+	},
+});
+const projectCancelPromise = projectCancelController.cancelRecording({
+	isProjectRecordingContext: true,
+	projectId,
+	versionId,
+	pageId: page.id,
+	recordingSessionId: 'contract-session',
+});
+await Promise.resolve();
+assertDeepEqual(
+	projectCancelEvents,
+	[`cancel:${projectId}:${versionId}:${page.id}:contract-session`],
+	'project recording cancel should call backend before clearing local state',
+);
+assertPresent(resolveProjectCancel, 'project cancel API was not awaited');
+resolveProjectCancel({
+	data: {
+		id: 99,
+		recording_session_id: 'contract-session',
+		project_id: projectId,
+		version_id: versionId,
+		page_id: page.id,
+		recording_kind: 'business_flow',
+		auth_context: 'clean',
+		target_url: 'https://example.invalid/orders',
+		status: 'cancelled',
+		action_count: 0,
+	},
+});
+await projectCancelPromise;
+assertDeepEqual(
+	projectCancelEvents,
+	[
+		`cancel:${projectId}:${versionId}:${page.id}:contract-session`,
+		'session:cancelled',
+		'clear-local',
+	],
+	'project recording cancel should clear local dialog/actions/state only after backend success',
+);
+
+const failedProjectCancelEvents: string[] = [];
+const failedProjectCancelController = browserManagerContract.createRecordingCancelController({
+	api: {
+		cancelPageRecordingSession: async () => {
+			failedProjectCancelEvents.push('cancel-called');
+			throw new Error('cancel failed');
+		},
+	},
+	clearLocalRecordingState: () => {
+		failedProjectCancelEvents.push('clear-local');
+	},
+});
+await assertRejects(
+	() =>
+		failedProjectCancelController.cancelRecording({
+			isProjectRecordingContext: true,
+			projectId,
+			versionId,
+			pageId: page.id,
+			recordingSessionId: 'contract-session',
+		}),
+	'project cancel API failure should surface to the caller',
+);
+assertDeepEqual(
+	failedProjectCancelEvents,
+	['cancel-called'],
+	'project recording cancel must not clear local state before backend success',
+);
+
+const localCancelEvents: string[] = [];
+const localCancelController = browserManagerContract.createRecordingCancelController({
+	api: {
+		cancelPageRecordingSession: async () => {
+			localCancelEvents.push('unexpected-project-cancel');
+			throw new Error('non-project recording must not call project cancel API');
+		},
+	},
+	clearLocalRecordingState: () => {
+		localCancelEvents.push('clear-local');
+	},
+});
+await localCancelController.cancelRecording({
+	isProjectRecordingContext: false,
+	recordingSessionId: null,
+});
+assertDeepEqual(
+	localCancelEvents,
+	['clear-local'],
+	'non-project legacy recording cancel should keep the old local cleanup path without project cancel API',
+);
 
 function findAction(
 	actions: P45RecordingActionView[],
@@ -272,6 +445,21 @@ function assertSameReference<T>(actual: T, expected: T, message: string) {
 	if (actual !== expected) {
 		throw new Error(message);
 	}
+}
+
+function assertFunction(value: unknown, message: string): asserts value is (...args: never[]) => unknown {
+	if (typeof value !== 'function') {
+		throw new Error(message);
+	}
+}
+
+async function assertRejects(action: () => Promise<unknown>, message: string) {
+	try {
+		await action();
+	} catch {
+		return;
+	}
+	throw new Error(message);
 }
 
 function assertOmitsSecrets(value: unknown, label: string) {

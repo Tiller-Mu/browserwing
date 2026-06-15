@@ -32,6 +32,7 @@ type projectAuthRuntime interface {
 	CaptureProjectAuthState(context.Context, map[string]any) (map[string]any, error)
 	SaveProjectAuthState(context.Context, map[string]any) error
 	StartPageRecording(context.Context, map[string]any) (map[string]any, error)
+	StopPageRecording(context.Context, map[string]any) (map[string]any, error)
 	PrepareTestExecution(context.Context, map[string]any) error
 	RestoreProjectAuthState(context.Context, map[string]any) error
 }
@@ -86,6 +87,10 @@ func (r *injectedProjectAuthRuntime) SaveProjectAuthState(ctx context.Context, i
 
 func (r *injectedProjectAuthRuntime) StartPageRecording(ctx context.Context, input map[string]any) (map[string]any, error) {
 	return invokeProjectAuthMapMethod(ctx, r.target, "StartPageRecording", input)
+}
+
+func (r *injectedProjectAuthRuntime) StopPageRecording(ctx context.Context, input map[string]any) (map[string]any, error) {
+	return invokeProjectAuthMapMethod(ctx, r.target, "StopPageRecording", input)
 }
 
 func (r *injectedProjectAuthRuntime) PrepareTestExecution(ctx context.Context, input map[string]any) error {
@@ -143,6 +148,10 @@ func (unavailableProjectAuthRuntime) StartPageRecording(context.Context, map[str
 	return nil, fmt.Errorf("Project auth runtime is not configured")
 }
 
+func (unavailableProjectAuthRuntime) StopPageRecording(context.Context, map[string]any) (map[string]any, error) {
+	return nil, fmt.Errorf("Project auth runtime is not configured")
+}
+
 func (unavailableProjectAuthRuntime) PrepareTestExecution(context.Context, map[string]any) error {
 	return nil
 }
@@ -163,6 +172,7 @@ type captureProjectAuthStateRequest struct {
 type startPageRecordingSessionRequest struct {
 	RecordingKind     string `json:"recording_kind"`
 	AuthContext       string `json:"auth_context"`
+	TargetURL         string `json:"target_url"`
 	BrowserInstanceID string `json:"browser_instance_id"`
 }
 
@@ -337,7 +347,10 @@ func (h *ProjectHandlers) StartPageRecordingSession(c *gin.Context) {
 		SchemaVersion: 1,
 		RecordingKind: strings.TrimSpace(req.RecordingKind),
 		AuthContext:   strings.TrimSpace(req.AuthContext),
-		TargetURL:     buildPageURL(version.BaseURL, page.Path),
+		TargetURL:     strings.TrimSpace(req.TargetURL),
+	}
+	if meta.TargetURL == "" {
+		meta.TargetURL = buildPageURL(version.BaseURL, page.Path)
 	}
 	if err := validateRecordingMeta(meta, false); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -362,10 +375,31 @@ func (h *ProjectHandlers) StartPageRecordingSession(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Project auth runtime is not configured"})
 		return
 	}
+	now := time.Now().UTC()
+	session := models.RecordingSession{
+		ProjectID:     projectID,
+		VersionID:     versionID,
+		PageID:        pageID,
+		RecordingKind: meta.RecordingKind,
+		AuthContext:   meta.AuthContext,
+		TargetURL:     meta.TargetURL,
+		Status:        "recording",
+		ActionCount:   0,
+		StartedAt:     now,
+		CreatedBy:     stringFromAny(c.GetString("user_id")),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := h.gormDB().Create(&session).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	sessionID := fmt.Sprint(session.ID)
 	input := map[string]any{
 		"project_id":              projectID,
 		"version_id":              versionID,
 		"page_id":                 pageID,
+		"recording_session_id":    sessionID,
 		"recording_kind":          meta.RecordingKind,
 		"auth_context":            meta.AuthContext,
 		"target_url":              meta.TargetURL,
@@ -389,6 +423,13 @@ func (h *ProjectHandlers) StartPageRecordingSession(c *gin.Context) {
 			meta.AuthContext,
 			safeDetail,
 		)
+		_ = h.gormDB().Model(&models.RecordingSession{}).
+			Where("id = ? AND status = ?", session.ID, "recording").
+			Updates(map[string]any{
+				"status":        "failed",
+				"error_message": safeDetail,
+				"updated_at":    time.Now().UTC(),
+			}).Error
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":  "Start page recording failed",
 			"detail": safeDetail,
@@ -398,6 +439,7 @@ func (h *ProjectHandlers) StartPageRecordingSession(c *gin.Context) {
 	if result == nil {
 		result = map[string]any{}
 	}
+	result["recording_session_id"] = sessionID
 	result["recording_meta"] = map[string]any{
 		"schema_version": meta.SchemaVersion,
 		"recording_kind": meta.RecordingKind,
@@ -888,13 +930,47 @@ func (r *browserProjectAuthRuntime) StartPageRecording(ctx context.Context, inpu
 		return nil, fmt.Errorf("failed to wait isolated recording page load: %w", err)
 	}
 	if err := r.manager.StartRecordingWithStorageScope(ctx, instanceID, browser.RecordingStorageScope{
-		ProjectID: uintFromAny(input["project_id"]),
-		VersionID: uintFromAny(input["version_id"]),
-		PageID:    uintFromAny(input["page_id"]),
+		ProjectID:          uintFromAny(input["project_id"]),
+		VersionID:          uintFromAny(input["version_id"]),
+		PageID:             uintFromAny(input["page_id"]),
+		RecordingSessionID: stringFromAny(input["recording_session_id"]),
 	}); err != nil {
 		return nil, err
 	}
 	return map[string]any{"recording_session_id": fmt.Sprintf("project-recording-%d", time.Now().UnixNano())}, nil
+}
+
+func (r *browserProjectAuthRuntime) StopPageRecording(ctx context.Context, input map[string]any) (map[string]any, error) {
+	scope := browser.RecordingStorageScope{
+		ProjectID:          uintFromAny(input["project_id"]),
+		VersionID:          uintFromAny(input["version_id"]),
+		PageID:             uintFromAny(input["page_id"]),
+		RecordingSessionID: stringFromAny(input["recording_session_id"]),
+	}
+	actions, downloadedFiles, err := r.manager.StopRecordingWithStorageScope(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	artifacts := make([]map[string]any, 0, len(downloadedFiles))
+	for _, file := range downloadedFiles {
+		storagePath := r.manager.RecordingArtifactStorageKey(file)
+		if storagePath == "" {
+			return nil, fmt.Errorf("download artifact path is outside controlled storage")
+		}
+		artifacts = append(artifacts, map[string]any{
+			"artifact_type":   "download",
+			"storage_backend": "local",
+			"storage_path":    storagePath,
+			"file_name":       file.FileName,
+			"mime_type":       file.MimeType,
+			"size_bytes":      file.Size,
+			"sensitive":       true,
+		})
+	}
+	return map[string]any{
+		"actions":   actions,
+		"artifacts": artifacts,
+	}, nil
 }
 
 func (r *browserProjectAuthRuntime) RestoreProjectAuthState(ctx context.Context, input map[string]any) error {

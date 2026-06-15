@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/browserwing/browserwing/llm"
 	"github.com/gin-gonic/gin"
 )
 
@@ -25,6 +26,13 @@ func (h *Handler) StartExploration(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if _, err := llm.ResolveRuntimeConfig(h.db, req.LLMConfigID); err != nil {
+		if writeLLMConfigError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 

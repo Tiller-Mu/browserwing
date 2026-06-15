@@ -9,6 +9,7 @@ type User struct {
 	ID        string    `gorm:"primaryKey;size:128" json:"id"`
 	Username  string    `gorm:"size:255;not null;uniqueIndex" json:"username"`
 	Password  string    `json:"password,omitempty"` // 密码字段，返回给前端时应清空
+	IsAdmin   bool      `gorm:"default:false" json:"is_admin"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

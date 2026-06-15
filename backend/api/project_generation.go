@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/browserwing/browserwing/llm"
 	"github.com/browserwing/browserwing/models"
 	"github.com/browserwing/browserwing/services/playbot"
 	"github.com/gin-gonic/gin"
@@ -96,6 +97,9 @@ func (h *ProjectHandlers) GenerateTestCases(c *gin.Context) {
 
 	llmConfig, err := h.loadGenerationLLMConfig(req.LLMConfigID)
 	if err != nil {
+		if writeLLMConfigError(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -213,35 +217,7 @@ func parseRequiredJSON(raw string, message string) (any, error) {
 }
 
 func (h *ProjectHandlers) loadGenerationLLMConfig(id string) (*models.LLMConfigModel, error) {
-	if h.store == nil {
-		return nil, fmt.Errorf("LLM 配置存储未初始化")
-	}
-
-	var (
-		cfg *models.LLMConfigModel
-		err error
-	)
-	if strings.TrimSpace(id) != "" {
-		cfg, err = h.store.GetLLMConfig(strings.TrimSpace(id))
-	} else {
-		cfg, err = h.store.GetDefaultLLMConfig()
-	}
-	if err != nil {
-		return nil, fmt.Errorf("LLM 配置不存在或未启用")
-	}
-	if !cfg.IsActive {
-		return nil, fmt.Errorf("LLM 配置未启用")
-	}
-	if strings.TrimSpace(cfg.APIKey) == "" {
-		return nil, fmt.Errorf("LLM 配置缺少 API Key")
-	}
-	if strings.TrimSpace(cfg.Model) == "" {
-		return nil, fmt.Errorf("LLM 配置缺少模型")
-	}
-	if strings.TrimSpace(cfg.BaseURL) == "" {
-		return nil, fmt.Errorf("LLM 配置缺少 endpoint/base URL")
-	}
-	return cfg, nil
+	return llm.ResolveRuntimeConfig(h.store, id)
 }
 
 func buildPageURL(baseURL, pagePath string) string {

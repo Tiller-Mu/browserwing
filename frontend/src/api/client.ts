@@ -654,7 +654,7 @@ export const api = {
     client.post<{ message: string; actions: ScriptAction[]; count: number }>('/browser/record/stop'),
 
   getRecordingStatus: () =>
-    client.get<{ is_recording: boolean; start_url?: string; start_time?: string; duration?: number }>('/browser/record/status'),
+    client.get<{ is_recording: boolean; start_url?: string; start_time?: string; duration?: number; actions?: ScriptAction[]; count?: number }>('/browser/record/status'),
 
   clearInPageRecordingState: () =>
     client.post<{ success: boolean }>('/browser/record/clear-state'),

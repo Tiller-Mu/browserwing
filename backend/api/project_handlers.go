@@ -373,13 +373,18 @@ func (h *ProjectHandlers) SavePageRecording(c *gin.Context) {
 	}
 
 	var req struct {
-		Name          string          `json:"name"`
-		ActionTrace   string          `json:"action_trace"`
-		DOMSnapshot   string          `json:"dom_snapshot"`
-		RecordingMeta json.RawMessage `json:"recording_meta"`
+		Name               string          `json:"name"`
+		ActionTrace        string          `json:"action_trace"`
+		DOMSnapshot        string          `json:"dom_snapshot"`
+		RecordingMeta      json.RawMessage `json:"recording_meta"`
+		RecordingSessionID string          `json:"recording_session_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		return
+	}
+	if strings.TrimSpace(req.RecordingSessionID) != "" {
+		h.saveRecordingSessionAsPageScript(c, projectID, versionID, pageID, req.RecordingSessionID, req.RecordingMeta, req.Name)
 		return
 	}
 

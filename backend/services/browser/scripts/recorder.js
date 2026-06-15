@@ -28,6 +28,14 @@ if (window.__browserwingRecorder__) {
 	window.__xhrDialogOpen__ = false; // XHR对话框是否打开
 	window.__recordingStateBeforeXHRDialog__ = false; // XHR对话框打开前的录制状态
 	
+	var getSelectedLLMConfigID = function() {
+		var controlSelect = document.getElementById('__ai_control_llm_select__');
+		if (controlSelect && controlSelect.value) {
+			return controlSelect.value;
+		}
+		return window.__selectedLLMConfigID__ || '';
+	};
+
 	// ============= XHR/Fetch 监听拦截 =============
 	
 	// 初始化XHR和Fetch拦截
@@ -2215,6 +2223,7 @@ if (window.__browserwingRecorder__) {
 			// 设置请求到全局变量
 			window.__aiExtractionRequest__ = {
 				type: 'extract',
+				llm_config_id: getSelectedLLMConfigID(),
 				regions: regionsHtml,
 				description: '{{EXTRACT_PROMPT}}',
 				user_prompt: userPrompt
@@ -2848,6 +2857,7 @@ if (window.__browserwingRecorder__) {
 			// 设置请求到全局变量，让后端轮询处理
 			window.__aiExtractionRequest__ = {
 				type: 'formfill',
+				llm_config_id: getSelectedLLMConfigID(),
 				html: cleanedHtml,
 				description: '{{FORMFILL_PROMPT}}',
 				user_prompt: userPrompt || ''
@@ -2967,6 +2977,7 @@ if (window.__browserwingRecorder__) {
 		
 		console.log('[BrowserWing] Submitting AI extraction request via polling...');			// 设置请求到全局变量，让后端轮询处理（避免 CSP 问题）
 			window.__aiExtractionRequest__ = {
+				llm_config_id: getSelectedLLMConfigID(),
 				html: cleanedHtml,
 				description: '{{EXTRACT_PROMPT}}',
 				user_prompt: userPrompt || ''

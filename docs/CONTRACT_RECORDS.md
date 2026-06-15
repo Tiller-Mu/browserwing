@@ -447,3 +447,61 @@ PostgreSQL Store 必须保持 P1-P4.5 已确认业务语义，不迁移旧数据
 
 验证：
 `TestP46ScriptStructuredFieldsHavePostgresColumnTags`、`TestP46PostgresStoreScriptRoundTrip`、`TestP46PostgresStoreToolConfigByScriptDeletion`、`TestP46PostgresStoreSchedulerPaginationAndFilters`、`TestP46PostgresStoreBrowserDefaultsAndCookieRoundTrip`、`TestP46PostgresStorePromptSystemUpgrade`、`TestP46PostgresStoreAgentCascadeAndMCPServiceToolsRoundTrip`、`TestP46PostgresStoreAuthLookupAndUniqueness`、`TestP46PostgresStoreExecutionAndRecordingDomains` 和 `TestP46PostgresStoreTestingPlatformBusinessDataAccess` 覆盖该契约。
+
+## P4.7：LLM 统一配置和录制数据管理
+
+### 系统管理员和 LLM 配置事实源
+
+契约：
+P4.7 新增最小系统管理员标识 `users.is_admin`，只用于 LLM 配置管理，不表示项目 owner、editor、viewer 或租户权限。默认 seed 用户必须是管理员；普通新用户默认不是管理员。创建、更新、删除、测试、启用、停用和设置默认 LLM 配置必须要求管理员权限。普通用户只能读取启用配置摘要，不能看到停用配置或 API Key；管理员读取配置列表和详情时也不能通过普通 API 响应看到 API Key 明文。
+
+依据：
+来自 P4.7 设计对“全局管理员维护 LLM 配置、普通用户只能使用启用模型”的约束，以及 P5 前不得提前引入完整项目权限模型的边界。LLM 配置是系统级能力，但密钥仍是敏感资产。
+
+当前/历史问题：
+如果没有最小管理员标识，测试者和开发者会无法判断 LLM 配置管理入口由谁维护；如果普通用户能看到停用配置或 API Key，会破坏 P4.7 的使用边界和 P4.6 的密钥安全契约。
+
+验证：
+`TestP47UserModelDefinesSystemAdminFlag`、`TestP47LLMConfigAdminPermissionsAndRedaction` 和 `TestP47PostgresSeedDefaultUserCreatesAndPreservesAdminAccess` 覆盖管理员字段、默认 seed、非管理员拒绝写操作、普通用户只见启用摘要、响应不泄露 API Key。
+
+### 统一 LLM 运行时解析
+
+契约：
+Playbot 生成 TestCase、自然语言 refine、录制页 AI 自动提取/表单填充和 AI Explorer 必须共享同一套 LLM 配置解析与可用性校验。默认配置缺失或未启用、显式配置不存在或停用、配置缺少 API Key、model 或 base URL 时，必须前置失败，不调用 Playbot、AI Explorer 或录制页 LLM 执行器，不创建 TestCase 或 LLMRefinement。错误响应必须包含可区分的错误 code，并保持密钥脱敏。
+
+依据：
+来自 P1/P4 已确认的“不能引入第二套 LLM 配置来源”，以及 P4.7 设计中 Playbot、refine、录制页 AI 和 AI Explorer 共用 LLM 配置策略的要求。P4.7 不合并离线 Playbot 引擎和 live browser AI 引擎，只统一配置事实源和安全边界。
+
+当前/历史问题：
+如果各入口各自读取默认 LLM，会导致生成、refine、录制页 AI 和 Explorer 对启用状态、默认配置和缺字段的判断不一致；如果缺 LLM 时进入半执行状态，会留下空资产或错误历史。
+
+验证：
+`TestGenerateTestCasesUsesUnifiedLLMRuntimeConfigErrors`、`TestRefineTestCaseReusesExistingLLMConfigSelection`、`TestP47ExplorerRequiresUsableLLMConfigBeforeStarting` 和 `TestP47RecorderAIUsesSelectedEnabledLLMConfigAndRedactsSecrets` 覆盖统一解析、错误 code、下游不调用和密钥脱敏。
+
+### RecordingSession 生命周期和 PageScript 生成
+
+契约：
+项目页面录制开始时必须创建 `RecordingSession(status = recording)`，写入 project/version/page、recording_kind、auth_context、target_url 和可选 created_by。录制中必须按 session 持久化完整 actions 数组、action_count 和 last_synced_at；浏览器 `sessionStorage` 只能作为页面内临时缓存，不是唯一事实源。停止录制后会话更新为 `stopped`；只有 `stopped` 会话可以保存为当前页面主流程 `PageScript`，保存时在事务中替换旧主流程并把会话更新为 `saved`。`saved/cancelled/failed` 后不得继续同步 actions 或再次保存。
+
+依据：
+来自 P4.7 设计对录制数据数据库事实源的要求。P1-P4.6 的生成、管理、执行和 refine 仍以当前页面保存的 `PageScript` 为主流程事实源；P4.7 只是把录制过程变成可恢复、可审计、可保护的会话。
+
+当前/历史问题：
+如果录制动作只存在 `sessionStorage`，刷新或重连会丢失草稿；如果 active 会话可以直接保存，会把未停止的录制状态固化为主流程；如果 stopped/saved/cancelled 边界不清，会污染旧 PageScript 或产生重复主流程。
+
+验证：
+`TestP47RecordingSessionAndArtifactProductionModels`、`TestP47RecordingSessionStartValidatesScopeAndAuthContext`、`TestP47RecordingSessionSummaryAndStopUseProductionRoutes`、`TestP47RecordingSessionSyncPersistsActionsAndRejectsTerminalStates`、`TestP47SaveRecordingSessionReplacesPageScriptWithRecordingMeta`、`TestP47SaveRecordingSessionRequiresStoppedSession` 和 `TestP47RecorderSyncLoopPersistsRecordingSessionDraft` 覆盖模型、作用域、开始、同步、停止、保存和草稿持久化。
+
+### 取消、失败和录制产物保护
+
+契约：
+项目录制取消必须调用后端 cancel 入口，把 `RecordingSession.status` 更新为 `cancelled`；如果取消发生在仍在录制的会话上，必须先停止绑定的浏览器录制生命周期。取消、失败或非法 `recording_meta` 不得删除或替换旧 `PageScript`。取消后的会话必须拒绝继续 sync 或 save。录屏、截图和下载文件等二进制不写入 PostgreSQL；数据库只保存 `RecordingArtifact` 元数据，下载必须经过受控 artifact id 和 project/version/page scope 校验，不返回任意本地绝对路径。
+
+依据：
+来自 P4.7 设计中“取消失败不污染旧主流程”和“裸 `/files/recordings` 不作为新业务依赖”的要求。P4.7 为 P5 权限控制预留清晰的 project/version/page 和 artifact scope。
+
+当前/历史问题：
+如果前端取消只清本地状态，数据库会残留 `recording` 或 `stopped` 会话，刷新后状态混乱；如果下载直接暴露本地路径，后续多用户权限无法收口，也有本地文件泄露风险。
+
+验证：
+`TestP47CancelRecordingSessionCancelsActiveSessionAndProtectsPageScript`、`TestP47CancelRecordingSessionAllowsStoppedUnsavedSession`、`TestP47CancelledFailedAndInvalidMetaDoNotReplacePageScript`、`TestP47RecordingArtifactMetadataAndScopedDownload`、`TestP47DownloadedFileStorageKeyUsesControlledRelativePath` 和 `frontend/src/p45_recording_ui_contract.test.ts` 覆盖取消状态、取消后拒绝 sync/save、旧 PageScript 不变、产物元数据和前端先调用后端再清本地状态。

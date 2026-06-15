@@ -39,18 +39,19 @@ type MCPHTTPHandler interface {
 }
 
 type Handler struct {
-	db             storage.Store
-	browserManager *browser.Manager
-	executor       *executor2.Executor // Executor 实例
-	config         *config.Config
-	llmManager     *llm.Manager
-	mcpServer      MCPHTTPHandler    // MCP 服务器（使用 interface{} 避免循环依赖）
-	agentManager   interface{}       // Agent 管理器（用于 LLM 配置更新后的热加载）
-	scheduler      interface{}       // 定时任务调度器
-	explorer       *browser.Explorer // AI 探索器
-	versionInfo    VersionInfo
-	testCaseRunner *testCaseRunnerHolder
-	projectAuth    *projectAuthRuntimeHolder
+	db              storage.Store
+	browserManager  *browser.Manager
+	executor        *executor2.Executor // Executor 实例
+	config          *config.Config
+	llmManager      *llm.Manager
+	mcpServer       MCPHTTPHandler    // MCP 服务器（使用 interface{} 避免循环依赖）
+	agentManager    interface{}       // Agent 管理器（用于 LLM 配置更新后的热加载）
+	scheduler       interface{}       // 定时任务调度器
+	explorer        *browser.Explorer // AI 探索器
+	versionInfo     VersionInfo
+	testCaseRunner  *testCaseRunnerHolder
+	projectAuth     *projectAuthRuntimeHolder
+	llmConfigTester llmConfigTesterFunc
 }
 
 type testCaseRunnerHolder struct {
@@ -111,6 +112,10 @@ func (h *Handler) ensureProjectAuthRuntimeHolder() *projectAuthRuntimeHolder {
 
 func (h *Handler) SetProjectAuthRuntimeForTest(runtime any) {
 	h.ensureProjectAuthRuntimeHolder().set(adaptInjectedProjectAuthRuntime(runtime))
+}
+
+func (h *Handler) SetLLMConfigTesterForTest(tester func(context.Context, *models.LLMConfigModel) (map[string]any, error)) {
+	h.llmConfigTester = tester
 }
 
 func (h *testCaseRunnerHolder) set(runner any) {
@@ -1004,6 +1009,15 @@ func (h *Handler) ListLLMConfigs(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "error.getLLMConfigsFailed"})
 		return
 	}
+	if !h.currentUserIsAdmin(c) {
+		active := make([]*models.LLMConfigModel, 0, len(configs))
+		for _, cfg := range configs {
+			if cfg != nil && cfg.IsActive {
+				active = append(active, cfg)
+			}
+		}
+		configs = active
+	}
 
 	c.JSON(http.StatusOK, gin.H{"configs": redactLLMConfigs(configs)})
 }
@@ -1017,12 +1031,19 @@ func (h *Handler) GetLLMConfig(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "error.llmConfigNotFound"})
 		return
 	}
+	if !h.currentUserIsAdmin(c) && !config.IsActive {
+		c.JSON(http.StatusForbidden, gin.H{"error": "error.forbidden"})
+		return
+	}
 
 	c.JSON(http.StatusOK, redactLLMConfig(config))
 }
 
 // CreateLLMConfig 创建 LLM 配置
 func (h *Handler) CreateLLMConfig(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	var req models.LLMConfigModel
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "error.invalidParams"})
@@ -1045,7 +1066,12 @@ func (h *Handler) CreateLLMConfig(c *gin.Context) {
 	req.UpdatedAt = time.Now()
 
 	// 通过 Manager 添加配置
-	if err := h.llmManager.Add(&req); err != nil {
+	if h.llmManager != nil {
+		if err := h.llmManager.Add(&req); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "error.createLLMConfigFailed"})
+			return
+		}
+	} else if err := h.db.SaveLLMConfig(&req); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "error.createLLMConfigFailed"})
 		return
 	}
@@ -1064,6 +1090,9 @@ func (h *Handler) CreateLLMConfig(c *gin.Context) {
 
 // UpdateLLMConfig 更新 LLM 配置
 func (h *Handler) UpdateLLMConfig(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	id := c.Param("id")
 
 	var req models.LLMConfigModel
@@ -1077,7 +1106,12 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 	req.UpdatedAt = time.Now()
 
 	// 通过 Manager 更新配置
-	if err := h.llmManager.Update(&req); err != nil {
+	if h.llmManager != nil {
+		if err := h.llmManager.Update(&req); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "error.updateLLMConfigFailed"})
+			return
+		}
+	} else if err := h.db.UpdateLLMConfig(&req); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "error.updateLLMConfigFailed"})
 		return
 	}
@@ -1096,10 +1130,18 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 
 // DeleteLLMConfig 删除 LLM 配置
 func (h *Handler) DeleteLLMConfig(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	id := c.Param("id")
 
 	// 通过 Manager 删除配置
-	if err := h.llmManager.Delete(id); err != nil {
+	if h.llmManager != nil {
+		if err := h.llmManager.Delete(id); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "error.deleteLLMConfigFailed"})
+			return
+		}
+	} else if err := h.db.DeleteLLMConfig(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "error.deleteLLMConfigFailed"})
 		return
 	}
@@ -1109,6 +1151,9 @@ func (h *Handler) DeleteLLMConfig(c *gin.Context) {
 
 // TestLLMConfig 测试 LLM 配置连接
 func (h *Handler) TestLLMConfig(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	var req models.LLMConfigModel
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -1125,6 +1170,19 @@ func (h *Handler) TestLLMConfig(c *gin.Context) {
 			"success": false,
 			"message": "error.llmConfigRequiredFields",
 		})
+		return
+	}
+	if h.llmConfigTester != nil {
+		result, err := h.llmConfigTester(c.Request.Context(), &req)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "llm.messages.testError",
+				"error":   redactLLMSecret(err.Error(), req.APIKey),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, result)
 		return
 	}
 
