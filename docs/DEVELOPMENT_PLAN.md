@@ -455,6 +455,7 @@ P4.6 完成后，不直接进入 P5。已先通过 P4.7 收口 LLM 统一配置�
 阶段设计：
 
 - `docs/P4_7_5_PLAYBOT_BLUEPRINT_QUALITY_DESIGN.md`
+- 阶段实施计划：`docs/P4_7_5_PLAYBOT_GO_AGENT_IMPLEMENTATION_PLAN.md`
 
 目标：
 
