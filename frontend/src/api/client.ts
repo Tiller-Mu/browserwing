@@ -517,10 +517,11 @@ export interface UpdateLLMConfigRequest {
 }
 
 export interface TestLLMConfigRequest {
-  name: string
-  provider: string
-  api_key: string
-  model: string
+  id?: string
+  name?: string
+  provider?: string
+  api_key?: string
+  model?: string
   base_url?: string
 }
 
@@ -738,7 +739,7 @@ export const api = {
     client.delete<{ message: string }>(`/llm-configs/${id}`),
 
   testLLMConfig: (data: TestLLMConfigRequest) =>
-    client.post<{ success: boolean; message: string }>('/llm-configs/test', data),
+    client.post<{ success: boolean; message: string; error?: string }>('/llm-configs/test', data),
 
   // 浏览器配置管理
   getBrowserConfigs: () =>
@@ -849,6 +850,7 @@ export default api
 export interface User {
   id: string
   username: string
+  is_admin?: boolean
   created_at: string
   updated_at: string
 }

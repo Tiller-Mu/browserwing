@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useLanguage } from '../i18n'
 import { copyToClipboard as clipboardCopy } from '../utils/clipboard'
+import LLMManager from './LLMManager'
 import { 
   listUsers, 
   createUser, 
@@ -16,9 +18,31 @@ import { Modal } from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Toast from '../components/Toast'
 
+type SettingsTab = 'users' | 'apikeys' | 'llm'
+
+function readStoredUserCanManageLLM(): boolean {
+  const raw = localStorage.getItem('user')
+  if (!raw) return true
+  try {
+    return JSON.parse(raw)?.is_admin === true
+  } catch {
+    return false
+  }
+}
+
+function normalizeSettingsTab(raw: string | null, canManageLLM: boolean): SettingsTab {
+  if (raw === 'apikeys') return raw
+  if (raw === 'llm' && canManageLLM) return raw
+  return 'users'
+}
+
 export default function Settings() {
   const { t } = useLanguage()
-  const [activeTab, setActiveTab] = useState<'users' | 'apikeys'>('users')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [canManageLLM] = useState(readStoredUserCanManageLLM)
+  const [activeTab, setActiveTab] = useState<SettingsTab>(
+    normalizeSettingsTab(searchParams.get('tab'), canManageLLM)
+  )
   
   // 用户管理状态
   const [users, setUsers] = useState<User[]>([])
@@ -55,10 +79,34 @@ export default function Settings() {
   useEffect(() => {
     if (activeTab === 'users') {
       loadUsers()
-    } else {
+    } else if (activeTab === 'apikeys') {
       loadApiKeys()
     }
   }, [activeTab])
+
+  useEffect(() => {
+    const tab = normalizeSettingsTab(searchParams.get('tab'), canManageLLM)
+    if (tab !== activeTab) {
+      setActiveTab(tab)
+    }
+    if (!canManageLLM && searchParams.get('tab') === 'llm') {
+      setSearchParams({}, { replace: true })
+    }
+  }, [activeTab, canManageLLM, searchParams, setSearchParams])
+
+  const switchTab = (tab: SettingsTab) => {
+    if (tab === 'llm' && !canManageLLM) {
+      setActiveTab('users')
+      setSearchParams({})
+      return
+    }
+    setActiveTab(tab)
+    if (tab === 'users') {
+      setSearchParams({})
+    } else {
+      setSearchParams({ tab })
+    }
+  }
 
   const loadUsers = async () => {
     try {
@@ -203,7 +251,7 @@ export default function Settings() {
       <div className="border-b border-gray-200 dark:border-gray-700 mb-6">
         <nav className="-mb-px flex space-x-8">
           <button
-            onClick={() => setActiveTab('users')}
+            onClick={() => switchTab('users')}
             className={`${
               activeTab === 'users'
                 ? 'border-gray-900 text-gray-900 dark:border-gray-100 dark:text-gray-100'
@@ -213,7 +261,7 @@ export default function Settings() {
             {t('settings.users')}
           </button>
           <button
-            onClick={() => setActiveTab('apikeys')}
+            onClick={() => switchTab('apikeys')}
             className={`${
               activeTab === 'apikeys'
                 ? 'border-gray-900 text-gray-900 dark:border-gray-100 dark:text-gray-100'
@@ -222,6 +270,18 @@ export default function Settings() {
           >
             {t('settings.apiKeys')}
           </button>
+          {canManageLLM && (
+            <button
+              onClick={() => switchTab('llm')}
+              className={`${
+                activeTab === 'llm'
+                  ? 'border-gray-900 text-gray-900 dark:border-gray-100 dark:text-gray-100'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-gray-600'
+              } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors`}
+            >
+              {t('nav.llm')}
+            </button>
+          )}
         </nav>
       </div>
 
@@ -339,6 +399,8 @@ export default function Settings() {
           </div>
         </div>
       )}
+
+      {canManageLLM && activeTab === 'llm' && <LLMManager embedded />}
 
       {/* 创建用户模态框 */}
       <Modal

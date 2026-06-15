@@ -544,6 +544,7 @@ func initDefaultUser(db storage.Store, cfg *config.Config) error {
 		ID:        uuid.New().String(),
 		Username:  cfg.Auth.DefaultUsername,
 		Password:  cfg.Auth.DefaultPassword,
+		IsAdmin:   true,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}

@@ -315,7 +315,7 @@ func getProviderBaseURL(provider, customBaseURL string) string {
 		"openai":     "https://api.openai.com/v1",
 		"gemini":     "https://generativelanguage.googleapis.com/v1beta/openai",
 		"mistral":    "https://api.mistral.ai/v1",
-		"deepseek":   "https://api.deepseek.com",
+		"deepseek":   "https://api.deepseek.com/v1",
 		"groq":       "https://api.groq.com/openai/v1",
 		"cohere":     "https://api.cohere.ai/v1",
 		"xai":        "https://api.x.ai/v1",

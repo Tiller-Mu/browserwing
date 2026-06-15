@@ -1164,6 +1164,18 @@ func (h *Handler) TestLLMConfig(c *gin.Context) {
 		return
 	}
 
+	if req.ID != "" && req.APIKey == "" {
+		saved, err := h.db.GetLLMConfig(req.ID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"message": "error.llmConfigNotFound",
+			})
+			return
+		}
+		req = *saved
+	}
+
 	// 验证必填字段
 	if req.Provider == "" || req.APIKey == "" || req.Model == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -2832,6 +2844,11 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 
+	if err := h.ensureAdminForFirstAuthenticatedUser(user); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "error.updateUserFailed"})
+		return
+	}
+
 	// 生成JWT Token
 	token, err := GenerateJWT(user.ID, user.Username, h.config)
 	if err != nil {
@@ -2846,6 +2863,28 @@ func (h *Handler) Login(c *gin.Context) {
 		Token: token,
 		User:  user,
 	})
+}
+
+func (h *Handler) ensureAdminForFirstAuthenticatedUser(user *models.User) error {
+	if user == nil || user.IsAdmin {
+		return nil
+	}
+
+	users, err := h.db.ListUsers()
+	if err != nil {
+		return err
+	}
+	for _, existing := range users {
+		if existing != nil && existing.IsAdmin {
+			return nil
+		}
+	}
+
+	// P4.7 only has a minimal admin flag; if an upgraded local database has no
+	// administrator yet, make the current authenticated user the administrator.
+	user.IsAdmin = true
+	user.UpdatedAt = time.Now()
+	return h.db.UpdateUser(user)
 }
 
 // ============= 用户管理 API =============

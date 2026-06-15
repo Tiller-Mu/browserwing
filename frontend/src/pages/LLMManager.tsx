@@ -6,7 +6,11 @@ import Toast from '../components/Toast'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { useLanguage } from '../i18n'
 
-export default function LLMManager() {
+interface LLMManagerProps {
+  embedded?: boolean
+}
+
+export default function LLMManager({ embedded = false }: LLMManagerProps = {}) {
   const { t } = useLanguage()
   const navigate = useNavigate()
 
@@ -145,13 +149,10 @@ export default function LLMManager() {
     setTestingId(config.id)
     try {
       const result = await api.testLLMConfig({
-        name: config.name,
-        provider: config.provider,
-        api_key: config.api_key,
-        model: config.model,
-        base_url: config.base_url,
+        id: config.id,
       })
-      showToast(t(result.data.message), result.data.success ? 'success' : 'error')
+      const detail = result.data.error ? `: ${result.data.error}` : ''
+      showToast(t(result.data.message) + detail, result.data.success ? 'success' : 'error')
     } catch (error: any) {
       showToast(t('llm.messages.testError') + ': ' + t(error.response?.data?.error || error.message), 'error')
     } finally {
@@ -180,7 +181,11 @@ export default function LLMManager() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">{t('llm.title')}</h1>
+          {embedded ? (
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">{t('llm.title')}</h2>
+          ) : (
+            <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">{t('llm.title')}</h1>
+          )}
           <p className="mt-1 text-sm text-gray-500">
             {t('llm.subtitle')}
           </p>

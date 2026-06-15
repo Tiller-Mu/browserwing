@@ -6,7 +6,6 @@ import BrowserManager from './pages/BrowserManager'
 import BrowserInstanceManager from './pages/BrowserInstanceManager'
 import CookieManager from './pages/CookieManager'
 import ScriptManager from './pages/ScriptManager'
-import LLMManager from './pages/LLMManager'
 import PromptManage from './pages/PromptManage'
 import AgentChat from './pages/AgentChat'
 import AIExplorer from './pages/AIExplorer'
@@ -84,7 +83,7 @@ function App() {
           <Route path="projects/:projectId/versions/:versionId/pages/:pageId/test-cases/:testCaseId" element={<TestCaseDetail />} />
           <Route path="scripts" element={<ScriptManager />} />
           <Route path="scheduled-tasks" element={<ScheduledTaskManager />} />
-          <Route path="llm" element={<LLMManager />} />
+          <Route path="llm" element={<Navigate to="/settings?tab=llm" replace />} />
           <Route path="prompts" element={<PromptManage />} />
           <Route path="agent" element={<AgentChat />} />
           <Route path="ai-explorer" element={<AIExplorer />} />
