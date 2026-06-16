@@ -20,10 +20,11 @@ type ProjectHandlers struct {
 	config         *config.Config
 	testCaseRunner *testCaseRunnerHolder
 	projectAuth    *projectAuthRuntimeHolder
+	playbotAgent   *playbotAgentHolder
 }
 
 // NewProjectHandlers 创建处理器实例
-func NewProjectHandlers(store storage.Store, cfg *config.Config, runnerHolder *testCaseRunnerHolder, authHolder *projectAuthRuntimeHolder) *ProjectHandlers {
+func NewProjectHandlers(store storage.Store, cfg *config.Config, runnerHolder *testCaseRunnerHolder, authHolder *projectAuthRuntimeHolder, agentHolder *playbotAgentHolder) *ProjectHandlers {
 	var holder *testCaseRunnerHolder
 	holder = runnerHolder
 	return &ProjectHandlers{
@@ -31,6 +32,7 @@ func NewProjectHandlers(store storage.Store, cfg *config.Config, runnerHolder *t
 		config:         cfg,
 		testCaseRunner: holder,
 		projectAuth:    authHolder,
+		playbotAgent:   agentHolder,
 	}
 }
 

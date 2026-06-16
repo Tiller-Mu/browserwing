@@ -479,6 +479,7 @@ P4.6 完成后，不直接进入 P5。已先通过 P4.7 收口 LLM 统一配置�
 - 后端是上下文事实源管理者和裁决者，负责权限、状态、事务、锁定、脱敏、审计、LLM 配置选择和保存裁决。
 - 独立 Go agent 是上下文消费、LLM 编排和 Blueprint 编译者，只在单次任务内做临时摘要、裁剪和 prompt packing，不长期缓存对话上下文，不直接查库。
 - `PlaybotJob` JSON 不得包含 LLM API Key、Cookie、Storage value 或其他密钥明文；LLM API Key 必须通过受控 secret channel 传递，不能落入 job 文件、fixture 或普通日志。
+- 录制流程中的 token-like 业务输入值可以进入 `PlaybotJob` 和 Blueprint；用户应使用测试 token 或 sandbox token，不能依赖 `sk-` 等字符串前缀区分生产 token。
 - `backend_approved_context` 是后端在 `context_required + retryable` 后批准补上下文重跑的正式 `PlaybotJob` 字段；首次 job 省略或为空，二次 job 中每项至少包含 `kind`、`scope`、`source` 和 `payload`，且不得携带密钥、Cookie、Storage value 或本地绝对路径。
 - 后端保存 TestCase 前必须先按 P4.7.5 最终 Blueprint 字段标准做严格保存校验，再复用执行归一化能力，确认 active Blueprint 能被 Go runner input 逻辑消费。
 - Playbot 能力拆为 `generate`、`optimize`、`execute`、`repair_proposal` 四类。

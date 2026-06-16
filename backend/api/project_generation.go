@@ -11,7 +11,6 @@ import (
 
 	"github.com/browserwing/browserwing/llm"
 	"github.com/browserwing/browserwing/models"
-	"github.com/browserwing/browserwing/services/playbot"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -75,26 +74,6 @@ func (h *ProjectHandlers) GenerateTestCases(c *gin.Context) {
 		return
 	}
 
-	snapshot, err := parseRequiredJSON(script.DOMSnapshot, "页面快照 JSON 非法")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	intentPlan, err := parseRequiredJSON(script.ActionTrace, "主流程录制 JSON 非法")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	meta, _, err := parseRecordingMetaJSON(script.RecordingMetaJSON)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	authContext := meta.AuthContext
-	if authContext == "" {
-		authContext = authContextClean
-	}
-
 	llmConfig, err := h.loadGenerationLLMConfig(req.LLMConfigID)
 	if err != nil {
 		if writeLLMConfigError(c, err) {
@@ -104,23 +83,32 @@ func (h *ProjectHandlers) GenerateTestCases(c *gin.Context) {
 		return
 	}
 
-	stdout, err := playbot.GenerateTestPlan(c.Request.Context(), playbot.GenerateOptions{
-		PageURL:         buildPageURL(version.BaseURL, page.Path),
-		Snapshot:        snapshot,
-		IntentPlan:      intentPlan,
-		PageDescription: page.Description,
-		Instruction:     req.Instruction,
-		AuthContext:     authContext,
-		LLMEndpoint:     llmConfig.BaseURL,
-		LLMAPIKey:       llmConfig.APIKey,
-		LLMModel:        llmConfig.Model,
-	})
+	source, err := buildP475RecordingSource(script)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	job, secret := buildP475GenerateJob(projectID, versionID, pageID, version, page, source, req.Instruction, llmConfig)
+	result, err := h.runP475AgentWithContextRetry(c.Request.Context(), job, secret, source)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	blueprints, err := parsePlaybotGeneratedCases(stdout, authContext)
+	if status := strings.TrimSpace(stringFromAny(result["status"])); status != "success" {
+		code := strings.TrimSpace(stringFromAny(result["code"]))
+		if code == "" {
+			code = "playbot_agent_failed"
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": code, "code": code})
+		return
+	}
+	defaultURL, err := buildExecutionURL(version.BaseURL, page.Path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	blueprints, err := parseP475AgentGeneratedCases(result, source.AuthContext, defaultURL)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

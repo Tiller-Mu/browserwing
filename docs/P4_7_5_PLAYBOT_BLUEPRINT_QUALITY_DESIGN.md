@@ -215,6 +215,7 @@ stderr: 脱敏日志
 - `PlaybotJob` JSON 不得包含 LLM API Key、Cookie、Storage value 或其他密钥明文。
 - LLM API Key 必须通过受控 secret channel 传递，例如受控环境变量、只读 secret file descriptor、进程私有 secret provider 或后续 RPC metadata；该 channel 必须可脱敏、可审计，并避免落入 job fixture、临时 job 文件和普通日志。
 - 如果实现必须使用临时 secret 文件，文件权限必须限制为当前用户可读写，建议等价于 `0600`，执行后必须清理；普通 `job.json` 仍不得包含密钥。
+- 用户在被测页面录制流程时输入的 token-like 字符串属于业务测试数据，可能进入 `PlaybotJob` 和生成 Blueprint；用户应使用测试 token 或 sandbox token，不应使用生产 token。P4.7.5 不通过 `sk-` 等字符串前缀做强制判定。
 
 `PlaybotJob` 至少包含：
 
@@ -552,6 +553,7 @@ Go agent 红测必须覆盖：
 - `backend_approved_context` 只允许在后端批准的 `context_required` 重跑 job 中出现，且不得泄露密钥、Cookie、Storage value 或本地绝对路径。
 - `PlaybotJob` JSON、临时 job 文件、测试 fixture 和调试产物不得包含 LLM API Key 明文。
 - LLM API Key 必须通过受控 secret channel 传递；日志、错误、context trace 和 `PlaybotResult` 不得泄露密钥。
+- 录制动作输入、DOM 文本、页面说明或用户说明中的 token-like 测试数据按业务输入处理，不按字符串前缀泛化拦截；后续若要保护录制输入中的真实 secret，应另立占位符或 vault 能力。
 - 如实现使用临时 secret 文件，必须验证权限受限且执行后清理。
 - agent 不直接查数据库，不保存业务资产。
 - agent 不长期缓存对话上下文作为后续任务事实源。

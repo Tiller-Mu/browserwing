@@ -37,16 +37,19 @@ func TestP475GenerateUsesGoPlaybotAgentAdapter(t *testing.T) {
 	project, version, page := env.seedProjectVersionPage(t)
 	cookieSecret := "cookie-value-p475-generate"
 	storageSecret := "storage-value-p475-generate"
+	recordedTestToken := "sk-test-token-for-recording"
+	tokenFieldText := "sk-payment-token-field"
 	env.seedP475PageScript(t, page.ID, p475PageScriptSeed{
-		ActionTrace: fmt.Sprintf(`{"actions":[{"type":"click","target":{"text":"Save"},"cookies":[{"name":"sid","value":%q}]}]}`, cookieSecret),
-		DOMSnapshot: fmt.Sprintf(`{"elements":[{"role":"button","text":"Save"}],"localStorage":{"token":%q}}`, storageSecret),
+		ActionTrace: fmt.Sprintf(`{"actions":[{"type":"input","target":{"text":%q},"value":%q},{"type":"click","target":{"text":"Save"},"cookies":[{"name":"sid","value":%q}]}]}`, tokenFieldText, recordedTestToken, cookieSecret),
+		DOMSnapshot: fmt.Sprintf(`{"elements":[{"role":"textbox","text":%q},{"role":"button","text":"Save"}],"localStorage":{"token":%q}}`, tokenFieldText, storageSecret),
 		Meta:        p475RecordingMeta("business_flow", "clean"),
 	})
 	agent := newP475FakePlaybotAgent(t, p475AgentGenerateSuccess(p475ValidGeneratedBlueprint("generated through go agent")))
 	env.installP475FakePlaybotAgent(t, agent)
 
 	res := env.postGenerate(t, project.ID, version.ID, page.ID, map[string]any{
-		"mode": "append",
+		"mode":        "append",
+		"instruction": "keep recorded test data sk-in-user-instruction",
 	})
 
 	env.requireStatus(t, res, http.StatusOK)
@@ -56,6 +59,9 @@ func TestP475GenerateUsesGoPlaybotAgentAdapter(t *testing.T) {
 	env.requirePlaybotCalls(t, 0)
 	jobJSON := agent.LastJobJSON(t)
 	requireP475JSONContains(t, jobJSON, `"mode":"generate"`)
+	requireP475JSONContains(t, jobJSON, recordedTestToken)
+	requireP475JSONContains(t, jobJSON, tokenFieldText)
+	requireP475JSONContains(t, jobJSON, "sk-in-user-instruction")
 	requireP475JSONOmits(t, jobJSON, "test-api-key", cookieSecret, storageSecret, "api_key", "cookies", "localStorage", "sessionStorage")
 	env.requireTestCaseCount(t, page.ID, 1)
 }

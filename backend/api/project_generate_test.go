@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,8 +10,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/browserwing/browserwing/config"
 	"github.com/browserwing/browserwing/models"
+	"github.com/browserwing/browserwing/services/playbotagent"
 	"github.com/browserwing/browserwing/storage"
 	"github.com/gin-gonic/gin"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -270,14 +270,12 @@ type testCaseSnapshot struct {
 }
 
 type generateContractEnv struct {
-	db         *gorm.DB
-	store      *generateContractStore
-	router     *gin.Engine
-	handler    *Handler
-	tmpDir     string
-	callsFile  string
-	stdoutFile string
-	stderrFile string
+	db           *gorm.DB
+	store        *generateContractStore
+	router       *gin.Engine
+	handler      *Handler
+	tmpDir       string
+	playbotAgent *generateFakePlaybotAgent
 }
 
 type generateContractStore struct {
@@ -548,16 +546,16 @@ func newGenerateContractEnv(t *testing.T) *generateContractEnv {
 			},
 		},
 	}
+	fakeAgent := newGenerateFakePlaybotAgent(t)
+	handler.SetPlaybotAgentClientForTest(fakeAgent)
 
 	env := &generateContractEnv{
-		db:         db,
-		store:      store,
-		router:     SetupRouter(handler, nil, nil, false, false),
-		handler:    handler,
-		tmpDir:     tmpDir,
-		callsFile:  filepath.Join(tmpDir, "playbot-calls.txt"),
-		stdoutFile: filepath.Join(tmpDir, "playbot-stdout.json"),
-		stderrFile: filepath.Join(tmpDir, "playbot-stderr.txt"),
+		db:           db,
+		store:        store,
+		router:       SetupRouter(handler, nil, nil, false, false),
+		handler:      handler,
+		tmpDir:       tmpDir,
+		playbotAgent: fakeAgent,
 	}
 	env.installFakePlaybotCommand(t)
 	return env
@@ -589,58 +587,102 @@ func (n *noopMCPServer) GetSSEServer() *mcpserver.SSEServer {
 	return n.sse
 }
 
+type generateFakePlaybotAgent struct {
+	t       *testing.T
+	jobs    []playbotagent.Job
+	secrets []playbotagent.SecretChannel
+	result  playbotagent.Result
+	err     error
+}
+
+func newGenerateFakePlaybotAgent(t *testing.T) *generateFakePlaybotAgent {
+	t.Helper()
+	return &generateFakePlaybotAgent{t: t}
+}
+
+func (a *generateFakePlaybotAgent) Run(_ context.Context, job playbotagent.Job) (playbotagent.Result, error) {
+	a.jobs = append(a.jobs, cloneAgentJob(a.t, job))
+	a.secrets = append(a.secrets, job.SecretChannel)
+	if a.err != nil {
+		return playbotagent.Result{}, a.err
+	}
+	return cloneAgentResult(a.t, a.result), nil
+}
+
+func (a *generateFakePlaybotAgent) setResult(result playbotagent.Result, err error) {
+	a.result = cloneAgentResult(a.t, result)
+	a.err = err
+}
+
+func (a *generateFakePlaybotAgent) callCount() int {
+	return len(a.jobs)
+}
+
+func (a *generateFakePlaybotAgent) jobAt(t *testing.T, index int) playbotagent.Job {
+	t.Helper()
+	if index < 0 || index >= len(a.jobs) {
+		t.Fatalf("Playbot agent job index %d out of range; call count = %d", index, len(a.jobs))
+	}
+	return cloneAgentJob(t, a.jobs[index])
+}
+
+func (a *generateFakePlaybotAgent) lastJob(t *testing.T) playbotagent.Job {
+	t.Helper()
+	return a.jobAt(t, len(a.jobs)-1)
+}
+
+func (a *generateFakePlaybotAgent) lastJobMap(t *testing.T) map[string]any {
+	t.Helper()
+	job := a.lastJob(t)
+	data, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("marshal Playbot agent job: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("decode Playbot agent job: %v; raw: %s", err, data)
+	}
+	return out
+}
+
+func (a *generateFakePlaybotAgent) lastSecret(t *testing.T) playbotagent.SecretChannel {
+	t.Helper()
+	if len(a.secrets) == 0 {
+		t.Fatal("Playbot agent was not called")
+	}
+	return a.secrets[len(a.secrets)-1]
+}
+
+func cloneAgentJob(t *testing.T, job playbotagent.Job) playbotagent.Job {
+	t.Helper()
+	data, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("marshal Playbot agent job clone: %v", err)
+	}
+	var out playbotagent.Job
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("decode Playbot agent job clone: %v; raw: %s", err, data)
+	}
+	out.SecretChannel = job.SecretChannel
+	return out
+}
+
+func cloneAgentResult(t *testing.T, result playbotagent.Result) playbotagent.Result {
+	t.Helper()
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal Playbot agent result clone: %v", err)
+	}
+	var out playbotagent.Result
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("decode Playbot agent result clone: %v; raw: %s", err, data)
+	}
+	return out
+}
+
 func (e *generateContractEnv) installFakePlaybotCommand(t *testing.T) {
 	t.Helper()
-
-	fakePython := filepath.Join(e.tmpDir, "fake-playbot-python")
-	if runtime.GOOS == "windows" {
-		fakePython += ".cmd"
-		script := strings.Join([]string{
-			"@echo off",
-			"if defined BROWSERWING_FAKE_PLAYBOT_CALLS_FILE echo call %*>>\"%BROWSERWING_FAKE_PLAYBOT_CALLS_FILE%\"",
-			"if defined BROWSERWING_FAKE_PLAYBOT_STDERR_FILE type \"%BROWSERWING_FAKE_PLAYBOT_STDERR_FILE%\" 1>&2",
-			"if defined BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE type \"%BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE%\"",
-			"if defined BROWSERWING_FAKE_PLAYBOT_EXIT_CODE exit /b %BROWSERWING_FAKE_PLAYBOT_EXIT_CODE%",
-			"exit /b 0",
-			"",
-		}, "\r\n")
-		if err := os.WriteFile(fakePython, []byte(script), 0o755); err != nil {
-			t.Fatalf("write fake python command: %v", err)
-		}
-	} else {
-		script := strings.Join([]string{
-			"#!/bin/sh",
-			"if [ -n \"$BROWSERWING_FAKE_PLAYBOT_CALLS_FILE\" ]; then echo \"call $*\" >> \"$BROWSERWING_FAKE_PLAYBOT_CALLS_FILE\"; fi",
-			"if [ -n \"$BROWSERWING_FAKE_PLAYBOT_STDERR_FILE\" ]; then cat \"$BROWSERWING_FAKE_PLAYBOT_STDERR_FILE\" >&2; fi",
-			"if [ -n \"$BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE\" ]; then cat \"$BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE\"; fi",
-			"exit ${BROWSERWING_FAKE_PLAYBOT_EXIT_CODE:-0}",
-			"",
-		}, "\n")
-		if err := os.WriteFile(fakePython, []byte(script), 0o755); err != nil {
-			t.Fatalf("write fake python command: %v", err)
-		}
-		if err := os.Chmod(fakePython, 0o755); err != nil {
-			t.Fatalf("chmod fake python command: %v", err)
-		}
-	}
-
-	engineDir := filepath.Join(e.tmpDir, "playbot-engine")
-	if err := os.MkdirAll(engineDir, 0o755); err != nil {
-		t.Fatalf("create fake playbot engine dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(engineDir, "cli.py"), []byte("# fake cli placeholder\n"), 0o644); err != nil {
-		t.Fatalf("write fake cli.py: %v", err)
-	}
-
-	t.Setenv("PLAYBOT_PYTHON", fakePython)
-	t.Setenv("PLAYBOT_ENGINE_DIR", engineDir)
-	t.Setenv("BROWSERWING_FAKE_PLAYBOT_CALLS_FILE", e.callsFile)
-	t.Setenv("BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE", e.stdoutFile)
-	t.Setenv("BROWSERWING_FAKE_PLAYBOT_STDERR_FILE", e.stderrFile)
-	t.Setenv("BROWSERWING_FAKE_PLAYBOT_EXIT_CODE", "0")
-
 	e.setPlaybotStdout(t, validPlaybotOutput("default generated case"))
-	e.setPlaybotStderr(t, "")
 }
 
 func (e *generateContractEnv) seedProjectVersionPage(t *testing.T) (models.Project, models.ProjectVersion, models.TestPage) {
@@ -676,10 +718,11 @@ func (e *generateContractEnv) seedProjectVersionPage(t *testing.T) (models.Proje
 func (e *generateContractEnv) seedMainFlow(t *testing.T, pageID uint) models.PageScript {
 	t.Helper()
 	script := models.PageScript{
-		PageID:      pageID,
-		Name:        "recorded main flow",
-		ActionTrace: `{"steps":[{"type":"click","target":"primary action"}]}`,
-		DOMSnapshot: `{"elements":[{"role":"button","text":"primary action"}]}`,
+		PageID:            pageID,
+		Name:              "recorded main flow",
+		ActionTrace:       `{"steps":[{"type":"click","target":{"role":"button","text":"primary action","recorded_selector":"button.primary"}}]}`,
+		DOMSnapshot:       `{"elements":[{"role":"button","text":"primary action","recorded_selector":"button.primary"}]}`,
+		RecordingMetaJSON: defaultRecordingMetaJSON(),
 	}
 	if err := e.db.Create(&script).Error; err != nil {
 		t.Fatalf("seed main flow: %v", err)
@@ -836,41 +879,30 @@ func (e *generateContractEnv) failFutureTestCaseCreates(t *testing.T) {
 
 func (e *generateContractEnv) setPlaybotStdout(t *testing.T, stdout string) {
 	t.Helper()
-	if err := os.WriteFile(e.stdoutFile, []byte(stdout), 0o644); err != nil {
-		t.Fatalf("write fake Playbot stdout: %v", err)
-	}
-	t.Setenv("BROWSERWING_FAKE_PLAYBOT_EXIT_CODE", "0")
+	e.playbotAgent.setResult(parseLegacyPlaybotAgentResult(t, stdout), nil)
 }
 
 func (e *generateContractEnv) setPlaybotStderr(t *testing.T, stderr string) {
 	t.Helper()
-	if err := os.WriteFile(e.stderrFile, []byte(stderr), 0o644); err != nil {
-		t.Fatalf("write fake Playbot stderr: %v", err)
-	}
+	_ = stderr
 }
 
 func (e *generateContractEnv) setPlaybotFailure(t *testing.T, stderr string) {
 	t.Helper()
-	e.setPlaybotStdout(t, "")
-	e.setPlaybotStderr(t, stderr)
-	t.Setenv("BROWSERWING_FAKE_PLAYBOT_EXIT_CODE", "7")
+	e.playbotAgent.setResult(playbotagent.Result{}, errors.New(stderr))
 }
 
 func (e *generateContractEnv) playbotCalls(t *testing.T) int {
 	t.Helper()
-	data, err := e.playbotCallLog(t)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0
-	}
-	if err != nil {
-		t.Fatalf("read fake Playbot calls file: %v", err)
-	}
-	return strings.Count(data, "call")
+	return e.playbotAgent.callCount()
 }
 
 func (e *generateContractEnv) playbotCallLog(t *testing.T) (string, error) {
 	t.Helper()
-	data, err := os.ReadFile(e.callsFile)
+	data, err := json.Marshal(map[string]any{
+		"jobs":    e.playbotAgent.jobs,
+		"secrets": e.playbotAgent.secrets,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -895,11 +927,13 @@ func playbotOutputWithCases(titles []string) string {
 			"title":       title,
 			"description": "generated description for " + title,
 			"steps": []map[string]any{
-				{"action": "click", "target": "primary action"},
+				{"action": "click", "target": map[string]any{"role": "button", "text": "primary action", "recorded_selector": "button.primary"}},
 			},
 		})
 	}
 	data, err := json.Marshal(map[string]any{
+		"schema_version":  "p4.7.5",
+		"status":          "success",
 		"test_cases":      testCases,
 		"analysis":        map[string]any{"source": "fake-playbot"},
 		"generated_count": len(testCases),
@@ -909,4 +943,48 @@ func playbotOutputWithCases(titles []string) string {
 		panic(err)
 	}
 	return string(data)
+}
+
+func defaultRecordingMetaJSON() string {
+	data, err := json.Marshal(recordingMeta("business_flow", "clean"))
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+func parseLegacyPlaybotAgentResult(t *testing.T, raw string) playbotagent.Result {
+	t.Helper()
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return playbotagent.Result{SchemaVersion: "p4.7.5", Status: "success"}
+	}
+	if strings.TrimSpace(stringFromAny(obj["status"])) != "" {
+		var result playbotagent.Result
+		data, err := json.Marshal(obj)
+		if err != nil {
+			t.Fatalf("marshal fake Playbot result: %v", err)
+		}
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("decode fake Playbot result: %v; raw: %s", err, data)
+		}
+		return result
+	}
+	if obj["error"] != nil {
+		return playbotagent.Result{SchemaVersion: "p4.7.5", Status: "failed", Code: "playbot_agent_failed"}
+	}
+	result := playbotagent.Result{SchemaVersion: "p4.7.5", Status: "success"}
+	if cases, ok := obj["test_cases"].([]any); ok {
+		for _, item := range cases {
+			if blueprint, ok := item.(map[string]any); ok {
+				result.TestCases = append(result.TestCases, blueprint)
+			}
+		}
+	}
+	if refined, ok := obj["refined_blueprint"].(map[string]any); ok {
+		result.RefinedBlueprint = refined
+	}
+	result.Summary = strings.TrimSpace(stringFromAny(obj["summary"]))
+	result.RiskNotes = stringFromAny(obj["risk_notes"])
+	return result
 }

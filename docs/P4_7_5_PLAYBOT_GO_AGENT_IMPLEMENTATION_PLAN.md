@@ -2,7 +2,7 @@
 
 本文档是 `docs/P4_7_5_PLAYBOT_BLUEPRINT_QUALITY_DESIGN.md` 的实施拆分。它不是新的业务契约来源；如果本文档和详细设计冲突，以详细设计为准并退回规划者修订。
 
-当前状态：实施计划已通过 review，契约红测已落地并通过审核，等待业务开发者按红测实现生产代码。实现前不得为了让红测通过而加入 test-only 假实现。
+当前状态：实施计划已通过 review，契约红测已落地并通过审核，生产实现已按红测落地并通过定向验证，等待最终审核和阶段收口。
 
 ## 一、实施原则
 
@@ -15,7 +15,7 @@
 - 后端不使用 LLM 裁决是否保存、是否替换旧资产、是否补上下文或是否重录。
 - `docs/CONTRACT_RECORDS.md` 只在红测、实现和审核通过后更新。
 
-当前红测已创建 `playbot-agent` 独立 Go module 骨架、后端 `playbotagent` adapter 测试目录和 P4.7.5 合同测试文件。当前预期红态应来自缺生产 CLI、协议、compiler、quality、agent 编排、后端 adapter 或 Handler seam，不应来自语法错误、格式错误、DSN skip 或环境缓存权限问题。
+当前红测已创建 `playbot-agent` 独立 Go module 骨架、后端 `playbotagent` adapter 测试目录和 P4.7.5 合同测试文件。生产实现落地后，定向 P4.7.5 协议、CLI、adapter、generate/refine 和执行边界测试应转绿；若后续出现失败，应优先定位真实合同偏差、环境 DSN 缺失或缓存权限问题。
 
 ## 二、推荐目录和边界
 
@@ -82,6 +82,7 @@ backend/services/playbotagent/
 - `llm_runtime_config` 不得序列化 API Key 明文，只允许 provider、endpoint、model、config id、超时、重试和脱敏摘要。
 - `PlaybotJob` JSON、临时 job 文件、fixture 和调试产物不得包含 LLM API Key、Cookie、Storage value。
 - LLM API Key 必须从受控 secret channel 读取，例如环境变量、只读 secret file descriptor、进程私有 secret provider 或后续 RPC metadata。
+- 录制流程中的 token-like 字符串是业务测试数据，允许出现在 action input、DOM text、page description 和 user instruction 中；测试 token 与生产 token 不一致是使用约束，不由 P4.7.5 后端按 `sk-` 前缀强校验。
 - stdout 只能输出 `PlaybotResult` JSON。
 - stderr 只能输出脱敏日志。
 - 进程级失败和业务失败必须区分：业务失败进入 `PlaybotResult.status/code`，不是随意写 stderr 后退出。
@@ -360,7 +361,7 @@ pnpm run build
 
 ## 八、交付定义
 
-P4.7.5 红测已完成并通过 review，下一步进入生产实现阶段。
+P4.7.5 红测已完成并通过 review，生产实现已落地；下一步是最终审核、阶段验证和契约记录收口。
 
 P4.7.5 实现通过最终审核时必须满足：
 

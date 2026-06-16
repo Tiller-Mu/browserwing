@@ -51,6 +51,7 @@ type Handler struct {
 	versionInfo     VersionInfo
 	testCaseRunner  *testCaseRunnerHolder
 	projectAuth     *projectAuthRuntimeHolder
+	playbotAgent    *playbotAgentHolder
 	llmConfigTester llmConfigTesterFunc
 }
 

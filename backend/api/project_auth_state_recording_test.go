@@ -342,7 +342,7 @@ func TestGenerateTestCasesCarriesAuthContextWithoutSendingAuthSecretsToPlaybot(t
 		{"login flow clean", recordingMeta("login_flow", "clean"), "clean"},
 		{"business flow project saved", recordingMeta("business_flow", "project_saved"), "project_saved"},
 		{"business flow clean", recordingMeta("business_flow", "clean"), "clean"},
-		{"legacy missing meta", nil, "clean"},
+		{"default clean meta", nil, "clean"},
 	}
 
 	for _, tc := range cases {
@@ -364,8 +364,10 @@ func TestGenerateTestCasesCarriesAuthContextWithoutSendingAuthSecretsToPlaybot(t
 			input := env.readRecordedPlaybotInput(t)
 			requireBodyOmitsAuthSecrets(t, res)
 			requireJSONValueOmitsAuthSecrets(t, input)
-			if input["auth_context"] != tc.wantContext {
-				t.Fatalf("Playbot input auth_context = %v, want %s; input: %v", input["auth_context"], tc.wantContext, input)
+			source := requireMapField(t, input, "recording_source")
+			meta := requireMapField(t, source, "recording_meta")
+			if meta["auth_context"] != tc.wantContext {
+				t.Fatalf("Playbot job recording_meta.auth_context = %v, want %s; input: %v", meta["auth_context"], tc.wantContext, input)
 			}
 			var stored models.TestCase
 			if err := env.db.Where("page_id = ?", page.ID).First(&stored).Error; err != nil {
@@ -874,10 +876,11 @@ func (e *generateContractEnv) seedMainFlowWithRecordingMeta(t *testing.T, pageID
 
 func envSeedMainFlowBase(pageID uint) models.PageScript {
 	return models.PageScript{
-		PageID:      pageID,
-		Name:        "recorded main flow",
-		ActionTrace: `{"steps":[{"type":"click","target":"primary action"}]}`,
-		DOMSnapshot: `{"elements":[{"role":"button","text":"primary action"}]}`,
+		PageID:            pageID,
+		Name:              "recorded main flow",
+		ActionTrace:       `{"steps":[{"type":"click","target":{"role":"button","text":"primary action","recorded_selector":"button.primary"}}]}`,
+		DOMSnapshot:       `{"elements":[{"role":"button","text":"primary action","recorded_selector":"button.primary"}]}`,
+		RecordingMetaJSON: defaultRecordingMetaJSON(),
 	}
 }
 
@@ -937,11 +940,17 @@ func recordingMeta(kind, authContext string) map[string]any {
 
 func validPlaybotOutputWithAuthContext(title, authContext string) string {
 	data, err := json.Marshal(map[string]any{
+		"schema_version": "p4.7.5",
+		"status":         "success",
 		"test_cases": []map[string]any{{
 			"title":        title,
 			"description":  "generated with auth context",
 			"auth_context": authContext,
-			"steps":        []map[string]any{{"action": "expect_text", "text": "ready"}},
+			"steps": []map[string]any{{
+				"action": "expect_text",
+				"target": map[string]any{"text": "ready", "recorded_selector": ".ready"},
+				"value":  "ready",
+			}},
 		}},
 		"analysis":        map[string]any{"summary": "contract"},
 		"generated_count": 1,

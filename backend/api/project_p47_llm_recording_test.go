@@ -401,21 +401,27 @@ func TestP47GenerateUsesExplicitLLMConfigAndRejectsUnavailableSelections(t *test
 	if strings.Contains(explicit.Body.String(), explicitSecret) || strings.Contains(explicit.Body.String(), defaultSecret) {
 		t.Fatalf("generate response leaked LLM API key: %s", explicit.Body.String())
 	}
-	callLog, err := env.playbotCallLog(t)
+	job := env.readRecordedPlaybotInput(t)
+	runtimeConfig := requireMapField(t, job, "llm_runtime_config")
+	if runtimeConfig["model"] != explicitModel || runtimeConfig["endpoint"] != explicitBaseURL || runtimeConfig["config_id"] != "p47-generate-explicit" {
+		t.Fatalf("Playbot job did not use explicit generate LLM config; runtime_config=%v", runtimeConfig)
+	}
+	if runtimeConfig["model"] == defaultModel || runtimeConfig["endpoint"] == defaultBaseURL {
+		t.Fatalf("Playbot job used default LLM despite explicit llm_config_id; runtime_config=%v", runtimeConfig)
+	}
+	jobJSON, err := json.Marshal(job)
 	if err != nil {
-		t.Fatalf("read fake Playbot call log: %v", err)
+		t.Fatalf("marshal Playbot job: %v", err)
 	}
-	if !strings.Contains(callLog, explicitModel) || !strings.Contains(callLog, explicitBaseURL) {
-		t.Fatalf("Playbot call did not use explicit generate LLM config; log=%s", callLog)
+	if strings.Contains(string(jobJSON), explicitSecret) || strings.Contains(string(jobJSON), defaultSecret) {
+		t.Fatalf("Playbot job leaked LLM API key: %s", jobJSON)
 	}
-	if strings.Contains(callLog, defaultModel) || strings.Contains(callLog, defaultBaseURL) {
-		t.Fatalf("Playbot call used default LLM despite explicit llm_config_id; log=%s", callLog)
+	secret := env.playbotAgent.lastSecret(t)
+	if secret.Value != explicitSecret {
+		t.Fatalf("Playbot secret channel value = %q, want explicit config key", secret.Value)
 	}
-	if !strings.Contains(callLog, explicitSecret) {
-		t.Fatalf("Playbot call did not receive explicit generate LLM API key; log=%s", callLog)
-	}
-	if strings.Contains(callLog, defaultSecret) {
-		t.Fatalf("Playbot call used default LLM API key despite explicit llm_config_id; log=%s", callLog)
+	if secret.Value == defaultSecret {
+		t.Fatal("Playbot secret channel used default LLM API key despite explicit llm_config_id")
 	}
 	env.requireTestCaseCount(t, page.ID, 0)
 

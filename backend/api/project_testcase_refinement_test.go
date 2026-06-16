@@ -6,15 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/browserwing/browserwing/models"
+	"github.com/browserwing/browserwing/services/playbotagent"
 )
 
 func TestRefineTestCaseRequiresHierarchyAndPrompt(t *testing.T) {
@@ -137,8 +135,14 @@ func TestRefineTestCaseAllowsMissingMainFlowAndRequiresOwnedExecutionContext(t *
 	if len(warnings) == 0 {
 		t.Fatalf("context_warnings = %v, want warning for missing PageScript", input["context_warnings"])
 	}
-	requireNilObjectField(t, input, "snapshot")
-	requireNilObjectField(t, input, "intent_plan")
+	firstWarning, ok := warnings[0].(map[string]any)
+	if !ok || firstWarning["code"] != "missing_page_script" {
+		t.Fatalf("context_warnings[0] = %v, want missing_page_script", warnings[0])
+	}
+	source := requireMapField(t, input, "recording_source")
+	if len(source) != 0 {
+		t.Fatalf("recording_source = %v, want empty object when PageScript is missing", source)
+	}
 	report, ok := input["execution_report"].(map[string]any)
 	if !ok {
 		t.Fatalf("execution_report = %T, want object; input: %v", input["execution_report"], input)
@@ -201,9 +205,9 @@ func TestRefineTestCaseRejectsInvalidPlaybotOutputWithoutSaving(t *testing.T) {
 		wantStatus int
 	}{
 		{"non json stdout", "{not-json", http.StatusBadRequest},
-		{"playbot error", `{"error":"refine failed"}`, http.StatusInternalServerError},
+		{"playbot error", `{"error":"refine failed"}`, http.StatusBadRequest},
 		{"missing refined blueprint", `{"summary":"missing blueprint","risk_notes":""}`, http.StatusBadRequest},
-		{"empty summary", `{"refined_blueprint":{"title":"x","description":"","steps":[{"action":"expect_text","text":"x"}]},"summary":"   ","risk_notes":""}`, http.StatusBadRequest},
+		{"empty summary", `{"refined_blueprint":{"title":"x","description":"","steps":[{"action":"expect_text","target":{"text":"x","recorded_selector":".x"},"value":"x"}]},"summary":"   ","risk_notes":""}`, http.StatusBadRequest},
 		{"refined blueprint missing active steps", `{"refined_blueprint":{"title":"x","description":""},"summary":"invalid active blueprint","risk_notes":""}`, http.StatusBadRequest},
 		{"refined title empty", `{"refined_blueprint":{"title":" ","description":"","steps":[{"action":"expect_text","text":"x"}]},"summary":"invalid title","risk_notes":""}`, http.StatusBadRequest},
 	}
@@ -559,10 +563,14 @@ func TestRefineTestCaseReusesExistingLLMConfigSelection(t *testing.T) {
 		})
 
 		env.requireStatus(t, res, http.StatusOK)
-		args := env.readRecordedPlaybotArgs(t)
-		requireStringContains(t, args, "--llm-endpoint http://llm.invalid/v1")
-		requireStringContains(t, args, "--llm-api-key test-api-key")
-		requireStringContains(t, args, "--llm-model test-model")
+		job := env.playbotAgent.lastJob(t)
+		if job.LLMRuntimeConfig.Endpoint != "http://llm.invalid/v1" || job.LLMRuntimeConfig.Model != "test-model" || job.LLMRuntimeConfig.ConfigID != "default-test-llm" {
+			t.Fatalf("Playbot job LLM runtime config = %+v, want default config", job.LLMRuntimeConfig)
+		}
+		requireAgentJobOmitsSecret(t, job, "test-api-key")
+		if secret := env.playbotAgent.lastSecret(t); secret.Value != "test-api-key" {
+			t.Fatalf("Playbot secret channel value = %q, want default API key", secret.Value)
+		}
 		env.requirePlaybotCalls(t, 1)
 	})
 
@@ -589,10 +597,14 @@ func TestRefineTestCaseReusesExistingLLMConfigSelection(t *testing.T) {
 		})
 
 		env.requireStatus(t, res, http.StatusOK)
-		args := env.readRecordedPlaybotArgs(t)
-		requireStringContains(t, args, "--llm-endpoint http://explicit-llm.invalid/v1")
-		requireStringContains(t, args, "--llm-api-key explicit-api-key")
-		requireStringContains(t, args, "--llm-model explicit-model")
+		job := env.playbotAgent.lastJob(t)
+		if job.LLMRuntimeConfig.Endpoint != "http://explicit-llm.invalid/v1" || job.LLMRuntimeConfig.Model != "explicit-model" || job.LLMRuntimeConfig.ConfigID != "explicit-refine-llm" {
+			t.Fatalf("Playbot job LLM runtime config = %+v, want explicit config", job.LLMRuntimeConfig)
+		}
+		requireAgentJobOmitsSecret(t, job, "explicit-api-key")
+		if secret := env.playbotAgent.lastSecret(t); secret.Value != "explicit-api-key" {
+			t.Fatalf("Playbot secret channel value = %q, want explicit API key", secret.Value)
+		}
 		env.requirePlaybotCalls(t, 1)
 	})
 
@@ -725,12 +737,14 @@ type refinementRow struct {
 
 func validPlaybotRefineOutput(title string) string {
 	data, err := json.Marshal(map[string]any{
+		"schema_version": "p4.7.5",
+		"status":         "success",
 		"refined_blueprint": map[string]any{
 			"title":       title,
 			"description": "refined description",
 			"steps": []map[string]any{
-				{"action": "fill", "target": map[string]any{"placeholder": "Password"}, "value": ""},
-				{"action": "expect_text", "text": "Password is required"},
+				{"action": "fill", "target": map[string]any{"placeholder": "Password"}, "value": "secret"},
+				{"action": "expect_text", "target": map[string]any{"text": "Password is required", "recorded_selector": ".password-error"}, "value": "Password is required"},
 			},
 		},
 		"summary":    "add password empty validation",
@@ -887,92 +901,25 @@ func (e *generateContractEnv) updateRefinementStringField(t *testing.T, id uint,
 
 func (e *generateContractEnv) installRecordingFakePlaybotCommand(t *testing.T) {
 	t.Helper()
-	fakePython := filepath.Join(e.tmpDir, "fake-refine-playbot-python")
-	if runtime.GOOS == "windows" {
-		fakePython += ".cmd"
-		script := strings.Join([]string{
-			"@echo off",
-			"setlocal enabledelayedexpansion",
-			"if defined BROWSERWING_FAKE_PLAYBOT_CALLS_FILE echo call>>\"%BROWSERWING_FAKE_PLAYBOT_CALLS_FILE%\"",
-			"if defined BROWSERWING_FAKE_PLAYBOT_ARGS_FILE echo %*>\"%BROWSERWING_FAKE_PLAYBOT_ARGS_FILE%\"",
-			"set \"INPUT_FILE=\"",
-			":parse_args",
-			"if \"%~1\"==\"\" goto after_parse_args",
-			"if \"%~1\"==\"--input\" (",
-			"  shift",
-			"  set \"INPUT_FILE=%~1\"",
-			")",
-			"shift",
-			"goto parse_args",
-			":after_parse_args",
-			"if defined INPUT_FILE if defined BROWSERWING_FAKE_PLAYBOT_INPUT_FILE type \"!INPUT_FILE!\" > \"%BROWSERWING_FAKE_PLAYBOT_INPUT_FILE%\"",
-			"if defined BROWSERWING_FAKE_PLAYBOT_STDERR_FILE type \"%BROWSERWING_FAKE_PLAYBOT_STDERR_FILE%\" 1>&2",
-			"if defined BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE type \"%BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE%\"",
-			"if defined BROWSERWING_FAKE_PLAYBOT_EXIT_CODE exit /b %BROWSERWING_FAKE_PLAYBOT_EXIT_CODE%",
-			"exit /b 0",
-			"",
-		}, "\r\n")
-		if err := os.WriteFile(fakePython, []byte(script), 0o755); err != nil {
-			t.Fatalf("write recording fake python command: %v", err)
-		}
-	} else {
-		script := strings.Join([]string{
-			"#!/bin/sh",
-			"if [ -n \"$BROWSERWING_FAKE_PLAYBOT_CALLS_FILE\" ]; then echo call >> \"$BROWSERWING_FAKE_PLAYBOT_CALLS_FILE\"; fi",
-			"if [ -n \"$BROWSERWING_FAKE_PLAYBOT_ARGS_FILE\" ]; then printf '%s\\n' \"$*\" > \"$BROWSERWING_FAKE_PLAYBOT_ARGS_FILE\"; fi",
-			"input_file=\"\"",
-			"while [ $# -gt 0 ]; do",
-			"  if [ \"$1\" = \"--input\" ]; then shift; input_file=\"$1\"; fi",
-			"  shift",
-			"done",
-			"if [ -n \"$input_file\" ] && [ -n \"$BROWSERWING_FAKE_PLAYBOT_INPUT_FILE\" ]; then cat \"$input_file\" > \"$BROWSERWING_FAKE_PLAYBOT_INPUT_FILE\"; fi",
-			"if [ -n \"$BROWSERWING_FAKE_PLAYBOT_STDERR_FILE\" ]; then cat \"$BROWSERWING_FAKE_PLAYBOT_STDERR_FILE\" >&2; fi",
-			"if [ -n \"$BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE\" ]; then cat \"$BROWSERWING_FAKE_PLAYBOT_STDOUT_FILE\"; fi",
-			"exit ${BROWSERWING_FAKE_PLAYBOT_EXIT_CODE:-0}",
-			"",
-		}, "\n")
-		if err := os.WriteFile(fakePython, []byte(script), 0o755); err != nil {
-			t.Fatalf("write recording fake python command: %v", err)
-		}
-		if err := os.Chmod(fakePython, 0o755); err != nil {
-			t.Fatalf("chmod recording fake python command: %v", err)
-		}
-	}
-	_ = os.Remove(e.refinementPlaybotInputFile())
-	_ = os.Remove(e.refinementPlaybotArgsFile())
-	t.Setenv("PLAYBOT_PYTHON", fakePython)
-	t.Setenv("BROWSERWING_FAKE_PLAYBOT_INPUT_FILE", e.refinementPlaybotInputFile())
-	t.Setenv("BROWSERWING_FAKE_PLAYBOT_ARGS_FILE", e.refinementPlaybotArgsFile())
-}
-
-func (e *generateContractEnv) refinementPlaybotInputFile() string {
-	return filepath.Join(e.tmpDir, "refine-playbot-input.json")
-}
-
-func (e *generateContractEnv) refinementPlaybotArgsFile() string {
-	return filepath.Join(e.tmpDir, "refine-playbot-args.txt")
 }
 
 func (e *generateContractEnv) readRecordedPlaybotInput(t *testing.T) map[string]any {
 	t.Helper()
-	data, err := os.ReadFile(e.refinementPlaybotInputFile())
-	if err != nil {
-		t.Fatalf("read recorded Playbot input: %v", err)
-	}
-	var input map[string]any
-	if err := json.Unmarshal(data, &input); err != nil {
-		t.Fatalf("parse recorded Playbot input: %v; raw: %s", err, data)
-	}
-	return input
+	return e.playbotAgent.lastJobMap(t)
 }
 
 func (e *generateContractEnv) readRecordedPlaybotArgs(t *testing.T) string {
 	t.Helper()
-	data, err := os.ReadFile(e.refinementPlaybotArgsFile())
-	if err != nil {
-		t.Fatalf("read recorded Playbot args: %v", err)
-	}
-	return string(data)
+	job := e.playbotAgent.lastJob(t)
+	secret := e.playbotAgent.lastSecret(t)
+	return fmt.Sprintf("--mode %s --llm-endpoint %s --llm-model %s --llm-config-id %s --secret-env %s --secret-value %s",
+		job.Mode,
+		job.LLMRuntimeConfig.Endpoint,
+		job.LLMRuntimeConfig.Model,
+		job.LLMRuntimeConfig.ConfigID,
+		secret.EnvName,
+		secret.Value,
+	)
 }
 
 func (e *generateContractEnv) saveRefinementLLMConfig(t *testing.T, cfg models.LLMConfigModel) {
@@ -997,6 +944,15 @@ func requireObjectArrayField(t *testing.T, obj map[string]any, name string) []an
 	return value
 }
 
+func requireMapField(t *testing.T, obj map[string]any, name string) map[string]any {
+	t.Helper()
+	value, ok := obj[name].(map[string]any)
+	if !ok {
+		t.Fatalf("%s = %T, want object; object: %v", name, obj[name], obj)
+	}
+	return value
+}
+
 func requireNilObjectField(t *testing.T, obj map[string]any, name string) {
 	t.Helper()
 	value, exists := obj[name]
@@ -1012,6 +968,17 @@ func requireStringContains(t *testing.T, value, want string) {
 	t.Helper()
 	if !strings.Contains(value, want) {
 		t.Fatalf("value does not contain %q: %s", want, value)
+	}
+}
+
+func requireAgentJobOmitsSecret(t *testing.T, job playbotagent.Job, secret string) {
+	t.Helper()
+	data, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("marshal Playbot agent job: %v", err)
+	}
+	if strings.Contains(string(data), secret) {
+		t.Fatalf("Playbot agent job leaked secret %q: %s", secret, data)
 	}
 }
 

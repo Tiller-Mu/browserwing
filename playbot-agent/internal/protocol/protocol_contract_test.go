@@ -84,11 +84,11 @@ func TestP475ProtocolRejectsSecretsInPlaybotJobJSON(t *testing.T) {
 				Type: "click",
 				Target: RecordedTarget{
 					Role:             "button",
-					Text:             "Save",
+					Text:             "Cookies",
 					RecordedSelector: "button.save",
 				},
 			}},
-			DOMSnapshot: map[string]any{"elements": []map[string]any{{"role": "button", "text": "Save"}}},
+			DOMSnapshot: map[string]any{"elements": []map[string]any{{"role": "button", "text": "Cookies"}}},
 			RecordingMeta: RecordingMeta{
 				SchemaVersion: 1,
 				RecordingKind: "business_flow",
@@ -133,6 +133,21 @@ func TestP475ProtocolRejectsSecretsInPlaybotJobJSON(t *testing.T) {
 	}`)
 	if _, err := DecodeAndValidatePlaybotJob(contaminated); err == nil || !strings.Contains(err.Error(), "playbot_job_secret_leak") {
 		t.Fatalf("contaminated job error = %v, want playbot_job_secret_leak", err)
+	}
+
+	tokenLikeBusinessText := []byte(`{
+		"schema_version":"p4.7.5",
+		"mode":"generate",
+		"request_id":"req-p475-token-like-business-text",
+		"page_context":{"url":"https://example.invalid/orders","description":"recorded test token sk-test-token-for-recording"},
+		"recording_source":{
+			"action_trace":[{"type":"input","target":{"text":"sk-payment-token-field"},"value":"sk-test-token-for-recording"}],
+			"dom_snapshot":{"elements":[{"text":"sk-payment-token-field"}]},
+			"recording_meta":{"schema_version":1,"recording_kind":"business_flow","auth_context":"clean"}
+		}
+	}`)
+	if _, err := DecodeAndValidatePlaybotJob(tokenLikeBusinessText); err != nil {
+		t.Fatalf("token-like business text should validate: %v", err)
 	}
 }
 
@@ -228,11 +243,10 @@ func TestP475LLMRuntimeConfigSerializesOnlyRedactedSummary(t *testing.T) {
 
 func TestP475ProtocolFixturesDoNotContainSecrets(t *testing.T) {
 	forbidden := []string{
-		"sk-",
 		"api_key",
-		"cookie-value",
-		"local-storage-value",
-		"session-storage-value",
+		"cookies",
+		"localStorage",
+		"sessionStorage",
 		`C:\Users\`,
 	}
 	root := filepath.Join("..", "..", "testdata")

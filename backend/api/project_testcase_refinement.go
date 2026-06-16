@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/browserwing/browserwing/models"
-	"github.com/browserwing/browserwing/services/playbot"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -67,7 +66,7 @@ type refinementStatusResponse struct {
 }
 
 func (h *ProjectHandlers) RefineTestCase(c *gin.Context) {
-	_, _, pageID, testCaseID, ok := parseProjectVersionPageTestCaseIDs(c)
+	projectID, versionID, pageID, testCaseID, ok := parseProjectVersionPageTestCaseIDs(c)
 	if !ok {
 		return
 	}
@@ -123,34 +122,39 @@ func (h *ProjectHandlers) RefineTestCase(c *gin.Context) {
 		return
 	}
 
-	stdout, err := playbot.RefineTestCase(c.Request.Context(), playbot.RefineOptions{
-		PageURL:          buildPageURL(version.BaseURL, page.Path),
-		PageDescription:  page.Description,
-		CurrentBlueprint: currentBlueprint,
-		UserPrompt:       prompt,
-		Snapshot:         snapshot,
-		IntentPlan:       intentPlan,
-		ExecutionReport:  executionReport,
-		ContextWarnings:  warnings,
-		LLMEndpoint:      llmConfig.BaseURL,
-		LLMAPIKey:        llmConfig.APIKey,
-		LLMModel:         llmConfig.Model,
-	})
+	job, secret := buildP475OptimizeJob(projectID, versionID, pageID, version, page, testCase, currentBlueprint, prompt, snapshot, intentPlan, warnings, executionReport, llmConfig)
+	result, err := h.runP475AgentWithContextRetry(c.Request.Context(), job, secret, p475RecordingSource{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	refinedBlueprint, refinedBlueprintJSON, summary, riskNotes, err := parsePlaybotRefineOutput(stdout, testCase.Status)
-	if err != nil {
-		if isPlaybotRefineFailure(err) {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+	if status := strings.TrimSpace(stringFromAny(result["status"])); status != "success" {
+		code := strings.TrimSpace(stringFromAny(result["code"]))
+		if code == "" {
+			code = "playbot_agent_failed"
 		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": code, "code": code})
+		return
+	}
+	defaultURL, err := buildExecutionURL(version.BaseURL, page.Path)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	_ = refinedBlueprint
+	refinedBlueprint, summary, riskNotes, err := parseP475AgentRefinedBlueprint(result, strings.TrimSpace(stringFromAny(currentBlueprint["auth_context"])), defaultURL)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(summary) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "playbot_summary_required"})
+		return
+	}
+	refinedBlueprintJSON, err := normalizeBlueprintObject(refinedBlueprint)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	refinement := models.LLMRefinement{
 		TestCaseID:        testCase.ID,

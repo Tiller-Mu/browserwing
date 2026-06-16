@@ -70,7 +70,7 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 		}
 
 		// 项目管理相关 (Testing Platform)
-		projectHandlers := NewProjectHandlers(handler.db, handler.config, handler.ensureTestCaseRunnerHolder(), handler.ensureProjectAuthRuntimeHolder())
+		projectHandlers := NewProjectHandlers(handler.db, handler.config, handler.ensureTestCaseRunnerHolder(), handler.ensureProjectAuthRuntimeHolder(), handler.ensurePlaybotAgentHolder())
 		projects := api.Group("/projects")
 		{
 			projects.GET("", projectHandlers.ListProjects)
