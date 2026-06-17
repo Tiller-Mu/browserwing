@@ -1131,6 +1131,52 @@ func TestP47SaveRecordingSessionRequiresStoppedSession(t *testing.T) {
 	p47RequireEmptyTimestamp(t, row, "saved_at")
 }
 
+func TestP47StopRecordingSessionFinalizesPersistedDraftWhenBrowserAlreadyStopped(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	fakeRuntime := newContractP45Runtime()
+	fakeRuntime.stopErr = fmt.Errorf("recording is not in progress")
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
+
+	start := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, map[string]any{
+		"recording_kind": "business_flow",
+		"auth_context":   "clean",
+		"target_url":     "https://example.invalid/orders",
+	})
+	env.requireStatus(t, start, http.StatusOK)
+	sessionID := strings.TrimSpace(fmt.Sprint(env.decodeObject(t, start)["recording_session_id"]))
+	if err := env.db.Model(&models.RecordingSession{}).
+		Where("id = ?", sessionID).
+		Updates(map[string]any{
+			"actions_json":   `[{"type":"click","selector":"#create-order","timestamp":1}]`,
+			"action_count":   1,
+			"last_synced_at": time.Now().UTC(),
+			"updated_at":     time.Now().UTC(),
+		}).Error; err != nil {
+		t.Fatalf("seed persisted draft actions: %v", err)
+	}
+	sessionPath := fmt.Sprintf(
+		"/api/v1/projects/%d/versions/%d/pages/%d/recording-session/%s",
+		project.ID, version.ID, page.ID, sessionID,
+	)
+
+	stop := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/stop", map[string]any{}, "")
+
+	env.requireStatus(t, stop, http.StatusOK)
+	body := env.decodeObject(t, stop)
+	if body["status"] != "stopped" || body["action_count"] != float64(1) {
+		t.Fatalf("stop response = %v, want stopped with persisted action count", body)
+	}
+	env.requireP47RecordingSession(t, map[string]any{
+		"project_id":   project.ID,
+		"version_id":   version.ID,
+		"page_id":      page.ID,
+		"status":       "stopped",
+		"actions_json": "#create-order",
+		"action_count": float64(1),
+	})
+}
+
 func TestP47CancelledFailedAndInvalidMetaDoNotReplacePageScript(t *testing.T) {
 	cases := []struct {
 		name       string

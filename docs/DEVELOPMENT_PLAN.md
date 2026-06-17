@@ -423,7 +423,9 @@ P4.6 完成后，不直接进入 P5。已先通过 P4.7 收口 LLM 统一配置�
 - 新增 `RecordingSession` 和 `RecordingArtifact`，录制会话、草稿动作、停止、取消、保存和产物元数据由数据库管理。
 - 项目录制取消会调用后端 cancel 入口，更新 `RecordingSession.status = cancelled`，并保证不替换旧 `PageScript`。
 - 浏览器录制草稿通过 recorder 同步循环持久化到 `RecordingSession.actions_json`、`action_count` 和 `last_synced_at`。
-- 录制停止后保存只允许基于 `stopped` 会话生成或替换当前页面 `PageScript`；`saved/cancelled/failed` 后拒绝继续同步或保存。
+- 录制停止后保存只允许基于 `stopped` 会话生成或替换当前页面 `PageScript`；保存前如会话仍为 `recording`，前端先停止会话；浏览器已提前停止但数据库有合法草稿 actions 时，后端停止入口可用持久化草稿收口为 `stopped`。
+- 页面管理支持查看当前已保存 `PageScript` 的脱敏录制结果、动作轨迹、DOM 快照、录制元数据和质量诊断。
+- `saved/cancelled/failed` 后拒绝继续同步或保存。
 
 已确认红测：
 
@@ -432,7 +434,8 @@ P4.6 完成后，不直接进入 P5。已先通过 P4.7 收口 LLM 统一配置�
 - LLM 复用：Playbot 生成、自然语言精修、录制页 AI 自动提取和 AI Explorer 必须通过同一套配置解析策略选择可用模型。
 - 安全边界：API 响应、日志、Playbot job JSON、执行报告和录制产物元数据不得出现明文 API Key。
 - RecordingSession：开始录制创建会话，录制中可按 session 持久化 actions，刷新后可恢复会话摘要。
-- 保存录制：停止并保存时生成新的 PageScript，并替换当前页面旧主流程；取消、失败或非法 `recording_meta` 不得替换旧 PageScript。
+- 保存录制：停止并保存时生成新的 PageScript，并替换当前页面旧主流程；保存前自动停止仍在 recording 的会话；浏览器已停但数据库草稿完整时可收口为 stopped；取消、失败或非法 `recording_meta` 不得替换旧 PageScript。
+- 录制结果查看：只读取当前页面有效 PageScript，展示前脱敏 Cookie、Storage value、API Key 和本地绝对路径，并按录制质量规则给出诊断；目标定位识别需支持顶层 selector/xpath/text/ref_id 和嵌套 target 中的 selector/css/xpath/role+text/text/label/placeholder/ref_id。
 - 产物元数据：录屏、截图和下载文件只通过受控元数据和下载接口暴露，不返回任意本地绝对路径。
 
 验证：

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api, Script, ScriptAction, BrowserConfig, BrowserInstance } from '../api/client'
 import { ArrowLeft, Power, PowerOff, Loader, ExternalLink, RefreshCw, Save, Video, Play, Settings, Cookie, Monitor, ShieldCheck } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -106,6 +106,7 @@ export default function BrowserManager() {
   const [selectedInstanceForPlay, setSelectedInstanceForPlay] = useState<string>('') // 选择用于执行脚本的实例
   const [scriptDescription, setScriptDescription] = useState('')
   const [hasShownStopMessage, setHasShownStopMessage] = useState(false) // 标记是否已显示停止消息
+  const loadRecordingStatusRef = useRef<() => Promise<void>>(async () => {})
   
   // 历史访问记录状态
   const [historyLinks, setHistoryLinks] = useState<string[]>([])
@@ -209,7 +210,7 @@ export default function BrowserManager() {
     // 定时刷新状态、录制状态和实例状态
     const interval = setInterval(async () => {
       loadStatus()
-      loadRecordingStatus()
+      loadRecordingStatusRef.current()
       const instanceList = await loadInstances()  // 刷新实例列表
       await loadCurrentInstance(instanceList)  // 刷新当前实例
     }, 2000) // 每2秒刷新状态,以便及时响应页面内的录制操作
@@ -371,6 +372,10 @@ export default function BrowserManager() {
       
       // 检测是否是页面内停止的录制
       if (status.in_page_stopped && !hasShownStopMessage) {
+        if (isProjectRecordingContext && (!projectId || !versionId || !pageId || !recordingSessionId)) {
+          setRecordingStatus(status)
+          return
+        }
         let stoppedCount = Number(status.count || status.actions?.length || 0)
         let stoppedActions = status.actions || []
         if (isProjectRecordingContext && projectId && versionId && pageId && recordingSessionId) {
@@ -417,6 +422,8 @@ export default function BrowserManager() {
       console.error('获取录制状态失败:', err)
     }
   }, [hasShownStopMessage, isProjectRecordingContext, pageId, projectId, recordingSessionId, showMessage, t, versionId])
+
+  loadRecordingStatusRef.current = loadRecordingStatus
 
   const loadScripts = async () => {
     try {
@@ -665,8 +672,29 @@ export default function BrowserManager() {
     }
   }
 
-  const handleOpenProjectTarget = async () => {
-    await handleOpenPage(projectRecordingTargetUrl)
+  const ensureProjectRecordingStopped = async () => {
+    if (!projectId || !versionId || !pageId || !recordingSessionId) {
+      throw new Error('缺少项目录制会话，请从页面管理重新开始录制')
+    }
+    const latest = await projectApi.getPageRecordingSession(Number(projectId), Number(versionId), Number(pageId), recordingSessionId)
+    if (latest.data.status === 'stopped') {
+      setProjectRecordingSession(latest.data)
+      return latest.data
+    }
+    if (latest.data.status !== 'recording') {
+      throw new Error('当前项目录制会话不能保存，请重新录制')
+    }
+    const stopped = await projectApi.stopPageRecordingSession(Number(projectId), Number(versionId), Number(pageId), recordingSessionId, {})
+    setProjectRecordingSession(stopped.data)
+    const actionCount = Number(stopped.data.action_count || 0)
+    if (actionCount > 0) {
+      setRecordedActions(Array.from({ length: actionCount }, (_, index) => ({
+        type: 'recorded',
+        timestamp: index,
+        selector: '',
+      })))
+    }
+    return stopped.data
   }
 
   const handleSaveScript = async (projectAction: ProjectRecordingSaveAction = 'save_only') => {
@@ -690,6 +718,7 @@ export default function BrowserManager() {
         // Save as a PageScript bounded to a TestPage
         let savedMessage = ''
         if (shouldSavePageScript) {
+          await ensureProjectRecordingStopped()
           const response = await projectApi.savePageRecording(
             Number(projectId),
             Number(versionId),
@@ -1041,14 +1070,6 @@ export default function BrowserManager() {
                   readOnly
                   className="input flex-1 font-mono text-sm"
                 />
-                <button
-                  onClick={handleOpenProjectTarget}
-                  disabled={!status.is_running || openingPage || !projectRecordingTargetUrl}
-                  className="btn-primary whitespace-nowrap flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {openingPage ? <Loader className="w-5 h-5 animate-spin" /> : <ExternalLink className="w-5 h-5" />}
-                  打开目标页
-                </button>
               </div>
             </div>
 

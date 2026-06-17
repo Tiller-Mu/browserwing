@@ -93,6 +93,7 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			projects.POST("/:id/versions/:vid/pages/:pid/recording-session/:sid/stop", projectHandlers.StopRecordingSession)
 			projects.POST("/:id/versions/:vid/pages/:pid/recording-session/:sid/cancel", projectHandlers.CancelRecordingSession)
 			projects.POST("/:id/versions/:vid/pages/:pid/recordings", projectHandlers.SavePageRecording)
+			projects.GET("/:id/versions/:vid/pages/:pid/recordings/latest", projectHandlers.GetLatestPageRecording)
 			projects.GET("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.ListTestCases)
 			projects.POST("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.CreateTestCase)
 			projects.POST("/:id/versions/:vid/pages/:pid/test-cases/generate", projectHandlers.GenerateTestCases)

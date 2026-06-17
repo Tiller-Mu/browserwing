@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Bot, ExternalLink, FilePlus, FileText, Plus, RefreshCw, ShieldCheck, Trash2, Video } from 'lucide-react';
+import { ArrowLeft, Bot, ExternalLink, Eye, FilePlus, FileText, Plus, RefreshCw, ShieldCheck, Trash2, Video } from 'lucide-react';
 import { api, type LLMConfig } from '../api/client';
 import { projectApi, streamPlaybotRun, type GenerateTestCasesResponse, type P45AuthContext, type P45RecordingKind, type PlaybotRunEvent, type ProjectAuthStateSummary, type TestCase, type TestPage } from '../api/project';
 import { Modal } from '../components/Modal';
@@ -9,6 +9,7 @@ import Toast from '../components/Toast';
 import {
   buildP45AuthStateSummary,
   buildP45PageManagementView,
+  buildP45RecordingDetailView,
   createP45AuthStateController,
   createP45RecordingController,
   type P45AuthStateSummaryView,
@@ -191,6 +192,10 @@ export default function TestPageManager() {
 
   const navigateToTestCase = (pageId: number, testCaseId: number) => {
     navigate(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}`);
+  };
+
+  const navigateToRecordingDetail = (pageId: number) => {
+    navigate(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording`);
   };
 
   const openCreateTestCaseModal = (page: TestPage) => {
@@ -471,6 +476,12 @@ export default function TestPageManager() {
                             <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                               {page.scripts?.[0]?.name || '未命名脚本'}
                             </div>
+                            <button
+                              onClick={() => navigateToRecordingDetail(page.id)}
+                              className="mt-2 inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-700 dark:text-indigo-400"
+                            >
+                              <Eye className="w-3.5 h-3.5" /> 查看结果
+                            </button>
                           </div>
                         ) : (
                           <span className="text-xs text-amber-700 dark:text-amber-300">未录制</span>
@@ -751,6 +762,7 @@ export default function TestPageManager() {
 export const p45TestPageManagerContract = {
   buildAuthStateSummary: buildP45AuthStateSummary,
   buildPageManagementView: buildP45PageManagementView,
+  buildRecordingDetailView: buildP45RecordingDetailView,
   createAuthStateController: createP45AuthStateController,
   createRecordingController: createP45RecordingController,
 };

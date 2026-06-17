@@ -2,6 +2,7 @@ import type {
   P45AuthContext,
   P45RecordingKind,
   P45RecordingMeta,
+  PageRecordingDetail,
   CaptureProjectAuthStateRequest,
   ProjectAuthStateSummary,
   SavePageRecordingRequest,
@@ -44,6 +45,24 @@ export interface P45PageManagementView {
   rows: P45PageManagementRowView[];
 }
 
+export interface P45RecordingDetailView {
+  actionCount: number;
+  snapshotElementCount: number;
+  status: 'ready' | 'warning';
+  qualityMessages: string[];
+  parseErrorCount: number;
+  sensitiveFieldsRemoved: string[];
+}
+
+const recordingQualityMessages: Record<string, string> = {
+  recording_action_missing_target: '存在缺少目标定位的录制动作',
+  recording_action_missing_value: '存在缺少输入值的录制动作',
+  recording_navigation_missing_url: '存在缺少 URL 的导航动作',
+  recording_snapshot_unusable: '页面快照为空或不可用',
+  recording_meta_invalid: '录制元数据无效',
+  recording_auth_context_conflict: '录制登录态上下文冲突',
+};
+
 export function buildP45AuthStateSummary(raw: null | undefined): null;
 export function buildP45AuthStateSummary(raw: Partial<ProjectAuthStateSummary>): P45AuthStateSummaryView;
 export function buildP45AuthStateSummary(raw: Partial<ProjectAuthStateSummary> | null | undefined): P45AuthStateSummaryView | null;
@@ -84,6 +103,26 @@ export function buildP45PageManagementView(input: {
         { recordingKind: 'business_flow', authContext: 'clean' },
       ],
     })),
+  };
+}
+
+export function buildP45RecordingDetailView(recording: Pick<PageRecordingDetail, 'diagnostics'>): P45RecordingDetailView {
+  const diagnostics = recording.diagnostics || {
+    action_count: 0,
+    snapshot_element_count: 0,
+    quality_codes: [],
+    parse_errors: [],
+    sensitive_fields_removed: [],
+  };
+  const qualityCodes = Array.isArray(diagnostics.quality_codes) ? diagnostics.quality_codes : [];
+  const parseErrors = Array.isArray(diagnostics.parse_errors) ? diagnostics.parse_errors : [];
+  return {
+    actionCount: Number(diagnostics.action_count || 0),
+    snapshotElementCount: Number(diagnostics.snapshot_element_count || 0),
+    status: qualityCodes.length > 0 || parseErrors.length > 0 ? 'warning' : 'ready',
+    qualityMessages: qualityCodes.map((code) => recordingQualityMessages[code] || code),
+    parseErrorCount: parseErrors.length,
+    sensitiveFieldsRemoved: Array.isArray(diagnostics.sensitive_fields_removed) ? diagnostics.sensitive_fields_removed : [],
   };
 }
 

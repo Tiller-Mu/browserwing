@@ -16,6 +16,7 @@ import ScheduledTaskManager from './pages/ScheduledTaskManager'
 import ProjectManager from './pages/ProjectManager'
 import TestPageManager from './pages/TestPageManager'
 import TestCaseDetail from './pages/TestCaseDetail'
+import PageRecordingDetail from './pages/PageRecordingDetail'
 import { checkAuth } from './api/client'
 
 // 受保护的路由组件
@@ -80,6 +81,7 @@ function App() {
           <Route path="cookies" element={<CookieManager />} />
           <Route path="projects" element={<ProjectManager />} />
           <Route path="projects/:projectId/versions/:versionId/pages" element={<TestPageManager />} />
+          <Route path="projects/:projectId/versions/:versionId/pages/:pageId/recording" element={<PageRecordingDetail />} />
           <Route path="projects/:projectId/versions/:versionId/pages/:pageId/test-cases/:testCaseId" element={<TestCaseDetail />} />
           <Route path="scripts" element={<ScriptManager />} />
           <Route path="scheduled-tasks" element={<ScheduledTaskManager />} />

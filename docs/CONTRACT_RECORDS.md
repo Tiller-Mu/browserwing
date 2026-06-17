@@ -481,16 +481,30 @@ Playbot 生成 TestCase、自然语言 refine、录制页 AI 自动提取/表单
 ### RecordingSession 生命周期和 PageScript 生成
 
 契约：
-项目页面录制开始时必须创建 `RecordingSession(status = recording)`，写入 project/version/page、recording_kind、auth_context、target_url 和可选 created_by。录制中必须按 session 持久化完整 actions 数组、action_count 和 last_synced_at；浏览器 `sessionStorage` 只能作为页面内临时缓存，不是唯一事实源。停止录制后会话更新为 `stopped`；只有 `stopped` 会话可以保存为当前页面主流程 `PageScript`，保存时在事务中替换旧主流程并把会话更新为 `saved`。`saved/cancelled/failed` 后不得继续同步 actions 或再次保存。
+项目页面录制开始时必须创建 `RecordingSession(status = recording)`，写入 project/version/page、recording_kind、auth_context、target_url 和可选 created_by。录制中必须按 session 持久化完整 actions 数组、action_count 和 last_synced_at；浏览器 `sessionStorage` 只能作为页面内临时缓存，不是唯一事实源。停止录制后会话更新为 `stopped`；只有 `stopped` 会话可以保存为当前页面主流程 `PageScript`，保存时在事务中替换旧主流程并把会话更新为 `saved`。保存请求到达时如果会话仍是 `recording`，前端必须先停止会话再保存；如果浏览器录制生命周期已提前停止，但数据库中已有合法非空草稿 actions，停止入口可以用持久化草稿把会话收口为 `stopped`。`saved/cancelled/failed` 后不得继续同步 actions 或再次保存。
 
 依据：
 来自 P4.7 设计对录制数据数据库事实源的要求。P1-P4.6 的生成、管理、执行和 refine 仍以当前页面保存的 `PageScript` 为主流程事实源；P4.7 只是把录制过程变成可恢复、可审计、可保护的会话。
 
 当前/历史问题：
-如果录制动作只存在 `sessionStorage`，刷新或重连会丢失草稿；如果 active 会话可以直接保存，会把未停止的录制状态固化为主流程；如果 stopped/saved/cancelled 边界不清，会污染旧 PageScript 或产生重复主流程。
+如果录制动作只存在 `sessionStorage`，刷新或重连会丢失草稿；如果 active 会话可以直接保存，会把未停止的录制状态固化为主流程；如果浏览器已经停止而数据库会话仍停在 `recording`，保存会被 409 卡住；如果 stopped/saved/cancelled 边界不清，会污染旧 PageScript 或产生重复主流程。
 
 验证：
-`TestP47RecordingSessionAndArtifactProductionModels`、`TestP47RecordingSessionStartValidatesScopeAndAuthContext`、`TestP47RecordingSessionSummaryAndStopUseProductionRoutes`、`TestP47RecordingSessionSyncPersistsActionsAndRejectsTerminalStates`、`TestP47SaveRecordingSessionReplacesPageScriptWithRecordingMeta`、`TestP47SaveRecordingSessionRequiresStoppedSession` 和 `TestP47RecorderSyncLoopPersistsRecordingSessionDraft` 覆盖模型、作用域、开始、同步、停止、保存和草稿持久化。
+`TestP47RecordingSessionAndArtifactProductionModels`、`TestP47RecordingSessionStartValidatesScopeAndAuthContext`、`TestP47RecordingSessionSummaryAndStopUseProductionRoutes`、`TestP47RecordingSessionSyncPersistsActionsAndRejectsTerminalStates`、`TestP47SaveRecordingSessionReplacesPageScriptWithRecordingMeta`、`TestP47SaveRecordingSessionRequiresStoppedSession`、`TestP47StopRecordingSessionFinalizesPersistedDraftWhenBrowserAlreadyStopped` 和 `TestP47RecorderSyncLoopPersistsRecordingSessionDraft` 覆盖模型、作用域、开始、同步、停止、保存、浏览器已停后的草稿收口和草稿持久化。
+
+### 录制结果查看和质量诊断
+
+契约：
+页面管理在当前页面存在已保存 `PageScript` 时，必须提供查看录制结果入口。查看接口只读取当前 project/version/page 下的当前有效 `PageScript`，返回脱敏后的 action trace、DOM snapshot、recording meta 和质量诊断，不返回 Cookie、Storage value、API Key 或本地绝对路径。质量诊断中的目标定位判断必须与执行归一化口径保持一致，支持顶层 selector/xpath/text/ref_id，也支持嵌套 `target` 中的 ref_id、recorded_selector、selector、css、xpath、role+text、text、label 和 placeholder。
+
+依据：
+来自 P4.7.5 对“录制质量不足要前置失败、用户应能定位原因”的要求。查看页只是展示和诊断当前 PageScript，不自动修改 PageScript、RecordingSession、TestCase 或 RecordingArtifact。
+
+当前/历史问题：
+如果录制内容只能在保存后由生成失败间接暴露，用户无法判断是动作、快照还是元数据质量不足；如果查看接口不脱敏，会把浏览器录制中的敏感值暴露到普通页面；如果诊断目标字段和执行口径不一致，会把可执行录制误报为不可用。
+
+验证：
+`TestPageRecordingDetailReturnsSanitizedLatestRecording`、`TestPageRecordingDetailReportsQualityDiagnostics`、`TestPageRecordingDetailAcceptsTopLevelSelectorActions`、`TestPageRecordingDetailAcceptsNestedCSSAndXPathTargets`、`TestPageRecordingDetailReturnsNotFoundWithoutRecording`、`TestPageRecordingDetailRejectsHierarchyMismatch`、`TestPageRecordingDetailHandlesInvalidStoredJSON` 和 `frontend/src/p45_recording_ui_contract.test.ts` 覆盖脱敏、质量诊断、定位字段兼容、层级隔离、缺失录制、非法 JSON 和前端入口。
 
 ### 取消、失败和录制产物保护
 

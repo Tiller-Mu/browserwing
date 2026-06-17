@@ -93,6 +93,9 @@ func (h *ProjectHandlers) StopRecordingSession(c *gin.Context) {
 	if runtime != nil {
 		result, err := runtime.StopPageRecording(c.Request.Context(), recordingSessionRuntimeScope(session))
 		if err != nil {
+			if stopPersistedRecordingDraft(c, h.gormDB(), session, err) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Stop page recording failed"})
 			return
 		}
@@ -142,6 +145,42 @@ func (h *ProjectHandlers) StopRecordingSession(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, recordingSessionSummary(session))
+}
+
+func stopPersistedRecordingDraft(c *gin.Context, db *gorm.DB, session models.RecordingSession, stopErr error) bool {
+	if !isRecoverableStoppedBrowserRecordingError(stopErr) {
+		return false
+	}
+	if strings.TrimSpace(session.ActionsJSON) == "" || session.ActionCount <= 0 {
+		return false
+	}
+	if _, err := countJSONActions(json.RawMessage(session.ActionsJSON)); err != nil {
+		return false
+	}
+	now := time.Now().UTC()
+	if err := db.Model(&models.RecordingSession{}).
+		Where("id = ? AND status = ?", session.ID, "recording").
+		Updates(map[string]any{
+			"status":     "stopped",
+			"stopped_at": now,
+			"updated_at": now,
+		}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return true
+	}
+	if err := db.First(&session, session.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return true
+	}
+	c.JSON(http.StatusOK, recordingSessionSummary(session))
+	return true
+}
+
+func isRecoverableStoppedBrowserRecordingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "recording is not in progress")
 }
 
 func (h *ProjectHandlers) CancelRecordingSession(c *gin.Context) {

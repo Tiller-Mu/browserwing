@@ -3,6 +3,7 @@ import BrowserManager, { p45BrowserManagerContract } from './pages/BrowserManage
 import {
 	buildP45AuthStateSummary,
 	buildP45PageManagementView,
+	buildP45RecordingDetailView,
 	buildP45SaveRecordingPayload,
 	createP45RecordingController,
 } from './pages/p45RecordingUiContract';
@@ -63,6 +64,7 @@ interface P45StartRecordingCall {
 interface P45TestPageManagerPageContract {
 	buildAuthStateSummary: typeof buildP45AuthStateSummary;
 	buildPageManagementView: typeof buildP45PageManagementView;
+	buildRecordingDetailView: typeof buildP45RecordingDetailView;
 	createRecordingController: typeof createP45RecordingController;
 }
 
@@ -113,6 +115,11 @@ assertSameReference(
 	pageManagerContract.buildPageManagementView,
 	buildP45PageManagementView,
 	'TestPageManager should consume the P4.5 page management view helper',
+);
+assertSameReference(
+	pageManagerContract.buildRecordingDetailView,
+	buildP45RecordingDetailView,
+	'TestPageManager should expose the recording detail view helper',
 );
 assertSameReference(
 	pageManagerContract.createRecordingController,
@@ -179,6 +186,23 @@ assertHasAction(savedAuthRow.actions, 'login_flow', 'clean');
 assertHasAction(savedAuthRow.actions, 'business_flow', 'project_saved');
 assertHasAction(savedAuthRow.actions, 'business_flow', 'clean');
 assertOmitsSecrets(savedAuthView, 'page management view');
+assertFunction(
+	projectApi.getLatestPageRecording,
+	'projectApi should expose latest PageScript recording detail API',
+);
+const recordingDetailView = buildP45RecordingDetailView({
+	diagnostics: {
+		action_count: 10,
+		snapshot_element_count: 0,
+		quality_codes: ['recording_snapshot_unusable'],
+		parse_errors: [],
+		sensitive_fields_removed: ['localStorage'],
+	},
+});
+assertEqual(recordingDetailView.actionCount, 10, 'recording detail view should expose action count');
+assertEqual(recordingDetailView.snapshotElementCount, 0, 'recording detail view should expose snapshot element count');
+assertEqual(recordingDetailView.status, 'warning', 'empty snapshot should be displayed as a warning');
+assertDeepEqual(recordingDetailView.sensitiveFieldsRemoved, ['localStorage'], 'recording detail view should expose removed sensitive fields');
 
 const missingAuthView: P45PageManagementView = buildP45PageManagementView({
 	pages: [page],

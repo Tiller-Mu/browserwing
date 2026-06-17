@@ -48,6 +48,7 @@ venv/
 /bin/
 .gocache/
 .gocache-test/
+.gocache-run/
 
 # Test artifacts
 /test-results/

@@ -106,6 +106,54 @@ export interface StopPageRecordingSessionResponse {
   action_count: number;
 }
 
+export interface PageRecordingParseError {
+  field: string;
+  code: string;
+}
+
+export interface PageRecordingDiagnostics {
+  action_count: number;
+  snapshot_element_count: number;
+  quality_codes: string[];
+  parse_errors: PageRecordingParseError[];
+  sensitive_fields_removed: string[];
+}
+
+export interface PageRecordingDetail {
+  id: number;
+  page_id: number;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  action_trace_json: unknown;
+  dom_snapshot_json: unknown;
+  recording_meta_json: unknown;
+  diagnostics: PageRecordingDiagnostics;
+}
+
+export interface PageRecordingDetailPage {
+  id: number;
+  name: string;
+  path: string;
+  description: string;
+}
+
+export interface PageRecordingDetailResponse {
+  page: PageRecordingDetailPage;
+  recording: PageRecordingDetail;
+}
+
+export interface PageScriptSummary {
+  id: number;
+  page_id: number;
+  name: string;
+  action_trace?: string;
+  dom_snapshot?: string;
+  recording_meta_json?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export const projectApi = {
   // 项目管理
   getProjects: () => client.get<Project[]>('/projects'),
@@ -157,6 +205,8 @@ export const projectApi = {
     client.post<StopPageRecordingSessionResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-session/${sessionId}/cancel`, {}),
   savePageRecording: (projectId: number, versionId: number, pageId: number, data: SavePageRecordingRequest) =>
     client.post<{ message: string; script: any }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recordings`, data),
+  getLatestPageRecording: (projectId: number, versionId: number, pageId: number) =>
+    client.get<PageRecordingDetailResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recordings/latest`),
   listTestCases: (projectId: number, versionId: number, pageId: number) =>
     client.get<ListTestCasesResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases`),
   createTestCase: (projectId: number, versionId: number, pageId: number, data: CreateTestCaseRequest) =>
@@ -204,7 +254,7 @@ export interface TestPage {
   name: string;
   path: string;
   description: string;
-  scripts?: any[];
+  scripts?: PageScriptSummary[];
   test_cases?: TestCaseSummary[];
   created_at: string;
   updated_at: string;
