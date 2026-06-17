@@ -37,11 +37,13 @@ func TestP475GenerateUsesGoPlaybotAgentAdapter(t *testing.T) {
 	project, version, page := env.seedProjectVersionPage(t)
 	cookieSecret := "cookie-value-p475-generate"
 	storageSecret := "storage-value-p475-generate"
+	snakeStorageSecret := "snake-storage-value-p475-generate"
+	profilePathMarker := "non-local-profile-path-marker"
 	recordedTestToken := "sk-test-token-for-recording"
 	tokenFieldText := "sk-payment-token-field"
 	env.seedP475PageScript(t, page.ID, p475PageScriptSeed{
 		ActionTrace: fmt.Sprintf(`{"actions":[{"type":"input","target":{"text":%q},"value":%q},{"type":"click","target":{"text":"Save"},"cookies":[{"name":"sid","value":%q}]}]}`, tokenFieldText, recordedTestToken, cookieSecret),
-		DOMSnapshot: fmt.Sprintf(`{"elements":[{"role":"textbox","text":%q},{"role":"button","text":"Save"}],"localStorage":{"token":%q}}`, tokenFieldText, storageSecret),
+		DOMSnapshot: fmt.Sprintf(`{"elements":[{"role":"textbox","text":%q},{"role":"button","text":"Save"}],"localStorage":{"token":%q},"local_storage":[{"name":"token","value":%q}],"session_storage":[{"name":"trace","value":%q}],"profile_path":%q}`, tokenFieldText, storageSecret, snakeStorageSecret, snakeStorageSecret, profilePathMarker),
 		Meta:        p475RecordingMeta("business_flow", "clean"),
 	})
 	agent := newP475FakePlaybotAgent(t, p475AgentGenerateSuccess(p475ValidGeneratedBlueprint("generated through go agent")))
@@ -62,8 +64,28 @@ func TestP475GenerateUsesGoPlaybotAgentAdapter(t *testing.T) {
 	requireP475JSONContains(t, jobJSON, recordedTestToken)
 	requireP475JSONContains(t, jobJSON, tokenFieldText)
 	requireP475JSONContains(t, jobJSON, "sk-in-user-instruction")
-	requireP475JSONOmits(t, jobJSON, "test-api-key", cookieSecret, storageSecret, "api_key", "cookies", "localStorage", "sessionStorage")
+	requireP475JSONOmits(t, jobJSON, "test-api-key", cookieSecret, storageSecret, snakeStorageSecret, profilePathMarker, "api_key", "cookies", "localStorage", "sessionStorage", "local_storage", "session_storage", "profile_path")
 	env.requireTestCaseCount(t, page.ID, 1)
+}
+
+func TestP475GenerateSanitizesWindowsLocalPathsBeforeAgentJob(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	localPath := `D:\dpProject\browserwing\profiles\state.json`
+	env.seedP475PageScript(t, page.ID, p475PageScriptSeed{
+		ActionTrace: fmt.Sprintf(`{"actions":[{"type":"click","target":{"text":"Save"},"debug_path":%q}]}`, localPath),
+		DOMSnapshot: fmt.Sprintf(`{"elements":[{"role":"button","text":"Save"}],"profile_path_hint":%q}`, localPath),
+		Meta:        p475RecordingMeta("business_flow", "clean"),
+	})
+	agent := newP475FakePlaybotAgent(t, p475AgentGenerateSuccess(p475ValidGeneratedBlueprint("generated without local paths")))
+	env.installP475FakePlaybotAgent(t, agent)
+
+	res := env.postGenerate(t, project.ID, version.ID, page.ID, map[string]any{"mode": "preview"})
+
+	env.requireStatus(t, res, http.StatusOK)
+	jobJSON := agent.LastJobJSON(t)
+	requireP475JSONContains(t, jobJSON, `"mode":"generate"`)
+	requireP475JSONOmits(t, jobJSON, localPath, "dpProject", "profile_path_hint", "debug_path")
 }
 
 func TestP475GenerationSourcePrefersPageScriptAndRequiresProtectedStoppedSession(t *testing.T) {

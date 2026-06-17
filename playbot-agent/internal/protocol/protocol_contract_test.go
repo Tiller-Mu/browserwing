@@ -135,6 +135,21 @@ func TestP475ProtocolRejectsSecretsInPlaybotJobJSON(t *testing.T) {
 		t.Fatalf("contaminated job error = %v, want playbot_job_secret_leak", err)
 	}
 
+	localPathJob := []byte(`{
+		"schema_version":"p4.7.5",
+		"mode":"generate",
+		"request_id":"req-p475-local-path",
+		"page_context":{"url":"https://example.invalid/orders","description":"uses D:\\dpProject\\browserwing\\profiles\\state.json"},
+		"recording_source":{
+			"action_trace":[{"type":"click","target":{"text":"Save"}}],
+			"dom_snapshot":{"elements":[{"text":"Save"}]},
+			"recording_meta":{"schema_version":1,"recording_kind":"business_flow","auth_context":"clean"}
+		}
+	}`)
+	if _, err := DecodeAndValidatePlaybotJob(localPathJob); err == nil || !strings.Contains(err.Error(), "playbot_job_secret_leak") {
+		t.Fatalf("local path job error = %v, want playbot_job_secret_leak", err)
+	}
+
 	tokenLikeBusinessText := []byte(`{
 		"schema_version":"p4.7.5",
 		"mode":"generate",

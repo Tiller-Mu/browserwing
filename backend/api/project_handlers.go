@@ -21,10 +21,11 @@ type ProjectHandlers struct {
 	testCaseRunner *testCaseRunnerHolder
 	projectAuth    *projectAuthRuntimeHolder
 	playbotAgent   *playbotAgentHolder
+	playbotRuns    *playbotRunHub
 }
 
 // NewProjectHandlers 创建处理器实例
-func NewProjectHandlers(store storage.Store, cfg *config.Config, runnerHolder *testCaseRunnerHolder, authHolder *projectAuthRuntimeHolder, agentHolder *playbotAgentHolder) *ProjectHandlers {
+func NewProjectHandlers(store storage.Store, cfg *config.Config, runnerHolder *testCaseRunnerHolder, authHolder *projectAuthRuntimeHolder, agentHolder *playbotAgentHolder, runHub *playbotRunHub) *ProjectHandlers {
 	var holder *testCaseRunnerHolder
 	holder = runnerHolder
 	return &ProjectHandlers{
@@ -33,6 +34,7 @@ func NewProjectHandlers(store storage.Store, cfg *config.Config, runnerHolder *t
 		testCaseRunner: holder,
 		projectAuth:    authHolder,
 		playbotAgent:   agentHolder,
+		playbotRuns:    runHub,
 	}
 }
 

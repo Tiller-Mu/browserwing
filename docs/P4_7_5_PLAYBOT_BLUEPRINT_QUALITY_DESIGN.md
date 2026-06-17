@@ -195,6 +195,7 @@ P4.7.5 第一阶段采用独立二进制调用，不先上 RPC 常驻服务。
 browserwing-playbot-agent --mode generate --input job.json
 browserwing-playbot-agent --mode optimize --input job.json
 browserwing-playbot-agent --mode repair-proposal --input job.json
+browserwing-playbot-agent --mode generate --input job.json --events events.jsonl
 ```
 
 也可以支持 stdin/stdout：
@@ -209,6 +210,7 @@ stderr: 脱敏日志
 
 - stdout 只能输出最终 `PlaybotResult` JSON。
 - stderr 可以输出脱敏日志。
+- `--events` 是可选 JSONL side-channel，用于会话内可见生成过程；每条 `PlaybotEvent` 必须 newline + flush，后端只解析完整行，进程退出后 drain 一次，半行丢弃并转成 `agent_event_stream_invalid` warning。
 - 不得在日志、错误或 trace 中泄露 API Key、Cookie、Storage value 或本地绝对路径。
 - 退出码只表达进程级成功或失败；业务失败必须通过 `PlaybotResult.status/code` 表达，便于后端按规则处理。
 - 后续升级 RPC 时必须复用同一套 `PlaybotJob` / `PlaybotResult` 协议。
@@ -216,6 +218,15 @@ stderr: 脱敏日志
 - LLM API Key 必须通过受控 secret channel 传递，例如受控环境变量、只读 secret file descriptor、进程私有 secret provider 或后续 RPC metadata；该 channel 必须可脱敏、可审计，并避免落入 job fixture、临时 job 文件和普通日志。
 - 如果实现必须使用临时 secret 文件，文件权限必须限制为当前用户可读写，建议等价于 `0600`，执行后必须清理；普通 `job.json` 仍不得包含密钥。
 - 用户在被测页面录制流程时输入的 token-like 字符串属于业务测试数据，可能进入 `PlaybotJob` 和生成 Blueprint；用户应使用测试 token 或 sandbox token，不应使用生产 token。P4.7.5 不通过 `sk-` 等字符串前缀做强制判定。
+
+可见事件协议：
+
+- `PlaybotEvent` 至少包含 `schema_version`、`run_id`、`request_id`、`seq`、`phase`、`level`、`message`、`visible_message`、`data` 和 `created_at`。
+- 后端 run hub 是内存 TTL、非持久化能力，仅用于当前会话观察；stream 支持 `?after_seq=N`，只补发 `seq > N`。
+- 前端使用 `fetch + ReadableStream` 消费 SSE，以保留 token header 鉴权；不依赖原生 `EventSource`。
+- `visible_summary` / `model_output` 只能出现在 run/result/API response，不能写入 `TestCase.Blueprint`。
+- 候选步骤中的录制输入值默认展示为“已录制输入值”或局部遮蔽；这不改变录制业务测试数据允许进入 job/Blueprint 的协议边界。
+- 启用真实 LLM 的 generate 必须返回 `semantic_plan`；agent 只能在该 plan 引用已录制 URL、target 和输入占位符并通过严格编译校验后生成最终 Blueprint，不得用展示字段或未锚定模型文本污染执行资产。
 
 `PlaybotJob` 至少包含：
 
@@ -632,5 +643,7 @@ P4.8 可以依赖以下结果：
 - optimize 只产生 proposed 版本，用户确认前不修改 active TestCase。
 - 正式执行路径唯一：Go 后端 runner 执行 BrowserWing Blueprint。
 - Python `playbot-engine` 不再是正式产品路径。
+
+TODO（后续模型适配）：单独补充大模型 schema 适配专项，按 DeepSeek、OpenAI-compatible、Claude 等模型分别定义请求参数、JSON 输出约束、`finish_reason`/截断判断、结构化字段校验和错误码映射；P4.7.5 当前只保留最小 OpenAI-compatible 调用 seam，不把某个模型的偶然返回格式写成通用协议。
 
 如果 P4.8 发现生成质量差，优先判断是录制数据质量不足、context packing 缺失、compiler 映射缺失、LLM prompt 不稳定，还是 Go runner 执行能力缺口。只有录制内容本身不足时，才回到录制功能优化；不能通过让 LLM 猜测、让后端用 LLM 裁决或引入第二套正式执行路径绕过问题。

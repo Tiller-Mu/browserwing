@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/browserwing/browserwing/llm"
 	"github.com/browserwing/browserwing/models"
+	"github.com/browserwing/browserwing/services/playbotagent"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -36,6 +38,16 @@ type generatedTestCaseBlueprint struct {
 	Raw         map[string]any `json:"-"`
 }
 
+type generateTestCasesExecutionOptions struct {
+	EnableAgentLLM bool
+	EventSink      func(playbotagent.Event)
+}
+
+type generateTestCasesExecutionResult struct {
+	Status int
+	Body   gin.H
+}
+
 // GenerateTestCases 读取页面主流程，调用 Playbot 生成并按模式保存 TestCase。
 func (h *ProjectHandlers) GenerateTestCases(c *gin.Context) {
 	projectID, versionID, pageID, ok := parseProjectVersionPageIDs(c)
@@ -48,71 +60,74 @@ func (h *ProjectHandlers) GenerateTestCases(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 		return
 	}
+	response := h.executeGenerateTestCases(c.Request.Context(), projectID, versionID, pageID, req, generateTestCasesExecutionOptions{})
+	c.JSON(response.Status, response.Body)
+}
 
+func (h *ProjectHandlers) executeGenerateTestCases(ctx context.Context, projectID, versionID, pageID uint, req generateTestCasesRequest, opts generateTestCasesExecutionOptions) generateTestCasesExecutionResult {
 	mode := strings.TrimSpace(req.Mode)
 	if mode == "" {
 		mode = "append"
 	}
 	if mode != "append" && mode != "replace" && mode != "preview" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid generation mode"})
-		return
+		return generateTestCasesExecutionResult{Status: http.StatusBadRequest, Body: gin.H{"error": "Invalid generation mode"}}
 	}
 
 	version, page, err := loadGenerationPageContext(h.gormDB(), projectID, versionID, pageID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, or page not found"})
-		return
+		return generateTestCasesExecutionResult{Status: http.StatusNotFound, Body: gin.H{"error": "Project, version, or page not found"}}
 	}
 
 	var script models.PageScript
 	if err := h.gormDB().Where("page_id = ?", page.ID).Order("created_at desc, id desc").First(&script).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "请先录制主流程后再生成测试用例"})
-			return
+			return generateTestCasesExecutionResult{Status: http.StatusBadRequest, Body: gin.H{"error": "请先录制主流程后再生成测试用例"}}
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return generateTestCasesExecutionResult{Status: http.StatusInternalServerError, Body: gin.H{"error": err.Error()}}
 	}
 
 	llmConfig, err := h.loadGenerationLLMConfig(req.LLMConfigID)
 	if err != nil {
-		if writeLLMConfigError(c, err) {
-			return
+		status, body := llmConfigErrorResponse(err)
+		if status != 0 {
+			return generateTestCasesExecutionResult{Status: status, Body: body}
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return generateTestCasesExecutionResult{Status: http.StatusInternalServerError, Body: gin.H{"error": err.Error()}}
 	}
 
 	source, err := buildP475RecordingSource(script)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+		return generateTestCasesExecutionResult{Status: http.StatusBadRequest, Body: gin.H{"error": err.Error()}}
 	}
 
-	job, secret := buildP475GenerateJob(projectID, versionID, pageID, version, page, source, req.Instruction, llmConfig)
-	result, err := h.runP475AgentWithContextRetry(c.Request.Context(), job, secret, source)
+	job, secret := buildP475GenerateJob(projectID, versionID, pageID, version, page, source, req.Instruction, llmConfig, opts.EnableAgentLLM)
+	eventSink := opts.EventSink
+	if eventSink != nil {
+		redactions := playbotRunDisplayRedactions(source, secret)
+		eventSink = func(event playbotagent.Event) {
+			opts.EventSink(sanitizePlaybotAgentEventForDisplay(event, redactions))
+		}
+	}
+	result, err := h.runP475AgentWithContextRetryAndEvents(ctx, job, secret, source, eventSink)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return generateTestCasesExecutionResult{Status: http.StatusInternalServerError, Body: gin.H{"error": err.Error()}}
 	}
 	if status := strings.TrimSpace(stringFromAny(result["status"])); status != "success" {
 		code := strings.TrimSpace(stringFromAny(result["code"]))
 		if code == "" {
 			code = "playbot_agent_failed"
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": code, "code": code})
-		return
+		return generateTestCasesExecutionResult{Status: http.StatusBadRequest, Body: gin.H{"error": code, "code": code}}
 	}
 	defaultURL, err := buildExecutionURL(version.BaseURL, page.Path)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+		return generateTestCasesExecutionResult{Status: http.StatusBadRequest, Body: gin.H{"error": err.Error()}}
 	}
 	blueprints, err := parseP475AgentGeneratedCases(result, source.AuthContext, defaultURL)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+		return generateTestCasesExecutionResult{Status: http.StatusBadRequest, Body: gin.H{"error": err.Error()}}
 	}
+	visibleSummary, modelOutput := sanitizeP475AgentDisplayPayload(result, source, secret)
 
 	if mode == "preview" {
 		previewCases := make([]gin.H, 0, len(blueprints))
@@ -123,27 +138,29 @@ func (h *ProjectHandlers) GenerateTestCases(c *gin.Context) {
 				"blueprint":   blueprint.Raw,
 			})
 		}
-		c.JSON(http.StatusOK, gin.H{
+		return generateTestCasesExecutionResult{Status: http.StatusOK, Body: gin.H{
 			"mode":            mode,
 			"saved":           false,
 			"generated_count": len(previewCases),
 			"test_cases":      previewCases,
-		})
-		return
+			"visible_summary": visibleSummary,
+			"model_output":    modelOutput,
+		}}
 	}
 
 	savedCases, err := saveGeneratedTestCases(h.gormDB(), page.ID, mode, blueprints)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return generateTestCasesExecutionResult{Status: http.StatusInternalServerError, Body: gin.H{"error": err.Error()}}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	return generateTestCasesExecutionResult{Status: http.StatusOK, Body: gin.H{
 		"mode":            mode,
 		"saved":           true,
 		"generated_count": len(savedCases),
 		"test_cases":      savedCases,
-	})
+		"visible_summary": visibleSummary,
+		"model_output":    modelOutput,
+	}}
 }
 
 func parseProjectVersionPageIDs(c *gin.Context) (uint, uint, uint, bool) {

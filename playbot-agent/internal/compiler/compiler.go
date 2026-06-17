@@ -7,17 +7,17 @@ import (
 )
 
 type SemanticPlan struct {
-	Title       string
-	Description string
-	Steps       []SemanticStep
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Steps       []SemanticStep `json:"steps,omitempty"`
 }
 
 type SemanticStep struct {
-	Action       string
-	Value        string
-	URL          string
-	TargetHint   TargetHint
-	IntentReason string
+	Action       string     `json:"action,omitempty"`
+	Value        string     `json:"value,omitempty"`
+	URL          string     `json:"url,omitempty"`
+	TargetHint   TargetHint `json:"target_hint,omitempty"`
+	IntentReason string     `json:"intent_reason,omitempty"`
 }
 
 type TargetHint struct {

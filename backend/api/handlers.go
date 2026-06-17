@@ -52,6 +52,7 @@ type Handler struct {
 	testCaseRunner  *testCaseRunnerHolder
 	projectAuth     *projectAuthRuntimeHolder
 	playbotAgent    *playbotAgentHolder
+	playbotRuns     *playbotRunHub
 	llmConfigTester llmConfigTesterFunc
 }
 
@@ -82,6 +83,7 @@ func NewHandler(
 		mcpServer:      nil, // 将在主程序中设置
 		testCaseRunner: newTestCaseRunnerHolder(testcase_executor.New(exec)),
 		projectAuth:    newProjectAuthRuntimeHolder(newBrowserProjectAuthRuntime(browserMgr)),
+		playbotRuns:    newPlaybotRunHub(15*time.Minute, 200),
 	}
 }
 
@@ -117,6 +119,13 @@ func (h *Handler) SetProjectAuthRuntimeForTest(runtime any) {
 
 func (h *Handler) SetLLMConfigTesterForTest(tester func(context.Context, *models.LLMConfigModel) (map[string]any, error)) {
 	h.llmConfigTester = tester
+}
+
+func (h *Handler) ensurePlaybotRunHub() *playbotRunHub {
+	if h.playbotRuns == nil {
+		h.playbotRuns = newPlaybotRunHub(15*time.Minute, 200)
+	}
+	return h.playbotRuns
 }
 
 func (h *testCaseRunnerHolder) set(runner any) {

@@ -125,6 +125,48 @@ func TestP475CLIGeneratesFillFromRecordedInputAction(t *testing.T) {
 	}
 }
 
+func TestP475CLIEventsMaskRecordedInputValues(t *testing.T) {
+	tmpDir := t.TempDir()
+	fixture := filepath.Join(tmpDir, "generate-input-job.json")
+	eventsPath := filepath.Join(tmpDir, "events.jsonl")
+	recordedValue := "sk-test-token-for-recording"
+	job := `{
+		"schema_version":"p4.7.5",
+		"mode":"generate",
+		"request_id":"p475-events-mask-fixture",
+		"page_context":{"url":"https://example.invalid/orders","description":"orders page"},
+		"recording_source":{
+			"source_page_script_id":"ps-events-mask",
+			"action_trace":[{"type":"input","target":{"placeholder":"API token","recorded_selector":"input[name=token]"},"value":"` + recordedValue + `","intent_reason":"Enter the sandbox API token"}],
+			"dom_snapshot":{"elements":[{"placeholder":"API token","recorded_selector":"input[name=token]"}]},
+			"recording_meta":{"schema_version":1,"recording_kind":"business_flow","auth_context":"clean","target_url":"https://example.invalid/orders"}
+		},
+		"llm_runtime_config":{"provider":"custom","endpoint":"https://llm.invalid/v1","model":"contract-model","secret_channel":{"kind":"env","name":"BROWSERWING_PLAYBOT_LLM_API_KEY"}}
+	}`
+	if err := os.WriteFile(fixture, []byte(job), 0o600); err != nil {
+		t.Fatalf("write event fixture: %v", err)
+	}
+	cmd := exec.Command("go", "run", ".", "--mode", "generate", "--input", fixture, "--events", eventsPath)
+	cmd.Env = append(os.Environ(), "BROWSERWING_PLAYBOT_LLM_API_KEY=sk-cli-event-secret")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("agent CLI returned process error %v; stdout: %s; stderr: %s", err, stdout.String(), stderr.String())
+	}
+	events, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read events JSONL: %v", err)
+	}
+	if strings.Contains(string(events), recordedValue) {
+		t.Fatalf("events leaked recorded input value: %s", events)
+	}
+	if !strings.Contains(string(events), "已录制输入值") || !strings.Contains(string(events), "llm_visible_output") {
+		t.Fatalf("events should include masked candidate steps and visible model output: %s", events)
+	}
+}
+
 func TestP475CLIAcceptsDocumentedRepairProposalMode(t *testing.T) {
 	fixture := filepath.Join(t.TempDir(), "repair-proposal-job.json")
 	job := `{

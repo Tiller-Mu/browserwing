@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Bot, ExternalLink, FilePlus, FileText, Plus, RefreshCw, ShieldCheck, Trash2, Video } from 'lucide-react';
 import { api, type LLMConfig } from '../api/client';
-import { projectApi, type P45AuthContext, type P45RecordingKind, type ProjectAuthStateSummary, type TestCase, type TestPage } from '../api/project';
+import { projectApi, streamPlaybotRun, type GenerateTestCasesResponse, type P45AuthContext, type P45RecordingKind, type PlaybotRunEvent, type ProjectAuthStateSummary, type TestCase, type TestPage } from '../api/project';
 import { Modal } from '../components/Modal';
+import PlaybotRunTimeline from '../components/PlaybotRunTimeline';
 import Toast from '../components/Toast';
 import {
   buildP45AuthStateSummary,
@@ -46,6 +47,8 @@ export default function TestPageManager() {
     instruction: ''
   });
   const [previewCases, setPreviewCases] = useState<TestCase[]>([]);
+  const [generateEvents, setGenerateEvents] = useState<PlaybotRunEvent[]>([]);
+  const generateStreamAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (projectId && versionId) {
@@ -54,6 +57,12 @@ export default function TestPageManager() {
       loadLLMConfigs();
     }
   }, [projectId, versionId]);
+
+  useEffect(() => {
+    return () => {
+      generateStreamAbortRef.current?.abort();
+    };
+  }, []);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ message, type });
@@ -216,10 +225,18 @@ export default function TestPageManager() {
   };
 
   const openGenerateModal = (page: TestPage) => {
+    generateStreamAbortRef.current?.abort();
     setGenerateTargetPage(page);
     setGenerateForm({ mode: 'append', llm_config_id: '', instruction: '' });
     setPreviewCases([]);
+    setGenerateEvents([]);
     setShowGenerateModal(true);
+  };
+
+  const closeGenerateModal = () => {
+    if (generating) return;
+    generateStreamAbortRef.current?.abort();
+    setShowGenerateModal(false);
   };
 
   const handleGenerateTestCases = async () => {
@@ -227,7 +244,8 @@ export default function TestPageManager() {
 
     try {
       setGenerating(true);
-      const response = await projectApi.generateTestCases(
+      setGenerateEvents([]);
+      const response = await projectApi.startGenerateTestCasesRun(
         Number(projectId),
         Number(versionId),
         generateTargetPage.id,
@@ -237,19 +255,85 @@ export default function TestPageManager() {
           instruction: generateForm.instruction.trim() || undefined
         }
       );
-
-      if (response.data.saved) {
-        showToast(`已生成并保存 ${response.data.generated_count} 条测试用例`, 'success');
-        setShowGenerateModal(false);
-        setPreviewCases([]);
-        loadPages();
-      } else {
-        setPreviewCases(response.data.test_cases || []);
-        showToast(`已生成 ${response.data.generated_count} 条预览用例，未保存`, 'info');
-      }
+      await connectPlaybotRunStream(response.data.run_id);
     } catch (error: any) {
       showToast(error.response?.data?.error || '生成测试用例失败', 'error');
-    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const appendGenerateEvent = (event: PlaybotRunEvent) => {
+    setGenerateEvents((prev) => {
+      if (prev.some((item) => item.seq === event.seq)) return prev;
+      return [...prev, event].sort((a, b) => a.seq - b.seq);
+    });
+  };
+
+  const handleGenerateResponse = (data: GenerateTestCasesResponse) => {
+    if (data.saved) {
+      showToast(`已生成并保存 ${data.generated_count} 条测试用例`, 'success');
+      setShowGenerateModal(false);
+      setPreviewCases([]);
+      loadPages();
+    } else {
+      setPreviewCases(data.test_cases || []);
+      showToast(`已生成 ${data.generated_count} 条预览用例，未保存`, 'info');
+    }
+  };
+
+  const connectPlaybotRunStream = async (runId: string) => {
+    const controller = new AbortController();
+    generateStreamAbortRef.current = controller;
+    let afterSeq = 0;
+    let reconnects = 0;
+
+    while (!controller.signal.aborted && reconnects < 3) {
+      try {
+        const response = await streamPlaybotRun(runId, afterSeq, controller.signal);
+        if (!response.ok || !response.body) {
+          throw new Error('stream failed');
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (!controller.signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const event = JSON.parse(line.slice(6)) as PlaybotRunEvent;
+            afterSeq = Math.max(afterSeq, event.seq);
+            appendGenerateEvent(event);
+
+            if (event.phase === 'done') {
+              const responseData = event.data?.response as GenerateTestCasesResponse | undefined;
+              if (responseData) handleGenerateResponse(responseData);
+              setGenerating(false);
+              return;
+            }
+            if (event.phase === 'failed') {
+              const responseData = event.data?.response as { error?: string; code?: string } | undefined;
+              showToast(responseData?.error || responseData?.code || '生成测试用例失败', 'error');
+              setGenerating(false);
+              return;
+            }
+          }
+        }
+      } catch (error: any) {
+        if (controller.signal.aborted) return;
+        reconnects += 1;
+        await new Promise((resolve) => window.setTimeout(resolve, 600));
+        continue;
+      }
+      reconnects += 1;
+    }
+    if (!controller.signal.aborted) {
+      showToast('生成过程连接中断，请稍后查看结果', 'error');
       setGenerating(false);
     }
   };
@@ -562,7 +646,7 @@ export default function TestPageManager() {
 
       <Modal
         isOpen={showGenerateModal}
-        onClose={() => !generating && setShowGenerateModal(false)}
+        onClose={closeGenerateModal}
         title={`智能生成测试用例${generateTargetPage ? `：${generateTargetPage.name}` : ''}`}
       >
         <div className="space-y-5">
@@ -621,6 +705,8 @@ export default function TestPageManager() {
             />
           </div>
 
+          <PlaybotRunTimeline events={generateEvents} running={generating} />
+
           {previewCases.length > 0 && (
             <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
               {previewCases.map((testCase, index) => (
@@ -634,7 +720,7 @@ export default function TestPageManager() {
 
           <div className="flex justify-end gap-3 pt-4 border-t dark:border-gray-700">
             <button
-              onClick={() => setShowGenerateModal(false)}
+              onClick={closeGenerateModal}
               disabled={generating}
               className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50"
             >

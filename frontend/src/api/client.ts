@@ -21,7 +21,7 @@ const getApiBaseUrl = () => {
   return `http://${host}:${port}/api/v1`
 }
 
-const API_BASE_URL = getApiBaseUrl()
+export const API_BASE_URL = getApiBaseUrl()
 
 export const client = axios.create({
   baseURL: API_BASE_URL,

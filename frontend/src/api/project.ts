@@ -1,4 +1,4 @@
-import { client } from './client';
+import { API_BASE_URL, client } from './client';
 
 export interface ProjectVersion {
   id: number;
@@ -184,7 +184,18 @@ export const projectApi = {
   discardTestCaseRefinement: (projectId: number, versionId: number, pageId: number, testCaseId: number, refinementId: number) =>
     client.post<{ refinement: TestCaseRefinementStatusResponse }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/${testCaseId}/refinements/${refinementId}/discard`, {}),
   generateTestCases: (projectId: number, versionId: number, pageId: number, data: GenerateTestCasesRequest) =>
-    client.post<GenerateTestCasesResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/generate`, data)
+    client.post<GenerateTestCasesResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/generate`, data),
+  startGenerateTestCasesRun: (projectId: number, versionId: number, pageId: number, data: GenerateTestCasesRequest) =>
+    client.post<StartPlaybotRunResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/test-cases/generate-runs`, data),
+  getPlaybotRunResult: (runId: string) =>
+    client.get<GenerateTestCasesResponse | { status: 'running' }>(`/playbot-runs/${runId}/result`)
+};
+
+export const streamPlaybotRun = (runId: string, afterSeq: number, signal?: AbortSignal) => {
+  const token = localStorage.getItem('token');
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const query = afterSeq > 0 ? `?after_seq=${afterSeq}` : '';
+  return fetch(`${API_BASE_URL}/playbot-runs/${runId}/stream${query}`, { headers, signal });
 };
 
 export interface TestPage {
@@ -260,6 +271,26 @@ export interface GenerateTestCasesResponse {
   saved: boolean;
   generated_count: number;
   test_cases: TestCase[];
+  visible_summary?: string;
+  model_output?: Record<string, any>;
+}
+
+export interface StartPlaybotRunResponse {
+  run_id: string;
+  status: 'running';
+}
+
+export interface PlaybotRunEvent {
+  schema_version: string;
+  run_id: string;
+  request_id?: string;
+  seq: number;
+  phase: string;
+  level?: 'info' | 'warning' | 'error' | string;
+  message?: string;
+  visible_message?: string;
+  data?: Record<string, any>;
+  created_at: string;
 }
 
 export type TestExecutionStatus = 'passed' | 'failed' | 'error';

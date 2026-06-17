@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -32,6 +34,10 @@ type BinaryClient struct {
 	secretEnvName   string
 	workingDir      string
 	redactLocalPath bool
+}
+
+type RunOptions struct {
+	EventSink func(Event)
 }
 
 type Job struct {
@@ -101,6 +107,21 @@ type Result struct {
 	Retryable        bool             `json:"retryable,omitempty"`
 	Summary          string           `json:"summary,omitempty"`
 	RiskNotes        string           `json:"risk_notes,omitempty"`
+	VisibleSummary   string           `json:"visible_summary,omitempty"`
+	ModelOutput      map[string]any   `json:"model_output,omitempty"`
+}
+
+type Event struct {
+	SchemaVersion  string         `json:"schema_version"`
+	RunID          string         `json:"run_id,omitempty"`
+	RequestID      string         `json:"request_id,omitempty"`
+	Seq            int64          `json:"seq"`
+	Phase          string         `json:"phase"`
+	Level          string         `json:"level,omitempty"`
+	Message        string         `json:"message,omitempty"`
+	VisibleMessage string         `json:"visible_message,omitempty"`
+	Data           map[string]any `json:"data,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
 }
 
 func NewBinaryClient(opts BinaryClientOptions) (*BinaryClient, error) {
@@ -127,6 +148,10 @@ func NewBinaryClient(opts BinaryClientOptions) (*BinaryClient, error) {
 }
 
 func (c *BinaryClient) Run(ctx context.Context, job Job) (Result, error) {
+	return c.RunWithEvents(ctx, job, RunOptions{})
+}
+
+func (c *BinaryClient) RunWithEvents(ctx context.Context, job Job, opts RunOptions) (Result, error) {
 	if strings.TrimSpace(job.SchemaVersion) == "" {
 		job.SchemaVersion = schemaVersion
 	}
@@ -151,7 +176,13 @@ func (c *BinaryClient) Run(ctx context.Context, job Job) (Result, error) {
 		return Result{}, err
 	}
 
-	cmd := exec.CommandContext(ctx, c.commandPath, "--mode", job.Mode, "--input", inputPath)
+	args := []string{"--mode", job.Mode, "--input", inputPath}
+	var eventsPath string
+	if opts.EventSink != nil {
+		eventsPath = filepath.Join(tmpDir, "events.jsonl")
+		args = append(args, "--events", eventsPath)
+	}
+	cmd := exec.CommandContext(ctx, c.commandPath, args...)
 	if c.workingDir != "" {
 		cmd.Dir = c.workingDir
 	}
@@ -162,8 +193,23 @@ func (c *BinaryClient) Run(ctx context.Context, job Job) (Result, error) {
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return Result{}, fmt.Errorf("playbot_agent_process_failed: %s: %s", c.redact(err.Error(), job.SecretChannel.Value), c.redact(stderr.String(), job.SecretChannel.Value))
+	if opts.EventSink == nil {
+		if err := cmd.Run(); err != nil {
+			return Result{}, fmt.Errorf("playbot_agent_process_failed: %s: %s", c.redact(err.Error(), job.SecretChannel.Value), c.redact(stderr.String(), job.SecretChannel.Value))
+		}
+	} else {
+		done := make(chan struct{})
+		tailDone := make(chan struct{})
+		go func() {
+			defer close(tailDone)
+			c.tailEvents(ctx, eventsPath, opts.EventSink, done)
+		}()
+		err := cmd.Run()
+		close(done)
+		<-tailDone
+		if err != nil {
+			return Result{}, fmt.Errorf("playbot_agent_process_failed: %s: %s", c.redact(err.Error(), job.SecretChannel.Value), c.redact(stderr.String(), job.SecretChannel.Value))
+		}
 	}
 	var result Result
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
@@ -173,6 +219,81 @@ func (c *BinaryClient) Run(ctx context.Context, job Job) (Result, error) {
 		return Result{}, err
 	}
 	return result, nil
+}
+
+func (c *BinaryClient) tailEvents(ctx context.Context, path string, sink func(Event), done <-chan struct{}) {
+	var offset int64
+	var buffer string
+	draining := false
+	ticker := time.NewTicker(75 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		data, nextOffset, ok := readEventFileChunk(path, offset)
+		if ok {
+			offset = nextOffset
+			buffer = consumeEventLines(buffer+string(data), sink)
+		}
+		if draining {
+			if strings.TrimSpace(buffer) != "" {
+				sink(Event{
+					SchemaVersion: schemaVersion,
+					Phase:         "agent_event_stream_invalid",
+					Level:         "warning",
+					Message:       "Agent event stream ended with an incomplete JSONL line.",
+					CreatedAt:     time.Now().UTC(),
+				})
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			draining = true
+		case <-ticker.C:
+		}
+	}
+}
+
+func readEventFileChunk(path string, offset int64) ([]byte, int64, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, offset, false
+	}
+	defer file.Close()
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return nil, offset, false
+	}
+	data, err := io.ReadAll(file)
+	if err != nil || len(data) == 0 {
+		return nil, offset, false
+	}
+	return data, offset + int64(len(data)), true
+}
+
+func consumeEventLines(text string, sink func(Event)) string {
+	lines := strings.Split(text, "\n")
+	remainder := lines[len(lines)-1]
+	for _, line := range lines[:len(lines)-1] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var event Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			sink(Event{
+				SchemaVersion: schemaVersion,
+				Phase:         "agent_event_stream_invalid",
+				Level:         "warning",
+				Message:       "Agent event stream contained an invalid JSONL event.",
+				CreatedAt:     time.Now().UTC(),
+			})
+			continue
+		}
+		sink(event)
+	}
+	return remainder
 }
 
 func validateResult(result Result) error {
@@ -276,10 +397,7 @@ func isForbiddenPayloadKey(key string) bool {
 }
 
 func containsForbiddenLocalPath(text string) bool {
-	if strings.Contains(strings.ToLower(text), `c:\users\`) {
-		return true
-	}
-	return false
+	return containsWindowsAbsolutePath(text)
 }
 
 func (c *BinaryClient) redact(text string, secrets ...string) string {
@@ -296,13 +414,38 @@ func (c *BinaryClient) redact(text string, secrets ...string) string {
 }
 
 func redactWindowsUserPaths(text string) string {
-	lower := strings.ToLower(text)
-	token := `c:\users\`
-	idx := strings.Index(lower, token)
+	idx := windowsAbsolutePathIndex(text)
 	if idx < 0 {
 		return text
 	}
 	return text[:idx] + "<redacted-local-path>"
+}
+
+func containsWindowsAbsolutePath(text string) bool {
+	return windowsAbsolutePathIndex(text) >= 0
+}
+
+func windowsAbsolutePathIndex(text string) int {
+	for idx := 0; idx+2 < len(text); idx++ {
+		if !isASCIIAlpha(text[idx]) || text[idx+1] != ':' {
+			continue
+		}
+		if idx > 0 && isASCIIAlphaNumeric(text[idx-1]) {
+			continue
+		}
+		if text[idx+2] == '\\' || text[idx+2] == '/' {
+			return idx
+		}
+	}
+	return -1
+}
+
+func isASCIIAlphaNumeric(value byte) bool {
+	return isASCIIAlpha(value) || (value >= '0' && value <= '9')
+}
+
+func isASCIIAlpha(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z')
 }
 
 func firstNonEmpty(values ...string) string {

@@ -43,6 +43,10 @@ backend/services/playbotagent/
 协议层要求：
 
 - `PlaybotJob` / `PlaybotResult` 必须是稳定 JSON 协议。
+- `PlaybotEvent` 是可选会话内观察协议，二进制 agent 通过 `--events events.jsonl` 输出 JSONL；stdout 仍只能输出最终 `PlaybotResult`。
+- 后端 Playbot run hub 只做内存 TTL 非持久化缓存，stream 使用 `?after_seq=N` 支持断线重连补发，前端用 `fetch + ReadableStream` 读取。
+- `visible_summary` / `model_output` 只能作为 run/result/API response 的展示材料，不得写入 `TestCase.Blueprint`。
+- 真实 LLM generate 必须返回 `semantic_plan`，最终 Blueprint 只能由锚定到录制事实的 semantic plan 编译产生；`visible_message`、`candidate_steps` 等展示字段不能作为执行事实源。
 - 如后端需要复用协议类型，只能依赖无运行时副作用的最小协议包或 JSON schema。
 - 后端不得链接 agent runtime、LLM client、prompt engine 或编译器实现。
 - `go.work` 已纳入 `./backend` 和 `./playbot-agent`，便于红测和后续实现阶段统一验证。

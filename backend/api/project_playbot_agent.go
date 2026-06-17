@@ -50,7 +50,7 @@ func buildP475RecordingSource(script models.PageScript) (p475RecordingSource, er
 	}, nil
 }
 
-func buildP475GenerateJob(projectID, versionID, pageID uint, version models.ProjectVersion, page models.TestPage, source p475RecordingSource, instruction string, llmConfig *models.LLMConfigModel) (map[string]any, playbotagent.SecretChannel) {
+func buildP475GenerateJob(projectID, versionID, pageID uint, version models.ProjectVersion, page models.TestPage, source p475RecordingSource, instruction string, llmConfig *models.LLMConfigModel, enableLLM bool) (map[string]any, playbotagent.SecretChannel) {
 	secretEnv := "BROWSERWING_PLAYBOT_LLM_API_KEY"
 	job := map[string]any{
 		"schema_version": p475SchemaVersion,
@@ -86,6 +86,7 @@ func buildP475GenerateJob(projectID, versionID, pageID uint, version models.Proj
 		"limits": map[string]any{
 			"max_actions":   50,
 			"max_dom_nodes": 500,
+			"enable_llm":    enableLLM,
 		},
 	}
 	return job, playbotagent.SecretChannel{EnvName: secretEnv, Value: llmConfig.APIKey}
@@ -145,7 +146,11 @@ func buildP475OptimizeJob(projectID, versionID, pageID uint, version models.Proj
 }
 
 func (h *ProjectHandlers) runP475AgentWithContextRetry(ctx context.Context, job map[string]any, secret playbotagent.SecretChannel, source p475RecordingSource) (map[string]any, error) {
-	result, err := h.playbotAgent.run(ctx, job, secret)
+	return h.runP475AgentWithContextRetryAndEvents(ctx, job, secret, source, nil)
+}
+
+func (h *ProjectHandlers) runP475AgentWithContextRetryAndEvents(ctx context.Context, job map[string]any, secret playbotagent.SecretChannel, source p475RecordingSource, sink func(playbotagent.Event)) (map[string]any, error) {
+	result, err := h.playbotAgent.runWithEvents(ctx, job, secret, sink)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +163,7 @@ func (h *ProjectHandlers) runP475AgentWithContextRetry(ctx context.Context, job 
 	}
 	retryJob := cloneP475Map(job)
 	retryJob["backend_approved_context"] = approved
-	second, err := h.playbotAgent.run(ctx, retryJob, secret)
+	second, err := h.playbotAgent.runWithEvents(ctx, retryJob, secret, sink)
 	if err != nil {
 		return nil, err
 	}
@@ -320,8 +325,8 @@ func sanitizeP475Value(value any) any {
 }
 
 func p475ForbiddenKey(key string) bool {
-	lower := strings.ToLower(strings.TrimSpace(key))
-	for _, token := range []string{"cookie", "localstorage", "sessionstorage", "api_key", "apikey", "profile_path"} {
+	lower := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+	for _, token := range []string{"cookie", "localstorage", "sessionstorage", "apikey", "profilepath"} {
 		if strings.Contains(lower, token) {
 			return true
 		}
@@ -330,8 +335,34 @@ func p475ForbiddenKey(key string) bool {
 }
 
 func p475ForbiddenString(value string) bool {
-	lower := strings.ToLower(value)
-	return strings.Contains(lower, `c:\users\`)
+	return p475ContainsWindowsAbsolutePath(value)
+}
+
+func p475ContainsWindowsAbsolutePath(value string) bool {
+	return p475WindowsAbsolutePathIndex(value) >= 0
+}
+
+func p475WindowsAbsolutePathIndex(value string) int {
+	for idx := 0; idx+2 < len(value); idx++ {
+		if !p475IsASCIIAlpha(value[idx]) || value[idx+1] != ':' {
+			continue
+		}
+		if idx > 0 && p475IsASCIIAlphaNumeric(value[idx-1]) {
+			continue
+		}
+		if value[idx+2] == '\\' || value[idx+2] == '/' {
+			return idx
+		}
+	}
+	return -1
+}
+
+func p475IsASCIIAlphaNumeric(value byte) bool {
+	return p475IsASCIIAlpha(value) || (value >= '0' && value <= '9')
+}
+
+func p475IsASCIIAlpha(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z')
 }
 
 func p475SourceHash(parts ...string) string {

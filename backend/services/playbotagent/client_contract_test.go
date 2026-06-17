@@ -149,6 +149,31 @@ func TestP475ClientRejectsExactSecretChannelValueInJob(t *testing.T) {
 	}
 }
 
+func TestP475ClientRejectsWindowsAbsoluteLocalPathInJob(t *testing.T) {
+	tmpDir := t.TempDir()
+	callsFile := filepath.Join(tmpDir, "calls.json")
+	agentPath := writeP475FakeAgentBinary(t, tmpDir, callsFile, `{"schema_version":"p4.7.5","status":"success","test_cases":[]}`)
+	client, err := NewBinaryClient(BinaryClientOptions{CommandPath: agentPath, WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("NewBinaryClient returned error: %v", err)
+	}
+
+	_, err = client.Run(context.Background(), Job{
+		SchemaVersion: "p4.7.5",
+		Mode:          "generate",
+		RequestID:     "backend-agent-local-path-leak-contract",
+		PageContext: map[string]any{
+			"description": `Uses local profile D:\dpProject\browserwing\profiles\state.json`,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "playbot_agent_job_secret_leak") {
+		t.Fatalf("Run error = %v, want playbot_agent_job_secret_leak", err)
+	}
+	if _, statErr := os.Stat(callsFile); !os.IsNotExist(statErr) {
+		t.Fatalf("fake agent should not be called when local path leaks into job; stat err = %v", statErr)
+	}
+}
+
 func TestP475ClientDoesNotForwardUnrelatedBackendEnvironment(t *testing.T) {
 	tmpDir := t.TempDir()
 	callsFile := filepath.Join(tmpDir, "calls.json")
@@ -181,25 +206,31 @@ func TestP475ClientDoesNotForwardUnrelatedBackendEnvironment(t *testing.T) {
 }
 
 func TestP475ClientRedactsLocalPathFromProcessError(t *testing.T) {
-	localAgentPath := filepath.Join(`C:\Users\contract-user\AppData\Local\browserwing`, "missing-agent.exe")
-	client, err := NewBinaryClient(BinaryClientOptions{
-		CommandPath:     localAgentPath,
-		RedactLocalPath: true,
-	})
-	if err != nil {
-		t.Fatalf("NewBinaryClient returned error: %v", err)
-	}
+	for _, localAgentPath := range []string{
+		filepath.Join(`C:\Users\contract-user\AppData\Local\browserwing`, "missing-agent.exe"),
+		filepath.Join(`D:\dpProject\browserwing\bin`, "missing-agent.exe"),
+	} {
+		t.Run(localAgentPath, func(t *testing.T) {
+			client, err := NewBinaryClient(BinaryClientOptions{
+				CommandPath:     localAgentPath,
+				RedactLocalPath: true,
+			})
+			if err != nil {
+				t.Fatalf("NewBinaryClient returned error: %v", err)
+			}
 
-	_, err = client.Run(context.Background(), Job{
-		SchemaVersion: "p4.7.5",
-		Mode:          "generate",
-		RequestID:     "backend-agent-process-error-redaction",
-	})
-	if err == nil || !strings.Contains(err.Error(), "playbot_agent_process_failed") {
-		t.Fatalf("Run error = %v, want playbot_agent_process_failed", err)
-	}
-	if strings.Contains(strings.ToLower(err.Error()), `c:\users\`) || strings.Contains(err.Error(), "contract-user") {
-		t.Fatalf("process error leaked local agent path: %v", err)
+			_, err = client.Run(context.Background(), Job{
+				SchemaVersion: "p4.7.5",
+				Mode:          "generate",
+				RequestID:     "backend-agent-process-error-redaction",
+			})
+			if err == nil || !strings.Contains(err.Error(), "playbot_agent_process_failed") {
+				t.Fatalf("Run error = %v, want playbot_agent_process_failed", err)
+			}
+			if containsWindowsAbsolutePath(err.Error()) || strings.Contains(err.Error(), "contract-user") || strings.Contains(err.Error(), "dpProject") {
+				t.Fatalf("process error leaked local agent path: %v", err)
+			}
+		})
 	}
 }
 
@@ -210,6 +241,34 @@ func TestP475ClientRejectsPythonPlaybotEngineCommand(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "playbot_agent_python_engine_forbidden") {
 		t.Fatalf("NewBinaryClient python command error = %v, want playbot_agent_python_engine_forbidden", err)
+	}
+}
+
+func TestP475ClientTailerWarnsOnPartialAgentEventLine(t *testing.T) {
+	eventsPath := filepath.Join(t.TempDir(), "events.jsonl")
+	valid := `{"schema_version":"p4.7.5","seq":1,"phase":"llm_visible_output","level":"info","visible_message":"visible"}`
+	partial := `{"schema_version":"p4.7.5","seq":2,"phase":"partial"`
+	if err := os.WriteFile(eventsPath, []byte(valid+"\n"+partial), 0o600); err != nil {
+		t.Fatalf("write event fixture: %v", err)
+	}
+	client, err := NewBinaryClient(BinaryClientOptions{})
+	if err != nil {
+		t.Fatalf("NewBinaryClient returned error: %v", err)
+	}
+	done := make(chan struct{})
+	close(done)
+	var events []Event
+	client.tailEvents(context.Background(), eventsPath, func(event Event) {
+		events = append(events, event)
+	}, done)
+	if len(events) != 2 {
+		t.Fatalf("tail events = %+v, want valid event and partial-line warning", events)
+	}
+	if events[0].Phase != "llm_visible_output" {
+		t.Fatalf("first event phase = %q, want llm_visible_output", events[0].Phase)
+	}
+	if events[1].Phase != "agent_event_stream_invalid" || events[1].Level != "warning" {
+		t.Fatalf("partial event warning = %+v, want agent_event_stream_invalid warning", events[1])
 	}
 }
 

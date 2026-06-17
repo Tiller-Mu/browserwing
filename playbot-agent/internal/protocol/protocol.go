@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 const (
@@ -129,12 +130,27 @@ type PlaybotResult struct {
 	RefinedBlueprint map[string]any   `json:"refined_blueprint,omitempty"`
 	Summary          string           `json:"summary,omitempty"`
 	RiskNotes        string           `json:"risk_notes,omitempty"`
+	VisibleSummary   string           `json:"visible_summary,omitempty"`
+	ModelOutput      map[string]any   `json:"model_output,omitempty"`
 	QualityErrors    []map[string]any `json:"quality_errors,omitempty"`
 	RequestedContext []map[string]any `json:"requested_context,omitempty"`
 	ContextTrace     ContextTrace     `json:"context_trace,omitempty"`
 	Warnings         []map[string]any `json:"warnings,omitempty"`
 	RepairProposal   map[string]any   `json:"repair_proposal,omitempty"`
 	Retryable        bool             `json:"retryable,omitempty"`
+}
+
+type PlaybotEvent struct {
+	SchemaVersion  string         `json:"schema_version"`
+	RunID          string         `json:"run_id,omitempty"`
+	RequestID      string         `json:"request_id,omitempty"`
+	Seq            int64          `json:"seq"`
+	Phase          string         `json:"phase"`
+	Level          string         `json:"level,omitempty"`
+	Message        string         `json:"message,omitempty"`
+	VisibleMessage string         `json:"visible_message,omitempty"`
+	Data           map[string]any `json:"data,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
 }
 
 type ContextTrace struct {
@@ -266,8 +282,32 @@ func isForbiddenProtocolKey(key string) bool {
 }
 
 func containsForbiddenProtocolString(text string) bool {
-	if strings.Contains(strings.ToLower(text), `c:\users\`) {
-		return true
+	return containsWindowsAbsolutePath(text)
+}
+
+func containsWindowsAbsolutePath(text string) bool {
+	return windowsAbsolutePathIndex(text) >= 0
+}
+
+func windowsAbsolutePathIndex(text string) int {
+	for idx := 0; idx+2 < len(text); idx++ {
+		if !isASCIIAlpha(text[idx]) || text[idx+1] != ':' {
+			continue
+		}
+		if idx > 0 && isASCIIAlphaNumeric(text[idx-1]) {
+			continue
+		}
+		if text[idx+2] == '\\' || text[idx+2] == '/' {
+			return idx
+		}
 	}
-	return false
+	return -1
+}
+
+func isASCIIAlphaNumeric(value byte) bool {
+	return isASCIIAlpha(value) || (value >= '0' && value <= '9')
+}
+
+func isASCIIAlpha(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z')
 }

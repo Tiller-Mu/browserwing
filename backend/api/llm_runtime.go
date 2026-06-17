@@ -11,18 +11,26 @@ import (
 )
 
 func writeLLMConfigError(c *gin.Context, err error) bool {
-	if err == nil {
+	status, body := llmConfigErrorResponse(err)
+	if status == 0 {
 		return false
+	}
+	c.JSON(status, body)
+	return true
+}
+
+func llmConfigErrorResponse(err error) (int, gin.H) {
+	if err == nil {
+		return 0, nil
 	}
 	var cfgErr *llm.ConfigError
 	if errors.As(err, &cfgErr) {
-		c.JSON(http.StatusBadRequest, gin.H{
+		return http.StatusBadRequest, gin.H{
 			"error": cfgErr.Error(),
 			"code":  cfgErr.Code,
-		})
-		return true
+		}
 	}
-	return false
+	return 0, nil
 }
 
 func (h *Handler) currentUser(c *gin.Context) (*models.User, error) {

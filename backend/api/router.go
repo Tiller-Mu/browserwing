@@ -70,7 +70,7 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 		}
 
 		// 项目管理相关 (Testing Platform)
-		projectHandlers := NewProjectHandlers(handler.db, handler.config, handler.ensureTestCaseRunnerHolder(), handler.ensureProjectAuthRuntimeHolder(), handler.ensurePlaybotAgentHolder())
+		projectHandlers := NewProjectHandlers(handler.db, handler.config, handler.ensureTestCaseRunnerHolder(), handler.ensureProjectAuthRuntimeHolder(), handler.ensurePlaybotAgentHolder(), handler.ensurePlaybotRunHub())
 		projects := api.Group("/projects")
 		{
 			projects.GET("", projectHandlers.ListProjects)
@@ -96,6 +96,7 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			projects.GET("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.ListTestCases)
 			projects.POST("/:id/versions/:vid/pages/:pid/test-cases", projectHandlers.CreateTestCase)
 			projects.POST("/:id/versions/:vid/pages/:pid/test-cases/generate", projectHandlers.GenerateTestCases)
+			projects.POST("/:id/versions/:vid/pages/:pid/test-cases/generate-runs", projectHandlers.StartGenerateTestCasesRun)
 			projects.POST("/:id/versions/:vid/pages/:pid/test-cases/:tcid/run", projectHandlers.RunTestCase)
 			projects.GET("/:id/versions/:vid/pages/:pid/test-cases/:tcid/executions", projectHandlers.ListTestCaseExecutions)
 			projects.GET("/:id/versions/:vid/pages/:pid/test-cases/:tcid/executions/:eid", projectHandlers.GetTestCaseExecution)
@@ -109,6 +110,8 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			projects.DELETE("/:id/versions/:vid/pages/:pid/test-cases/:tcid", projectHandlers.DeleteTestCase)
 		}
 		api.GET("/recording-artifacts/:artifact_id/download", projectHandlers.DownloadRecordingArtifact)
+		api.GET("/playbot-runs/:run_id/stream", projectHandlers.StreamPlaybotRun)
+		api.GET("/playbot-runs/:run_id/result", projectHandlers.GetPlaybotRunResult)
 
 		// 浏览器相关
 		browserAPI := api.Group("/browser")
