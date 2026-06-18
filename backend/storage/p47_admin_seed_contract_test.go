@@ -3,7 +3,6 @@ package storage
 import (
 	"fmt"
 	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/browserwing/browserwing/config"
+	"github.com/browserwing/browserwing/internal/testsupport"
 	"github.com/browserwing/browserwing/models"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -121,9 +121,12 @@ func p47StorageSetUserAdmin(t *testing.T, user *models.User, admin bool) {
 
 func newP47StorageContractDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	baseDSN := strings.TrimSpace(os.Getenv("BROWSERWING_P46_POSTGRES_DSN"))
+	baseDSN, _, err := testsupport.PostgresDSN()
+	if err != nil {
+		t.Fatalf("load PostgreSQL contract test DSN: %v", err)
+	}
 	if baseDSN == "" {
-		t.Skip("P4.7 storage seed contract requires BROWSERWING_P46_POSTGRES_DSN targeting PostgreSQL database PlayBot")
+		t.Skipf("P4.7 storage seed contract requires %s or backend/config.local.toml [database].dsn targeting PostgreSQL database PlayBot", testsupport.PostgresDSNEnv)
 	}
 
 	schema := fmt.Sprintf("p47_storage_contract_%d", atomic.AddUint64(&p47StorageContractSequence, 1))

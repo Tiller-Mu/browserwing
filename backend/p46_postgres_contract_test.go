@@ -1824,7 +1824,7 @@ replace github.com/browserwing/browserwing => %s
 				t.Fatalf("write probe go.sum: %v", err)
 			}
 		}
-		source := p46StoreProbeSource(variant.code, probeTest)
+		source := p46StoreProbeSource(filepath.ToSlash(backendRoot(t)), variant.code, probeTest)
 		if err := os.WriteFile(filepath.Join(dir, "p46_contract_test.go"), []byte(source), 0o644); err != nil {
 			t.Fatalf("write probe test: %v", err)
 		}
@@ -2017,7 +2017,7 @@ func p46ProbeLooksLikeUnsupportedSignature(output string) bool {
 	return false
 }
 
-func p46StoreProbeSource(openStoreCode, probeTest string) string {
+func p46StoreProbeSource(backendRootPath, openStoreCode, probeTest string) string {
 	return `package p46probe
 
 import (
@@ -2041,8 +2041,11 @@ import (
 	"github.com/browserwing/browserwing/services/playbot"
 	"github.com/browserwing/browserwing/storage"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/pelletier/go-toml/v2"
 	"gorm.io/gorm"
 )
+
+const p46BackendRoot = ` + strconv.Quote(backendRootPath) + `
 
 var _ = models.Script{}
 var _ = playbot.GenerateOptions{}
@@ -2164,7 +2167,29 @@ func p46ContractDSN(t *testing.T) string {
 	if dsn := strings.TrimSpace(os.Getenv("BROWSERWING_P46_POSTGRES_DSN")); dsn != "" {
 		return dsn
 	}
-	t.Fatalf("P4.6 PostgreSQL Store behavior tests require BROWSERWING_P46_POSTGRES_DSN targeting database PlayBot")
+
+	configPath := filepath.Join(p46BackendRoot, "config.local.toml")
+	_, err := os.Stat(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("stat PostgreSQL contract test DSN config: %v", err)
+	}
+	if err == nil {
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("read PostgreSQL contract test DSN config: %v", err)
+		}
+		var cfg config.Config
+		err = toml.Unmarshal(data, &cfg)
+		if err != nil {
+			t.Fatalf("parse PostgreSQL contract test DSN config: %v", err)
+		}
+		if cfg.Database != nil && strings.TrimSpace(cfg.Database.DSN) != "" {
+			dsn := strings.TrimSpace(cfg.Database.DSN)
+			return dsn
+		}
+	}
+
+	t.Fatalf("P4.6 PostgreSQL Store behavior tests require BROWSERWING_P46_POSTGRES_DSN or backend/config.local.toml [database].dsn targeting database PlayBot")
 	return ""
 }
 

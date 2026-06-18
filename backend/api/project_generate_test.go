@@ -9,13 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/browserwing/browserwing/config"
+	"github.com/browserwing/browserwing/internal/testsupport"
 	"github.com/browserwing/browserwing/models"
 	"github.com/browserwing/browserwing/services/playbotagent"
 	"github.com/browserwing/browserwing/storage"
@@ -447,9 +447,12 @@ func (s *generateContractStore) DeleteUser(id string) error {
 func newGenerateContractGormDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
-	baseDSN := strings.TrimSpace(os.Getenv("BROWSERWING_P46_POSTGRES_DSN"))
+	baseDSN, _, err := testsupport.PostgresDSN()
+	if err != nil {
+		t.Fatalf("load PostgreSQL contract test DSN: %v", err)
+	}
 	if baseDSN == "" {
-		t.Skip("generate contract tests require BROWSERWING_P46_POSTGRES_DSN targeting PostgreSQL database PlayBot")
+		t.Skipf("generate contract tests require %s or backend/config.local.toml [database].dsn targeting PostgreSQL database PlayBot", testsupport.PostgresDSNEnv)
 	}
 
 	schema := fmt.Sprintf("generate_contract_%d", atomic.AddUint64(&generateContractSequence, 1))

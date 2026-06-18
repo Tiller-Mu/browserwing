@@ -13,6 +13,15 @@ cd backend
 go test ./... -v
 ```
 
+### PostgreSQL 契约测试 DSN
+
+PostgreSQL 行为契约测试需要连接本机 `PlayBot` 数据库。测试读取顺序：
+
+1. `BROWSERWING_P46_POSTGRES_DSN`
+2. `backend/config.local.toml` 的 `[database].dsn`
+
+`backend/config.local.toml` 已在 `.gitignore` 中，适合保存本机真实 DSN；真实 DSN 不提交仓库。
+
 ### 按模块运行
 
 ```bash

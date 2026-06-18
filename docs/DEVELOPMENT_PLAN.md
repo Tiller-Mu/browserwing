@@ -332,7 +332,7 @@ P4.7 已完成。LLM 统一配置、录制会话数据库管理、录制草稿�
 
 ## 九、P4.6：PostgreSQL 统一存储迁移
 
-当前状态：实现已完成；开发者本地使用 PostgreSQL `PlayBot` DSN 完成契约和标准验证，最终 review 环境需设置 `BROWSERWING_P46_POSTGRES_DSN` 后复跑。
+当前状态：实现已完成；开发者本地使用 PostgreSQL `PlayBot` DSN 完成契约和标准验证，最终 review 环境需通过 `BROWSERWING_P46_POSTGRES_DSN` 或 ignored 的 `backend/config.local.toml` 提供 DSN 后复跑。
 
 阶段设计：
 
@@ -377,8 +377,8 @@ P4.7 已完成。LLM 统一配置、录制会话数据库管理、录制草稿�
 
 - `backend/p46_postgres_contract_test.go` 已覆盖 Store Operation Inventory 完整性、ContractTest 名称真实存在、旧 BoltDB/SQLite/global `storage.DB` 禁止入口、PostgreSQL `PlayBot` 配置、LLM API Key 加密存储、Playbot job JSON 密钥边界、Store 主要领域行为和 TestingPlatform P1-P4.5 业务数据访问。
 - 生产代码已切换到 PostgreSQL Store 和受控 TestingPlatform GORM 入口；旧 BoltDB、SQLite 初始化入口和 `fix-headless` 旧维护命令已从生产代码移除。
-- 开发者本地验证记录：在 `BROWSERWING_P46_POSTGRES_DSN` 指向 PostgreSQL `PlayBot` 数据库时，`go test . -run TestP46 -count=1`、`go test ./api -count=1`、`go test ./...`、`pnpm run type-check`、`pnpm run build`、Playbot 最小导入和 `git diff --check` 均通过。
-- 最终 review 需要在审核环境提供指向 `PlayBot` 的 `BROWSERWING_P46_POSTGRES_DSN` 后复跑 PostgreSQL 行为契约；未设置 DSN 时，只能确认静态防遗漏和非 PostgreSQL 集成包结果。
+- 开发者本地验证记录：在 PostgreSQL 测试 DSN 指向 `PlayBot` 数据库时，`go test . -run TestP46 -count=1`、`go test ./api -count=1`、`go test ./...`、`pnpm run type-check`、`pnpm run build`、Playbot 最小导入和 `git diff --check` 均通过。
+- 最终 review 需要在审核环境通过 `BROWSERWING_P46_POSTGRES_DSN` 或 ignored 的 `backend/config.local.toml` 提供指向 `PlayBot` 的 DSN 后复跑 PostgreSQL 行为契约；未提供 DSN 时，只能确认静态防遗漏和非 PostgreSQL 集成包结果。
 
 遗留边界：
 
