@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/browserwing/browserwing/config"
 	"github.com/browserwing/browserwing/models"
@@ -16,12 +17,13 @@ import (
 
 // ProjectHandlers 包含了项目和版本相关的 API 处理器
 type ProjectHandlers struct {
-	store          storage.Store
-	config         *config.Config
-	testCaseRunner *testCaseRunnerHolder
-	projectAuth    *projectAuthRuntimeHolder
-	playbotAgent   *playbotAgentHolder
-	playbotRuns    *playbotRunHub
+	store                storage.Store
+	config               *config.Config
+	testCaseRunner       *testCaseRunnerHolder
+	projectAuth          *projectAuthRuntimeHolder
+	playbotAgent         *playbotAgentHolder
+	playbotRuns          *playbotRunHub
+	recordingLifecycleMu sync.Mutex
 }
 
 // NewProjectHandlers 创建处理器实例
@@ -382,13 +384,14 @@ func (h *ProjectHandlers) SavePageRecording(c *gin.Context) {
 		DOMSnapshot        string          `json:"dom_snapshot"`
 		RecordingMeta      json.RawMessage `json:"recording_meta"`
 		RecordingSessionID string          `json:"recording_session_id"`
+		RetainAuthSnapshot bool            `json:"retain_auth_snapshot"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 		return
 	}
 	if strings.TrimSpace(req.RecordingSessionID) != "" {
-		h.saveRecordingSessionAsPageScript(c, projectID, versionID, pageID, req.RecordingSessionID, req.RecordingMeta, req.Name)
+		h.saveRecordingSessionAsPageScript(c, projectID, versionID, pageID, req.RecordingSessionID, req.RecordingMeta, req.Name, req.RetainAuthSnapshot)
 		return
 	}
 

@@ -70,37 +70,38 @@ func (s RecordingStorageScope) matches(other RecordingStorageScope) bool {
 }
 
 type Recorder struct {
-	mu               sync.Mutex
-	isRecording      bool
-	startTime        time.Time
-	startURL         string
-	actions          []models.ScriptAction
-	page             *rod.Page            // 主页面
-	pages            map[string]*rod.Page // 所有录制的标签页 (key: page target ID)
-	syncTicker       *time.Ticker
-	syncStopChan     chan bool
-	lastSyncedCount  int
-	lastSyncedDraft  string
-	apiServerPort    string                  // API 服务器端口
-	llmManager       *llm.Manager            // LLM 管理器
-	db               DBInterface             // 数据库接口
-	language         string                  // 当前语言设置
-	downloadedFiles  []models.DownloadedFile // 录制过程中下载的文件
-	downloadPath     string                  // 下载目录路径
-	downloadCancel   context.CancelFunc      // 取消下载监听
-	recordingCtx     context.Context         // 录制生命周期上下文
-	recordingCancel  context.CancelFunc      // 取消录制后台任务
-	storageScope     *RecordingStorageScope  // 当前项目录制快照作用域
-	lastStorageState map[string]any          // 最近一次停止录制时捕获的浏览器登录态快照
-	lastStorageScope *RecordingStorageScope  // 最近一次登录态快照作用域
+	mu                      sync.Mutex
+	isRecording             bool
+	startTime               time.Time
+	startURL                string
+	actions                 []models.ScriptAction
+	page                    *rod.Page            // 主页面
+	pages                   map[string]*rod.Page // 所有录制的标签页 (key: page target ID)
+	syncTicker              *time.Ticker
+	syncStopChan            chan bool
+	lastSyncedCount         int
+	lastSyncedDraft         string
+	apiServerPort           string                                   // API 服务器端口
+	llmManager              *llm.Manager                             // LLM 管理器
+	db                      DBInterface                              // 数据库接口
+	language                string                                   // 当前语言设置
+	downloadedFiles         []models.DownloadedFile                  // 录制过程中下载的文件
+	downloadPath            string                                   // 下载目录路径
+	downloadCancel          context.CancelFunc                       // 取消下载监听
+	recordingCtx            context.Context                          // 录制生命周期上下文
+	recordingCancel         context.CancelFunc                       // 取消录制后台任务
+	storageScope            *RecordingStorageScope                   // 当前项目录制快照作用域
+	pendingStorageStates    map[RecordingStorageScope]map[string]any // 已停止项目录制等待确认的登录态快照
+	downloadAnalysisActions []models.ScriptAction                    // 项目录制中的无文件下载分析动作
 }
 
 // NewRecorder 创建录制器
 func NewRecorder() *Recorder {
 	return &Recorder{
-		actions:       make([]models.ScriptAction, 0),
-		pages:         make(map[string]*rod.Page),
-		apiServerPort: "8080", // 默认端口
+		actions:              make([]models.ScriptAction, 0),
+		pages:                make(map[string]*rod.Page),
+		pendingStorageStates: make(map[RecordingStorageScope]map[string]any),
+		apiServerPort:        "8080", // 默认端口
 	}
 }
 
@@ -132,19 +133,41 @@ func (r *Recorder) RecordingContext() context.Context {
 	return r.recordingCtx
 }
 
-func (r *Recorder) ConsumeLastStorageState(scope RecordingStorageScope) map[string]any {
+func (r *Recorder) PeekLastStorageState(scope RecordingStorageScope) map[string]any {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.lastStorageState == nil || r.lastStorageScope == nil {
+	if scope.isZero() || r.pendingStorageStates == nil {
 		return nil
 	}
-	if !r.lastStorageScope.matches(scope) {
+	state, ok := r.pendingStorageStates[scope]
+	if !ok {
 		return nil
 	}
-	state := cloneStorageState(r.lastStorageState)
-	r.lastStorageState = nil
-	r.lastStorageScope = nil
-	return state
+	return cloneStorageState(state)
+}
+
+func (r *Recorder) AcknowledgeLastStorageState(scope RecordingStorageScope) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if scope.isZero() || r.pendingStorageStates == nil {
+		return
+	}
+	delete(r.pendingStorageStates, scope)
+}
+
+// DiscardLastStorageState abandons a pending project auth snapshot after its
+// recording session is explicitly cancelled.
+func (r *Recorder) DiscardLastStorageState(scope RecordingStorageScope) {
+	r.AcknowledgeLastStorageState(scope)
+}
+
+func (r *Recorder) setActiveRecordingScopeLocked(scope RecordingStorageScope) {
+	r.storageScope = nil
+	if scope.isZero() {
+		return
+	}
+	storedScope := scope
+	r.storageScope = &storedScope
 }
 
 // StartRecording 开始录制
@@ -169,12 +192,11 @@ func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url strin
 	r.page = page
 	r.pages = make(map[string]*rod.Page)
 	r.downloadedFiles = make([]models.DownloadedFile, 0)
-	r.storageScope = nil
-	r.lastStorageState = nil
-	r.lastStorageScope = nil
+	r.downloadAnalysisActions = nil
 	if len(scopes) > 0 && !scopes[0].isZero() {
-		scope := scopes[0]
-		r.storageScope = &scope
+		r.setActiveRecordingScopeLocked(scopes[0])
+	} else {
+		r.setActiveRecordingScopeLocked(RecordingStorageScope{})
 	}
 
 	// 添加主页面到 pages map
@@ -441,7 +463,7 @@ func (r *Recorder) syncActionsFromBrowser(ctx context.Context, ticker *time.Tick
 					var actions []models.ScriptAction
 					jsonData, _ := json.Marshal(result.Value)
 					if json.Unmarshal(jsonData, &actions) == nil {
-						allActions = append(allActions, actions...)
+						allActions = append(allActions, models.NormalizeRecordingActions(actions)...)
 					}
 				}
 			}
@@ -807,6 +829,8 @@ func (r *Recorder) stopRecordingLocked(ctx context.Context) ([]models.ScriptActi
 	// 最后一次同步：从所有页面获取录制的操作
 	logger.Info(ctx, "Performing final sync from all pages...")
 	allActions := make([]models.ScriptAction, 0)
+	storageSnapshots := make([]map[string]any, 0)
+	var primaryStorageSnapshot map[string]any
 	stopCtx, stopCancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
 	defer stopCancel()
 
@@ -828,10 +852,10 @@ func (r *Recorder) stopRecordingLocked(ctx context.Context) ([]models.ScriptActi
 
 		logger.Info(ctx, "Syncing from page: %s", targetID)
 		if state, err := captureStorageStateFromRecordingPage(stopCtx, pg, pageInfo.URL); err == nil {
-			if r.storageScope != nil {
-				scope := *r.storageScope
-				r.lastStorageState = state
-				r.lastStorageScope = &scope
+			if pg == r.page {
+				primaryStorageSnapshot = state
+			} else {
+				storageSnapshots = append(storageSnapshots, state)
 			}
 		} else {
 			logger.Warn(ctx, "Failed to capture recording storage snapshot from page %s: %v", targetID, err)
@@ -880,6 +904,7 @@ func (r *Recorder) stopRecordingLocked(ctx context.Context) ([]models.ScriptActi
 			if err == nil {
 				logger.Info(ctx, "JSON serialization successful from page %s, data length: %d", targetID, len(jsonData))
 				if err := json.Unmarshal(jsonData, &actions); err == nil {
+					actions = models.NormalizeRecordingActions(actions)
 					// 合并最后的操作（可能有新的）
 					if len(actions) > r.lastSyncedCount {
 						newActions := actions[r.lastSyncedCount:]
@@ -933,28 +958,20 @@ func (r *Recorder) stopRecordingLocked(ctx context.Context) ([]models.ScriptActi
 		// 恢复 CSP 限制（忽略错误）
 		_ = proto.PageSetBypassCSP{Enabled: false}.Call(pg.Timeout(2 * time.Second))
 	}
+	if r.storageScope != nil && (primaryStorageSnapshot != nil || len(storageSnapshots) > 0) {
+		scope := *r.storageScope
+		if r.pendingStorageStates == nil {
+			r.pendingStorageStates = make(map[RecordingStorageScope]map[string]any)
+		}
+		r.pendingStorageStates[scope] = mergeRecordingStorageSnapshots(r.startURL, primaryStorageSnapshot, storageSnapshots...)
+	}
 
 	logger.Info(ctx, "✓ All pages cleaned up")
 
-	// 合并所有操作：去重并按时间戳排序
-	if len(allActions) > 0 {
-		uniqueActions := make(map[int64]models.ScriptAction)
-		for _, action := range allActions {
-			uniqueActions[action.Timestamp] = action
-		}
-
-		r.actions = make([]models.ScriptAction, 0, len(uniqueActions))
-		for _, action := range uniqueActions {
-			r.actions = append(r.actions, action)
-		}
-
-		// 按时间戳排序
-		sort.Slice(r.actions, func(i, j int) bool {
-			return r.actions[i].Timestamp < r.actions[j].Timestamp
-		})
-
-		logger.Info(ctx, "✓ Merged and sorted %d unique actions from all pages", len(r.actions))
-	}
+	// 合并页面动作、同步草稿和下载分析动作。下载事件可能与触发点击
+	// 发生在同一毫秒，不能再仅按时间戳去重。
+	r.actions = mergeRecordedActions(r.actions, allActions, r.downloadAnalysisActions)
+	logger.Info(ctx, "✓ Merged and sorted %d unique actions from all pages", len(r.actions))
 
 	logger.Info(ctx, "✓ CSP restrictions restored")
 
@@ -964,6 +981,7 @@ func (r *Recorder) stopRecordingLocked(ctx context.Context) ([]models.ScriptActi
 	r.page = nil
 	r.pages = make(map[string]*rod.Page)
 	r.downloadedFiles = nil
+	r.downloadAnalysisActions = nil
 	r.syncTicker = nil
 	r.syncStopChan = nil
 	r.storageScope = nil
@@ -978,6 +996,201 @@ func (r *Recorder) stopRecordingLocked(ctx context.Context) ([]models.ScriptActi
 	logger.Info(ctx, "Final return of %d actions", len(actions))
 
 	return actions, downloadedFiles, nil
+}
+
+func mergeRecordedActions(groups ...[]models.ScriptAction) []models.ScriptAction {
+	merged := make([]models.ScriptAction, 0)
+	seen := make(map[string]struct{})
+	for _, group := range groups {
+		for _, action := range group {
+			key := recordingActionDeduplicationKey(action)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, action)
+		}
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		return merged[i].Timestamp < merged[j].Timestamp
+	})
+	return models.NormalizeRecordingActions(merged)
+}
+
+func recordingActionDeduplicationKey(action models.ScriptAction) string {
+	// A page sync and a CDP event may happen within the same millisecond. Use
+	// the complete action payload, rather than a timestamp (or a small subset
+	// of fields), so separate download events are never merged accidentally.
+	if encoded, err := json.Marshal(action); err == nil {
+		return string(encoded)
+	}
+	return strings.Join([]string{
+		action.Type,
+		strconv.FormatInt(action.Timestamp, 10),
+		action.Selector,
+		action.XPath,
+		action.URL,
+		action.Value,
+		action.Text,
+	}, "\x00")
+}
+
+type recordingStorageSnapshot struct {
+	state     map[string]any
+	isPrimary bool
+	rank      int
+	sortKey   string
+}
+
+// mergeRecordingStorageSnapshots combines the storage captured from every
+// recording tab. The primary recording tab wins conflicts, even after it has
+// redirected, so another same-origin tab cannot replace its sessionStorage.
+func mergeRecordingStorageSnapshots(targetURL string, primarySnapshot map[string]any, snapshots ...map[string]any) map[string]any {
+	candidates := make([]recordingStorageSnapshot, 0, len(snapshots)+1)
+	appendSnapshot := func(snapshot map[string]any, isPrimary bool) {
+		state := cloneStorageState(snapshot)
+		if state == nil {
+			return
+		}
+		capturedURL := recordingStorageString(state["captured_url"])
+		candidates = append(candidates, recordingStorageSnapshot{
+			state:     state,
+			isPrimary: isPrimary,
+			rank:      recordingStorageSnapshotRank(targetURL, capturedURL),
+			sortKey:   recordingStorageSnapshotSortKey(capturedURL, state),
+		})
+	}
+	appendSnapshot(primarySnapshot, true)
+	for _, snapshot := range snapshots {
+		appendSnapshot(snapshot, false)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].isPrimary != candidates[j].isPrimary {
+			return candidates[i].isPrimary
+		}
+		if candidates[i].rank != candidates[j].rank {
+			return candidates[i].rank < candidates[j].rank
+		}
+		return candidates[i].sortKey < candidates[j].sortKey
+	})
+
+	primary := candidates[0].state
+	merged := map[string]any{
+		"schema_version": primary["schema_version"],
+		"kind":           primary["kind"],
+		"captured_url":   primary["captured_url"],
+		"captured_at":    primary["captured_at"],
+		"extensions":     primary["extensions"],
+	}
+	origins := make(map[string]map[string]any)
+	cookies := make(map[string]map[string]any)
+	for _, candidate := range candidates {
+		for _, origin := range recordingStorageObjects(candidate.state["origins"]) {
+			key := recordingStorageString(origin["origin"])
+			if key == "" {
+				continue
+			}
+			if _, exists := origins[key]; !exists {
+				origins[key] = origin
+			}
+		}
+		for _, cookie := range recordingStorageObjects(candidate.state["cookies"]) {
+			key := recordingStorageCookieKey(cookie)
+			if _, exists := cookies[key]; !exists {
+				cookies[key] = cookie
+			}
+		}
+	}
+	merged["origins"] = recordingStorageObjectValues(origins)
+	merged["cookies"] = recordingStorageObjectValues(cookies)
+	return merged
+}
+
+func recordingStorageSnapshotRank(targetURL, capturedURL string) int {
+	targetURL = strings.TrimSpace(targetURL)
+	capturedURL = strings.TrimSpace(capturedURL)
+	if targetURL == "" {
+		return 0
+	}
+	if capturedURL == targetURL {
+		return 0
+	}
+	if recordingPageOrigin(capturedURL) == recordingPageOrigin(targetURL) {
+		return 1
+	}
+	return 2
+}
+
+func recordingStorageSnapshotSortKey(capturedURL string, state map[string]any) string {
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return capturedURL
+	}
+	return capturedURL + "\x00" + string(encoded)
+}
+
+func recordingStorageObjects(value any) []map[string]any {
+	objects := make([]map[string]any, 0)
+	for _, raw := range recordingStorageValues(value) {
+		object, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		objects = append(objects, object)
+	}
+	return objects
+}
+
+func recordingStorageValues(value any) []any {
+	switch values := value.(type) {
+	case []any:
+		return values
+	case []map[string]any:
+		items := make([]any, 0, len(values))
+		for _, item := range values {
+			items = append(items, item)
+		}
+		return items
+	default:
+		return nil
+	}
+}
+
+func recordingStorageString(value any) string {
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
+}
+
+func recordingStorageCookieKey(cookie map[string]any) string {
+	key := strings.Join([]string{
+		recordingStorageString(cookie["name"]),
+		strings.ToLower(recordingStorageString(cookie["domain"])),
+		recordingStorageString(cookie["path"]),
+	}, "\x00")
+	if key != "\x00\x00" {
+		return key
+	}
+	encoded, err := json.Marshal(cookie)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func recordingStorageObjectValues(values map[string]map[string]any) []map[string]any {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	objects := make([]map[string]any, 0, len(keys))
+	for _, key := range keys {
+		objects = append(objects, values[key])
+	}
+	return objects
 }
 
 func captureStorageStateFromRecordingPage(ctx context.Context, page *rod.Page, pageURL string) (map[string]any, error) {
@@ -1346,8 +1559,22 @@ func (r *Recorder) IsRecording() bool {
 func (r *Recorder) CurrentStorageScope() (RecordingStorageScope, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.storageScope == nil || r.storageScope.isZero() {
+	if !r.isRecording || r.storageScope == nil || r.storageScope.isZero() {
 		return RecordingStorageScope{}, false
+	}
+	return *r.storageScope, true
+}
+
+// ActiveStorageScope reports whether the recorder is active and, when the
+// recording is project-scoped, the scope that currently owns it.
+func (r *Recorder) ActiveStorageScope() (RecordingStorageScope, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.isRecording {
+		return RecordingStorageScope{}, false
+	}
+	if r.storageScope == nil || r.storageScope.isZero() {
+		return RecordingStorageScope{}, true
 	}
 	return *r.storageScope, true
 }
@@ -1514,7 +1741,8 @@ func (r *Recorder) injectRecordingScriptToPage(ctx context.Context, page *rod.Pa
 	go r.watchForPageNavigation(ctx, page)
 }
 
-// watchDownloadEvents 监听下载事件并记录下载的文件信息
+// watchDownloadEvents records normal downloads as files, but project-scoped
+// recordings retain only analysis metadata and never depend on a local file.
 func (r *Recorder) watchDownloadEvents(ctx context.Context, page *rod.Page) {
 	// 创建可取消的上下文
 	downloadCtx, cancel := context.WithCancel(ctx)
@@ -1534,10 +1762,18 @@ func (r *Recorder) watchDownloadEvents(ctx context.Context, page *rod.Page) {
 			return
 		}
 
-		// 记录下载文件信息
+		if r.storageScope != nil && !r.storageScope.isZero() {
+			r.downloadAnalysisActions = append(r.downloadAnalysisActions, projectDownloadAnalysisAction(e.URL, e.SuggestedFilename))
+			logger.Info(ctx, "Recorded project download analysis without storing a file")
+			return
+		}
+
+		// 保持非项目录制的文件下载行为，但 URL 和项目录制采用相同的
+		// 脱敏边界，避免下载凭据进入持久化元数据或日志。
+		sanitizedURL := models.SanitizeRecordingDownloadURL(e.URL)
 		downloadFile := models.DownloadedFile{
 			FileName:     e.SuggestedFilename,
-			URL:          e.URL,
+			URL:          sanitizedURL,
 			DownloadTime: time.Now(),
 		}
 
@@ -1546,7 +1782,7 @@ func (r *Recorder) watchDownloadEvents(ctx context.Context, page *rod.Page) {
 			downloadFile.FilePath = r.downloadPath + "/" + e.SuggestedFilename
 		}
 
-		logger.Info(ctx, "📥 Download detected: %s from %s", e.SuggestedFilename, e.URL)
+		logger.Info(ctx, "📥 Download detected: %s from %s", e.SuggestedFilename, sanitizedURL)
 
 		r.downloadedFiles = append(r.downloadedFiles, downloadFile)
 	})()
@@ -1581,6 +1817,18 @@ func (r *Recorder) watchDownloadEvents(ctx context.Context, page *rod.Page) {
 	// 等待上下文取消
 	<-downloadCtx.Done()
 	logger.Info(ctx, "Stopped watching download events")
+}
+
+// projectDownloadAnalysisAction records only the download link and suggested
+// filename. CDP correlation IDs and frame metadata are not useful to playback
+// or analysis after the recording session has ended.
+func projectDownloadAnalysisAction(downloadURL, suggestedFilename string) models.ScriptAction {
+	return models.ScriptAction{
+		Type:      "download",
+		Timestamp: time.Now().UnixMilli(),
+		URL:       models.SanitizeRecordingDownloadURL(downloadURL),
+		Text:      suggestedFilename,
+	}
 }
 
 // SetDownloadPath 设置下载路径（从 Manager 传入）

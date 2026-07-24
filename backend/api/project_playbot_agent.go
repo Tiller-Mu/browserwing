@@ -276,7 +276,11 @@ func parseP475RecordingMetaObject(raw string) (map[string]any, p45RecordingMeta,
 func sanitizeP475ActionTrace(actions []map[string]any) []map[string]any {
 	out := make([]map[string]any, 0, len(actions))
 	for _, action := range actions {
-		if sanitized, ok := sanitizeP475Value(action).(map[string]any); ok {
+		normalized, keep := models.NormalizeRecordingActionMap(action)
+		if !keep {
+			continue
+		}
+		if sanitized, ok := sanitizeP475Value(normalized).(map[string]any); ok {
 			out = append(out, sanitized)
 		}
 	}

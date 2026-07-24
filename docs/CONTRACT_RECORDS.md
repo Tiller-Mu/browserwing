@@ -481,7 +481,7 @@ Playbot 生成 TestCase、自然语言 refine、录制页 AI 自动提取/表单
 ### RecordingSession 生命周期和 PageScript 生成
 
 契约：
-项目页面录制开始时必须创建 `RecordingSession(status = recording)`，写入 project/version/page、recording_kind、auth_context、target_url 和可选 created_by。录制中必须按 session 持久化完整 actions 数组、action_count 和 last_synced_at；浏览器 `sessionStorage` 只能作为页面内临时缓存，不是唯一事实源。停止录制后会话更新为 `stopped`；只有 `stopped` 会话可以保存为当前页面主流程 `PageScript`，保存时在事务中替换旧主流程并把会话更新为 `saved`。保存请求到达时如果会话仍是 `recording`，前端必须先停止会话再保存；如果浏览器录制生命周期已提前停止，但数据库中已有合法非空草稿 actions，停止入口可以用持久化草稿把会话收口为 `stopped`。`saved/cancelled/failed` 后不得继续同步 actions 或再次保存。
+项目页面录制开始时必须创建 `RecordingSession(status = recording)`，写入 project/version/page、recording_kind、auth_context、target_url 和可选 created_by；`project_saved` 还必须记录当次实际恢复的 `source_auth_state_id`，供恢复会话与最终 PageScript 使用，clean 和登录流程为空。录制中必须按 session 持久化完整 actions 数组、action_count 和 last_synced_at；浏览器 `sessionStorage` 只能作为页面内临时缓存，不是唯一事实源。停止录制后会话更新为 `stopped`；只有 `stopped` 会话可以保存为当前页面主流程 `PageScript`，保存时在事务中替换旧主流程并把会话更新为 `saved`。默认保存成功后必须释放该会话的内存登录态快照；只有 login_flow + clean 明确声明“保存后捕获”时才保留至捕获成功。绑定会话的登录态捕获仅允许 login_flow + clean 且状态为 `stopped` 或 `saved` 的会话，并且必须消费完全匹配的快照；不合格会话或快照缺失不得读取活动页。保留快照的 `saved` 登录会话可通过既有取消入口显式放弃快照，此时会话仍为 `saved`。保存请求到达时如果会话仍是 `recording`，前端必须先停止会话再保存；如果浏览器录制生命周期已提前停止，但数据库中已有合法非空草稿 actions，停止入口可以用持久化草稿把会话收口为 `stopped`。`saved/cancelled/failed` 后不得继续同步 actions 或再次保存。
 
 依据：
 来自 P4.7 设计对录制数据数据库事实源的要求。P1-P4.6 的生成、管理、执行和 refine 仍以当前页面保存的 `PageScript` 为主流程事实源；P4.7 只是把录制过程变成可恢复、可审计、可保护的会话。
@@ -495,7 +495,7 @@ Playbot 生成 TestCase、自然语言 refine、录制页 AI 自动提取/表单
 ### 录制结果查看和质量诊断
 
 契约：
-页面管理在当前页面存在已保存 `PageScript` 时，必须提供查看录制结果入口。查看接口只读取当前 project/version/page 下的当前有效 `PageScript`，返回脱敏后的 action trace、DOM snapshot、recording meta 和质量诊断，不返回 Cookie、Storage value、API Key 或本地绝对路径。质量诊断中的目标定位判断必须与执行归一化口径保持一致，支持顶层 selector/xpath/text/ref_id，也支持嵌套 `target` 中的 ref_id、recorded_selector、selector、css、xpath、role+text、text、label 和 placeholder。
+页面管理在当前页面存在已保存 `PageScript` 时，必须提供查看录制结果入口。查看接口只读取当前 project/version/page 下的当前有效 `PageScript`，返回脱敏后的 action trace、DOM snapshot、recording meta 和质量诊断，不返回 Cookie、Storage value、API Key 或本地绝对路径。当前 BrowserWing 仅面向受控测试环境，不得用于生产系统或生产目标；即使在该边界内，下载分析动作和下载元数据也只保留受限 HTTP(S) URL：必须移除 userinfo 与 fragment，对 token、auth、secret、signature、credential、key、password、session 及其分隔符、camelCase、acronym 复合 query 参数，以及云签名 query 参数脱敏，超过 2 KiB 时仅保留 scheme、host、path，并保留建议文件名。页面注入脚本只能做前置净化，后端必须在录制器同步、会话持久化、录制详情和 Playbot 读取前按同一规则再次规范化 `download.url` 与 `attrs.download_url`；`data:`、`blob:`、非 HTTP(S) 与无效 URL 不得写入 ActionTrace、下载元数据、日志或 Playbot 输入，附属下载文件名也必须一并移除；不保留 CDP GUID、来源 frame 或其他关联元数据。浏览器 profile-owner 恢复只能在 marker PID、监听端口、受支持的浏览器产品以及完整 DevTools browser WebSocket identity（规范化 host、port 和 `/devtools/browser/<id>`）全部一致时终止进程；旧 HTTP marker 缺少 browser id 时必须跳过终止。该边界不改变 Cookie、Storage 与 API Key 的既有脱敏要求。质量诊断中的目标定位判断必须与执行归一化口径保持一致，支持顶层 selector/xpath/text/ref_id，也支持嵌套 `target` 中的 ref_id、recorded_selector、selector、css、xpath、role+text、text、label 和 placeholder。
 
 依据：
 来自 P4.7.5 对“录制质量不足要前置失败、用户应能定位原因”的要求。查看页只是展示和诊断当前 PageScript，不自动修改 PageScript、RecordingSession、TestCase 或 RecordingArtifact。

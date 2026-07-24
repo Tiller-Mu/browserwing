@@ -64,6 +64,7 @@ export interface CaptureProjectAuthStateRequest {
   origin_allowlist?: string[];
   replace?: boolean;
   browser_instance_id?: string;
+  recording_session_id?: string;
 }
 
 export interface StartPageRecordingSessionRequest {
@@ -91,6 +92,7 @@ export interface SavePageRecordingRequest {
   dom_snapshot: string;
   recording_meta: P45RecordingMeta;
   recording_session_id?: string;
+  retain_auth_snapshot?: boolean;
 }
 
 export interface StopPageRecordingSessionResponse {
@@ -101,6 +103,8 @@ export interface StopPageRecordingSessionResponse {
   page_id: number;
   recording_kind: P45RecordingKind;
   auth_context: P45AuthContext;
+  source_auth_state_id?: number | null;
+  auth_snapshot_discarded?: boolean;
   target_url: string;
   status: 'recording' | 'stopped' | 'saved' | 'cancelled' | 'failed';
   action_count: number;

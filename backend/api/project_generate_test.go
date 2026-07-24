@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -874,6 +875,63 @@ func (e *generateContractEnv) failFutureTestCaseCreates(t *testing.T) {
 		}
 	}); err != nil {
 		t.Fatalf("register create failure callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = e.db.Callback().Create().Remove(callbackName)
+	})
+}
+
+func (e *generateContractEnv) failNextRecordingSessionUpdate(t *testing.T) {
+	t.Helper()
+	callbackName := fmt.Sprintf("p1_contract_fail_recording_session_update_%d", time.Now().UnixNano())
+	var pending int32 = 1
+	if err := e.db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Schema != nil && tx.Statement.Schema.Name == "RecordingSession" && atomic.CompareAndSwapInt32(&pending, 1, 0) {
+			tx.AddError(errors.New("forced RecordingSession update failure"))
+		}
+	}); err != nil {
+		t.Fatalf("register RecordingSession update failure callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = e.db.Callback().Update().Remove(callbackName)
+	})
+}
+
+func (e *generateContractEnv) blockNextRecordingSessionUpdate(t *testing.T) (<-chan struct{}, func()) {
+	t.Helper()
+	callbackName := fmt.Sprintf("p1_contract_block_recording_session_update_%d", time.Now().UnixNano())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var pending int32 = 1
+	var releaseOnce sync.Once
+	if err := e.db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement == nil || tx.Statement.Schema == nil || tx.Statement.Schema.Name != "RecordingSession" || !atomic.CompareAndSwapInt32(&pending, 1, 0) {
+			return
+		}
+		close(entered)
+		<-release
+	}); err != nil {
+		t.Fatalf("register RecordingSession update barrier: %v", err)
+	}
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		_ = e.db.Callback().Update().Remove(callbackName)
+	})
+	return entered, func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+}
+
+func (e *generateContractEnv) failNextProjectAuthStateCreate(t *testing.T) {
+	t.Helper()
+	callbackName := fmt.Sprintf("p1_contract_fail_project_auth_state_create_%d", time.Now().UnixNano())
+	var pending int32 = 1
+	if err := e.db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Schema != nil && tx.Statement.Schema.Name == "ProjectAuthState" && atomic.CompareAndSwapInt32(&pending, 1, 0) {
+			tx.AddError(errors.New("forced ProjectAuthState create failure"))
+		}
+	}); err != nil {
+		t.Fatalf("register ProjectAuthState create failure callback: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = e.db.Callback().Create().Remove(callbackName)

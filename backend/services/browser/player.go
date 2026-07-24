@@ -1282,6 +1282,10 @@ func (p *Player) executeAction(ctx context.Context, page *rod.Page, action model
 		return p.executeScreenshot(ctx, activePage, action)
 	case "capture_xhr":
 		return p.executeCaptureXHR(ctx, activePage, action)
+	case "download":
+		// Download analysis is recorded beside the trigger click. The click remains
+		// the replayable action, so this marker must not trigger a second download.
+		return nil
 	case "ai_control":
 		return p.executeAIControl(ctx, activePage, action)
 	case "evaluate":

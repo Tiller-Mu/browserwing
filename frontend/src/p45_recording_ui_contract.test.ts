@@ -6,6 +6,7 @@ import {
 	buildP45RecordingDetailView,
 	buildP45SaveRecordingPayload,
 	createP45RecordingController,
+	resolveP45InPageStoppedRecordingAction,
 } from './pages/p45RecordingUiContract';
 import TestPageManager, { p45TestPageManagerContract } from './pages/TestPageManager';
 
@@ -70,6 +71,7 @@ interface P45TestPageManagerPageContract {
 
 interface P45BrowserManagerPageContract {
 	buildSaveRecordingPayload: typeof buildP45SaveRecordingPayload;
+	resolveInPageStoppedRecordingAction: typeof resolveP45InPageStoppedRecordingAction;
 	syncProjectRecordingDraft: typeof projectApi.syncPageRecordingSession;
 	cancelProjectRecordingSession: typeof projectApi.cancelPageRecordingSession;
 	createRecordingCancelController: P45RecordingCancelControllerFactory;
@@ -88,7 +90,7 @@ type P45RecordingCancelControllerFactory = (options: {
 		versionId?: number | string | null;
 		pageId?: number | string | null;
 		recordingSessionId?: string | null;
-	}) => Promise<void>;
+	}) => Promise<StopPageRecordingSessionResponse | undefined>;
 };
 
 const projectId = 31;
@@ -133,6 +135,11 @@ assertSameReference(
 	'BrowserManager should consume the P4.5 save-recording payload helper',
 );
 assertSameReference(
+	browserManagerContract.resolveInPageStoppedRecordingAction,
+	resolveP45InPageStoppedRecordingAction,
+	'BrowserManager should use the zero-action project recording decision helper',
+);
+assertSameReference(
 	browserManagerContract.syncProjectRecordingDraft,
 	projectApi.syncPageRecordingSession,
 	'BrowserManager should sync project recording drafts through RecordingSession during recording',
@@ -149,6 +156,34 @@ assertSameReference(
 	browserManagerContract.cancelProjectRecordingSession,
 	projectApi.cancelPageRecordingSession,
 	'BrowserManager should cancel project recording sessions through the backend cancel API',
+);
+
+assertEqual(
+	resolveP45InPageStoppedRecordingAction({
+		isProjectRecordingContext: true,
+		recordingKind: 'login_flow',
+		actionCount: 0,
+	}),
+	'show_login_auth_dialog',
+	'zero-action login recording should retain its stopped session for auth capture or cancellation',
+);
+assertEqual(
+	resolveP45InPageStoppedRecordingAction({
+		isProjectRecordingContext: true,
+		recordingKind: 'business_flow',
+		actionCount: 0,
+	}),
+	'cancel_zero_action_project_recording',
+	'zero-action business recording should automatically cancel after its stop persists',
+);
+assertEqual(
+	resolveP45InPageStoppedRecordingAction({
+		isProjectRecordingContext: true,
+		recordingKind: 'login_flow',
+		actionCount: 1,
+	}),
+	'show_save_dialog',
+	'non-empty recordings should continue through the normal save dialog',
 );
 
 const authState: P45ProjectAuthStateSummary = {
@@ -236,7 +271,15 @@ const controller = createP45RecordingController({
         pageId: callPageId,
         payload,
 			});
-			return { data: { recording_session_id: 'contract-session', recording_meta: { target_url: 'https://example.invalid/orders' } } };
+			return {
+				data: {
+					recording_session_id: 'contract-session',
+					recording_meta: {
+						target_url: 'https://example.invalid/orders',
+						auth_state_id: 42,
+					},
+				},
+			};
 		},
 	},
 	navigate: (to: string) => {
@@ -247,7 +290,8 @@ const controller = createP45RecordingController({
 await controller.startRecording({
   pageId: page.id,
   recordingKind: 'business_flow',
-  authContext: 'clean',
+  authContext: 'project_saved',
+  authStateId: 99,
   targetUrl: 'https://example.invalid/orders',
 });
 
@@ -259,7 +303,7 @@ assertDeepEqual(
     pageId: page.id,
     payload: {
       recording_kind: 'business_flow',
-      auth_context: 'clean',
+      auth_context: 'project_saved',
       target_url: 'https://example.invalid/orders',
     },
   },
@@ -271,6 +315,11 @@ assertEqual(
   recordingNavigation.searchParams.get('recordingSessionId'),
   'contract-session',
   'start recording navigation should retain recording_session_id for stop/save',
+);
+assertEqual(
+  recordingNavigation.searchParams.get('authStateId'),
+  '42',
+  'start recording navigation should prefer the recovered session auth_state_id over the current page value',
 );
 
 await controller.startRecording({
@@ -285,21 +334,109 @@ assertEqual(
   'relative page paths should let the backend resolve the project target_url',
 );
 
+const resumedNavigations: string[] = [];
+const resumedController = createP45RecordingController({
+  projectId,
+  versionId,
+  api: {
+    startPageRecordingSession: async () => {
+      throw {
+        response: {
+          status: 409,
+          data: {
+            error: 'recording_session_active',
+            recording_session_id: 'active-session',
+            page_id: page.id,
+            recording_meta: {
+              recording_kind: 'login_flow',
+              auth_context: 'clean',
+              auth_state_id: null,
+              target_url: 'https://example.invalid/app/login',
+            },
+          },
+        },
+      };
+    },
+  },
+  navigate: (to: string) => {
+    resumedNavigations.push(to);
+  },
+});
+
+await resumedController.startRecording({
+  pageId: page.id,
+  recordingKind: 'login_flow',
+  authContext: 'clean',
+  targetUrl: 'https://example.invalid/app/login',
+});
+const resumedRecordingNavigation = new URL(resumedNavigations[0], 'https://browserwing.local');
+assertEqual(
+  resumedRecordingNavigation.searchParams.get('recordingSessionId'),
+  'active-session',
+  'an active recording response should resume the existing browser recording session',
+);
+
+const foreignSessionNavigations: string[] = [];
+const foreignSessionController = createP45RecordingController({
+  projectId,
+  versionId,
+  api: {
+    startPageRecordingSession: async () => {
+      throw {
+        response: {
+          status: 409,
+          data: {
+            error: 'recording_session_active',
+            recording_session_id: 'other-page-session',
+            page_id: page.id + 1,
+            recording_meta: {
+              recording_kind: 'login_flow',
+              auth_context: 'clean',
+              auth_state_id: null,
+              target_url: 'https://example.invalid/app/login',
+            },
+          },
+        },
+      };
+    },
+  },
+  navigate: (to: string) => {
+    foreignSessionNavigations.push(to);
+  },
+});
+
+await assertRejects(
+  () => foreignSessionController.startRecording({
+    pageId: page.id,
+    recordingKind: 'login_flow',
+    authContext: 'clean',
+    targetUrl: 'https://example.invalid/app/login',
+  }),
+  'an active session from another page must not be resumed',
+);
+assertEqual(
+  foreignSessionNavigations.length,
+  0,
+  'a foreign active session must not navigate the current page into the browser recording surface',
+);
+
 const savePayload = buildP45SaveRecordingPayload({
-  name: '业务主流程',
+  name: '登录主流程',
   actionTrace: '{"steps":[]}',
   domSnapshot: '{"elements":[]}',
   recordingMeta: {
     schema_version: 1,
-    recording_kind: 'business_flow',
+    recording_kind: 'login_flow',
     auth_context: 'clean',
     auth_state_id: null,
     target_url: 'https://example.invalid/orders',
   },
   recordingSessionId: 'contract-session',
+  retainAuthSnapshot: true,
 });
 assertEqual(savePayload.recording_meta.auth_context, 'clean', 'save recording should include recording_meta');
 assertEqual(savePayload.recording_session_id, 'contract-session', 'save recording should bind to RecordingSession');
+assertEqual(savePayload.retain_auth_snapshot, true, 'save-and-capture should retain its auth snapshot until capture succeeds');
 assertOmitsSecrets(savePayload, 'save recording payload');
 
 const projectCancelEvents: string[] = [];
@@ -362,6 +499,39 @@ assertDeepEqual(
 		'clear-local',
 	],
 	'project recording cancel should clear local dialog/actions/state only after backend success',
+);
+
+const discardOnlyController = browserManagerContract.createRecordingCancelController({
+	api: {
+		cancelPageRecordingSession: async () => ({
+			data: {
+				id: 100,
+				recording_session_id: 'saved-login-session',
+				project_id: projectId,
+				version_id: versionId,
+				page_id: page.id,
+				recording_kind: 'login_flow',
+				auth_context: 'clean',
+				target_url: 'https://example.invalid/app/login',
+				status: 'saved',
+				action_count: 1,
+				auth_snapshot_discarded: true,
+			},
+		}),
+	},
+	clearLocalRecordingState: () => undefined,
+});
+const discardedSnapshotSession = await discardOnlyController.cancelRecording({
+	isProjectRecordingContext: true,
+	projectId,
+	versionId,
+	pageId: page.id,
+	recordingSessionId: 'saved-login-session',
+});
+assertEqual(
+	discardedSnapshotSession?.auth_snapshot_discarded,
+	true,
+	'discard-only cancellation should return the saved session marker to the caller',
 );
 
 const failedProjectCancelEvents: string[] = [];

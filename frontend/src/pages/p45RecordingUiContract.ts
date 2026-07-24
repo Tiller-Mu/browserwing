@@ -54,6 +54,24 @@ export interface P45RecordingDetailView {
   sensitiveFieldsRemoved: string[];
 }
 
+export type P45InPageStoppedRecordingAction =
+  | 'show_save_dialog'
+  | 'show_login_auth_dialog'
+  | 'cancel_zero_action_project_recording'
+  | 'dismiss_zero_action_legacy_recording';
+
+export function resolveP45InPageStoppedRecordingAction(input: {
+  isProjectRecordingContext: boolean;
+  recordingKind: P45RecordingKind;
+  actionCount: number;
+}): P45InPageStoppedRecordingAction {
+  if (input.actionCount > 0) return 'show_save_dialog';
+  if (!input.isProjectRecordingContext) return 'dismiss_zero_action_legacy_recording';
+  return input.recordingKind === 'login_flow'
+    ? 'show_login_auth_dialog'
+    : 'cancel_zero_action_project_recording';
+}
+
 const recordingQualityMessages: Record<string, string> = {
   recording_action_missing_target: '存在缺少目标定位的录制动作',
   recording_action_missing_value: '存在缺少输入值的录制动作',
@@ -163,7 +181,19 @@ export function createP45RecordingController(options: {
       versionId: number,
       pageId: number,
       payload: { recording_kind: P45RecordingKind; auth_context: P45AuthContext; target_url?: string },
-    ) => Promise<{ data?: { recording_session_id?: string; recording_meta?: { target_url?: string; auth_state_id?: number | null } } }>;
+    ) => Promise<{
+      data?: {
+        error?: string;
+        recording_session_id?: string;
+		page_id?: number;
+        recording_meta?: {
+          recording_kind?: P45RecordingKind;
+          auth_context?: P45AuthContext;
+          target_url?: string;
+          auth_state_id?: number | null;
+        };
+      };
+    }>;
   };
   navigate: (to: string) => void;
 }) {
@@ -183,14 +213,45 @@ export function createP45RecordingController(options: {
       if (targetUrl && /^https?:\/\//i.test(targetUrl)) {
         startPayload.target_url = targetUrl;
       }
-      const response = await options.api.startPageRecordingSession(options.projectId, options.versionId, input.pageId, startPayload);
+      let response: Awaited<ReturnType<typeof options.api.startPageRecordingSession>>;
+      try {
+        response = await options.api.startPageRecordingSession(options.projectId, options.versionId, input.pageId, startPayload);
+      } catch (error: unknown) {
+        const activeSessionData = (error as {
+          response?: {
+            data?: {
+              error?: string;
+              recording_session_id?: string;
+				page_id?: number;
+              recording_meta?: {
+                recording_kind?: P45RecordingKind;
+                auth_context?: P45AuthContext;
+                target_url?: string;
+                auth_state_id?: number | null;
+              };
+            };
+          };
+        }).response?.data;
+        if (
+          activeSessionData?.error !== 'recording_session_active' ||
+          !activeSessionData.recording_session_id ||
+			activeSessionData.page_id !== input.pageId ||
+          activeSessionData.recording_meta?.recording_kind !== input.recordingKind ||
+          activeSessionData.recording_meta?.auth_context !== input.authContext
+        ) {
+          throw error;
+        }
+        response = { data: activeSessionData };
+      }
       const data = response.data;
+      const recordingKind = data?.recording_meta?.recording_kind || input.recordingKind;
+      const authContext = data?.recording_meta?.auth_context || input.authContext;
       const params = new URLSearchParams({
         projectId: String(options.projectId),
         versionId: String(options.versionId),
         pageId: String(input.pageId),
-        recordingKind: input.recordingKind,
-        authContext: input.authContext,
+        recordingKind,
+        authContext,
       });
       const authStateId = data?.recording_meta?.auth_state_id ?? input.authStateId;
       const resolvedTargetUrl = data?.recording_meta?.target_url || input.targetUrl;
@@ -209,12 +270,14 @@ export function buildP45SaveRecordingPayload(input: {
   domSnapshot: string;
   recordingMeta: P45RecordingMeta;
   recordingSessionId?: string | null;
+  retainAuthSnapshot?: boolean;
 }): SavePageRecordingRequest {
   return {
     name: input.name,
     action_trace: input.actionTrace,
     dom_snapshot: input.domSnapshot,
     recording_session_id: input.recordingSessionId || undefined,
+    retain_auth_snapshot: input.retainAuthSnapshot || undefined,
     recording_meta: {
       schema_version: 1,
       recording_kind: input.recordingMeta.recording_kind,

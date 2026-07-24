@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+var errRecordingSessionNotStopped = errors.New("recording session is not stopped")
 
 func (h *ProjectHandlers) GetRecordingSession(c *gin.Context) {
 	_, session, ok := h.loadRecordingSessionFromRequest(c)
@@ -43,12 +46,12 @@ func (h *ProjectHandlers) SyncRecordingSession(c *gin.Context) {
 	}
 	updates := map[string]any{"updated_at": time.Now().UTC()}
 	if len(payload.Actions) > 0 && strings.TrimSpace(string(payload.Actions)) != "null" {
-		actionCount, err := countJSONActions(payload.Actions)
+		actionsJSON, actionCount, err := models.NormalizeRecordingActionsJSON(payload.Actions)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "actions must be a JSON array"})
 			return
 		}
-		updates["actions_json"] = string(payload.Actions)
+		updates["actions_json"] = actionsJSON
 		updates["action_count"] = actionCount
 		updates["last_synced_at"] = time.Now().UTC()
 	}
@@ -69,8 +72,23 @@ func (h *ProjectHandlers) SyncRecordingSession(c *gin.Context) {
 }
 
 func (h *ProjectHandlers) StopRecordingSession(c *gin.Context) {
+	h.recordingLifecycleMu.Lock()
+	defer h.recordingLifecycleMu.Unlock()
+
 	_, session, ok := h.loadRecordingSessionFromRequest(c)
 	if !ok {
+		return
+	}
+	runtime := h.projectAuthRuntime()
+	// A successful stop may reach the database before its HTTP response reaches
+	// the browser. Retrying it must not ask the recorder to stop a second time:
+	// its pending result was already persisted and the auth snapshot must remain
+	// available for the login-flow capture or discard choice.
+	if session.Status == "stopped" {
+		if runtime != nil {
+			runtime.AcknowledgeStoppedPageRecording(c.Request.Context(), recordingSessionRuntimeScope(session))
+		}
+		c.JSON(http.StatusOK, recordingSessionSummary(session))
 		return
 	}
 	if isTerminalRecordingStatus(session.Status) {
@@ -88,12 +106,12 @@ func (h *ProjectHandlers) StopRecordingSession(c *gin.Context) {
 		}
 	}
 
-	runtime := h.projectAuthRuntime()
+	runtimeScope := recordingSessionRuntimeScope(session)
 	var runtimeResult map[string]any
 	if runtime != nil {
-		result, err := runtime.StopPageRecording(c.Request.Context(), recordingSessionRuntimeScope(session))
+		result, err := runtime.StopPageRecording(c.Request.Context(), runtimeScope)
 		if err != nil {
-			if stopPersistedRecordingDraft(c, h.gormDB(), session, err) {
+			if stopPersistedRecordingDraft(c, h.gormDB(), session, err, runtime) {
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Stop page recording failed"})
@@ -140,6 +158,9 @@ func (h *ProjectHandlers) StopRecordingSession(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if runtime != nil {
+		runtime.AcknowledgeStoppedPageRecording(c.Request.Context(), runtimeScope)
+	}
 	if err := h.gormDB().First(&session, session.ID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -147,7 +168,7 @@ func (h *ProjectHandlers) StopRecordingSession(c *gin.Context) {
 	c.JSON(http.StatusOK, recordingSessionSummary(session))
 }
 
-func stopPersistedRecordingDraft(c *gin.Context, db *gorm.DB, session models.RecordingSession, stopErr error) bool {
+func stopPersistedRecordingDraft(c *gin.Context, db *gorm.DB, session models.RecordingSession, stopErr error, runtime projectAuthRuntime) bool {
 	if !isRecoverableStoppedBrowserRecordingError(stopErr) {
 		return false
 	}
@@ -168,6 +189,9 @@ func stopPersistedRecordingDraft(c *gin.Context, db *gorm.DB, session models.Rec
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return true
 	}
+	if runtime != nil {
+		runtime.AcknowledgeStoppedPageRecording(c.Request.Context(), recordingSessionRuntimeScope(session))
+	}
 	if err := db.First(&session, session.ID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return true
@@ -184,8 +208,26 @@ func isRecoverableStoppedBrowserRecordingError(err error) bool {
 }
 
 func (h *ProjectHandlers) CancelRecordingSession(c *gin.Context) {
+	h.recordingLifecycleMu.Lock()
+	defer h.recordingLifecycleMu.Unlock()
+
 	_, session, ok := h.loadRecordingSessionFromRequest(c)
 	if !ok {
+		return
+	}
+	runtime := h.projectAuthRuntime()
+	if session.Status == "saved" {
+		if session.RecordingKind != recordingKindLoginFlow || session.AuthContext != authContextClean || runtime == nil || !runtime.HasProjectAuthStateCapture(c.Request.Context(), recordingSessionRuntimeScope(session)) {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "RecordingSession is already terminated",
+				"code":  "recording_session_auth_snapshot_unavailable",
+			})
+			return
+		}
+		runtime.DiscardProjectAuthStateCapture(c.Request.Context(), recordingSessionRuntimeScope(session))
+		response := recordingSessionSummary(session)
+		response["auth_snapshot_discarded"] = true
+		c.JSON(http.StatusOK, response)
 		return
 	}
 	if isTerminalRecordingStatus(session.Status) {
@@ -203,7 +245,6 @@ func (h *ProjectHandlers) CancelRecordingSession(c *gin.Context) {
 		"updated_at": now,
 	}
 	if session.Status == "recording" {
-		runtime := h.projectAuthRuntime()
 		if runtime == nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Project auth runtime is not configured"})
 			return
@@ -226,6 +267,10 @@ func (h *ProjectHandlers) CancelRecordingSession(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "RecordingSession is already terminated"})
 		return
 	}
+	if runtime != nil {
+		runtime.AcknowledgeStoppedPageRecording(c.Request.Context(), recordingSessionRuntimeScope(session))
+		runtime.DiscardProjectAuthStateCapture(c.Request.Context(), recordingSessionRuntimeScope(session))
+	}
 	if err := h.gormDB().First(&session, session.ID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -233,14 +278,27 @@ func (h *ProjectHandlers) CancelRecordingSession(c *gin.Context) {
 	c.JSON(http.StatusOK, recordingSessionSummary(session))
 }
 
-func (h *ProjectHandlers) saveRecordingSessionAsPageScript(c *gin.Context, projectID, versionID, pageID uint, sessionID string, recordingMeta json.RawMessage, name string) bool {
+func (h *ProjectHandlers) saveRecordingSessionAsPageScript(c *gin.Context, projectID, versionID, pageID uint, sessionID string, recordingMeta json.RawMessage, name string, retainAuthSnapshot bool) bool {
+	h.recordingLifecycleMu.Lock()
+	defer h.recordingLifecycleMu.Unlock()
+
 	session, err := h.loadRecordingSessionByID(sessionID)
 	if err != nil || session.ProjectID != projectID || session.VersionID != versionID || session.PageID != pageID {
 		c.JSON(http.StatusNotFound, gin.H{"error": "RecordingSession not found"})
 		return false
 	}
 	if session.Status != "stopped" {
-		c.JSON(http.StatusConflict, gin.H{"error": "RecordingSession cannot be saved"})
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "RecordingSession cannot be saved",
+			"code":  "recording_session_not_stopped",
+		})
+		return false
+	}
+	if retainAuthSnapshot && (session.RecordingKind != recordingKindLoginFlow || session.AuthContext != authContextClean) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "RecordingSession cannot retain auth snapshot",
+			"code":  "recording_session_auth_snapshot_retention_not_allowed",
+		})
 		return false
 	}
 	meta, normalizedMeta, ok := normalizeRecordingMetaForSave(c, recordingMeta)
@@ -253,6 +311,10 @@ func (h *ProjectHandlers) saveRecordingSessionAsPageScript(c *gin.Context, proje
 	if meta.TargetURL == "" {
 		meta.TargetURL = session.TargetURL
 	}
+	// RecordingSession records the exact project auth state restored at start.
+	// Never let a later default auth-state change (or stale frontend state)
+	// rewrite the source recorded in the resulting PageScript.
+	meta.AuthStateID = session.SourceAuthStateID
 	normalizedMetaData, err := json.Marshal(meta)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "marshal recording meta"})
@@ -268,24 +330,43 @@ func (h *ProjectHandlers) saveRecordingSessionAsPageScript(c *gin.Context, proje
 	}
 	now := time.Now().UTC()
 	if err := h.gormDB().Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("page_id = ?", pageID).Delete(&models.PageScript{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Create(&newScript).Error; err != nil {
-			return err
-		}
-		return tx.Model(&models.RecordingSession{}).
-			Where("id = ? AND page_id = ?", session.ID, pageID).
+		result := tx.Model(&models.RecordingSession{}).
+			Where("id = ? AND project_id = ? AND version_id = ? AND page_id = ? AND status = ?", session.ID, projectID, versionID, pageID, "stopped").
 			Updates(map[string]any{
 				"status":              "saved",
 				"recording_meta_json": normalizedMeta,
 				"stopped_at":          session.StoppedAt,
 				"saved_at":            now,
 				"updated_at":          now,
-			}).Error
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errRecordingSessionNotStopped
+		}
+		if err := tx.Where("page_id = ?", pageID).Delete(&models.PageScript{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&newScript).Error; err != nil {
+			return err
+		}
+		return nil
 	}); err != nil {
+		if errors.Is(err, errRecordingSessionNotStopped) {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "RecordingSession cannot be saved",
+				"code":  "recording_session_not_stopped",
+			})
+			return false
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return false
+	}
+	if !retainAuthSnapshot {
+		if runtime := h.projectAuthRuntime(); runtime != nil {
+			runtime.DiscardProjectAuthStateCapture(c.Request.Context(), recordingSessionRuntimeScope(session))
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"message": "主流程录制保存成功",
@@ -385,6 +466,7 @@ func recordingSessionSummary(session models.RecordingSession) gin.H {
 		"page_id":              session.PageID,
 		"recording_kind":       session.RecordingKind,
 		"auth_context":         session.AuthContext,
+		"source_auth_state_id": session.SourceAuthStateID,
 		"target_url":           session.TargetURL,
 		"status":               session.Status,
 		"action_count":         session.ActionCount,
@@ -424,11 +506,7 @@ func marshalActions(value any) (string, int, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	count, err := countJSONActions(data)
-	if err != nil {
-		return "", 0, err
-	}
-	return string(data), count, nil
+	return models.NormalizeRecordingActionsJSON(data)
 }
 
 func normalizeRecordingMetaForSave(c *gin.Context, raw json.RawMessage) (p45RecordingMeta, string, bool) {

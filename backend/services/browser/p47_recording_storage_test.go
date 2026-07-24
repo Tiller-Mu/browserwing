@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,7 +57,7 @@ func TestP47DownloadedFileStorageKeyUsesControlledRelativePath(t *testing.T) {
 	}
 }
 
-func TestP47ScopedStopConsumesMatchingInPageStoppedRecording(t *testing.T) {
+func TestP47ScopedStopKeepsMatchingInPageStoppedRecordingUntilAcknowledged(t *testing.T) {
 	scope := RecordingStorageScope{
 		ProjectID:          10,
 		VersionID:          20,
@@ -79,8 +80,12 @@ func TestP47ScopedStopConsumesMatchingInPageStoppedRecording(t *testing.T) {
 	if len(downloadedFiles) != 1 || downloadedFiles[0].FileName != "export.csv" {
 		t.Fatalf("downloaded files = %+v, want preserved in-page stopped downloads", downloadedFiles)
 	}
+	if !manager.inPageRecordingStopped || manager.lastRecordingStorageScope == nil {
+		t.Fatal("matching scoped stop should retain the in-page stopped marker until persistence acknowledgement")
+	}
+	manager.AcknowledgeInPageStoppedRecording(scope)
 	if manager.inPageRecordingStopped || manager.lastRecordingStorageScope != nil {
-		t.Fatal("matching scoped stop should consume the in-page stopped marker")
+		t.Fatal("matching scoped stop should clear the in-page stopped marker after acknowledgement")
 	}
 
 	manager.inPageRecordingStopped = true
@@ -94,6 +99,273 @@ func TestP47ScopedStopConsumesMatchingInPageStoppedRecording(t *testing.T) {
 	if !manager.inPageRecordingStopped {
 		t.Fatal("mismatched scoped stop should leave the in-page stopped marker intact")
 	}
+}
+
+func TestP47RecordingStorageSnapshotKeepsScopeUntilAcknowledged(t *testing.T) {
+	scopeA := RecordingStorageScope{
+		ProjectID:          10,
+		VersionID:          20,
+		PageID:             30,
+		RecordingSessionID: "session-a",
+	}
+	scopeB := scopeA
+	scopeB.PageID = 31
+	scopeB.RecordingSessionID = "session-b"
+	recorder := &Recorder{
+		pendingStorageStates: map[RecordingStorageScope]map[string]any{
+			scopeA: {"cookies": []any{map[string]any{"name": "session-a"}}},
+			scopeB: {"cookies": []any{map[string]any{"name": "session-b"}}},
+		},
+	}
+
+	recorder.setActiveRecordingScopeLocked(scopeB)
+	if state := recorder.PeekLastStorageState(scopeA); state == nil || stringFromStorageState(state, "session-a") == "" {
+		t.Fatal("starting another scoped recording cleared session A snapshot")
+	}
+	if state := recorder.PeekLastStorageState(scopeB); state == nil || stringFromStorageState(state, "session-b") == "" {
+		t.Fatal("session B snapshot was not retained")
+	}
+
+	mismatch := scopeA
+	mismatch.RecordingSessionID = "session-c"
+	recorder.AcknowledgeLastStorageState(mismatch)
+	if state := recorder.PeekLastStorageState(scopeA); state == nil {
+		t.Fatal("mismatched acknowledgement cleared session A snapshot")
+	}
+
+	recorder.AcknowledgeLastStorageState(scopeA)
+	if state := recorder.PeekLastStorageState(scopeA); state != nil {
+		t.Fatalf("acknowledged session A snapshot remained available: %v", state)
+	}
+	if state := recorder.PeekLastStorageState(scopeB); state == nil {
+		t.Fatal("acknowledging session A cleared session B snapshot")
+	}
+}
+
+func TestP47MergeRecordingStorageSnapshotsKeepsTargetAndAllOriginsDeterministically(t *testing.T) {
+	targetURL := "https://app.example.invalid/orders"
+	appState := map[string]any{
+		"schema_version": 1,
+		"kind":           "browser_storage_state",
+		"captured_url":   "https://app.example.invalid/account",
+		"captured_at":    "2026-07-24T10:00:00Z",
+		"cookies": []map[string]any{
+			{"name": "app_session", "domain": "app.example.invalid", "path": "/", "value": "app-token"},
+		},
+		"origins": []map[string]any{
+			{"origin": "https://app.example.invalid", "local_storage": []any{map[string]any{"name": "tenant", "value": "alpha"}}},
+		},
+		"extensions": map[string]any{},
+	}
+	idpState := map[string]any{
+		"schema_version": 1,
+		"kind":           "browser_storage_state",
+		"captured_url":   "https://login.example.invalid/continue",
+		"captured_at":    "2026-07-24T10:00:01Z",
+		"cookies": []map[string]any{
+			{"name": "idp_session", "domain": "login.example.invalid", "path": "/", "value": "idp-token"},
+		},
+		"origins": []map[string]any{
+			{"origin": "https://login.example.invalid", "session_storage": []any{map[string]any{"name": "relay", "value": "one-time"}}},
+		},
+		"extensions": map[string]any{},
+	}
+
+	mergedFromReversedPages := mergeRecordingStorageSnapshots(targetURL, nil, idpState, appState)
+	mergedFromForwardPages := mergeRecordingStorageSnapshots(targetURL, nil, appState, idpState)
+	if got, want := marshalRecordingStorageState(t, mergedFromReversedPages), marshalRecordingStorageState(t, mergedFromForwardPages); got != want {
+		t.Fatalf("snapshot merge depended on page iteration order:\nreversed=%s\nforward=%s", got, want)
+	}
+	if got := recordingStorageString(mergedFromReversedPages["captured_url"]); got != "https://app.example.invalid/account" {
+		t.Fatalf("merged captured_url = %q, want target-origin page", got)
+	}
+	if origins := recordingStorageOrigins(mergedFromReversedPages); len(origins) != 2 || origins[0] != "https://app.example.invalid" || origins[1] != "https://login.example.invalid" {
+		t.Fatalf("merged origins = %v, want app and identity-provider storage", origins)
+	}
+	if cookies := recordingStorageValues(mergedFromReversedPages["cookies"]); len(cookies) != 2 {
+		t.Fatalf("merged cookies = %v, want both page snapshots", cookies)
+	}
+}
+
+func TestP47MergeRecordingStorageSnapshotsPrefersPrimaryTabSessionStorage(t *testing.T) {
+	targetURL := "https://app.example.invalid/orders"
+	primary := map[string]any{
+		"schema_version": 1,
+		"kind":           "browser_storage_state",
+		"captured_url":   "https://app.example.invalid/sso/callback",
+		"captured_at":    "2026-07-24T10:00:00Z",
+		"cookies":        []map[string]any{},
+		"origins": []map[string]any{
+			{"origin": "https://app.example.invalid", "session_storage": []any{map[string]any{"name": "tab", "value": "main"}}},
+		},
+		"extensions": map[string]any{},
+	}
+	popup := map[string]any{
+		"schema_version": 1,
+		"kind":           "browser_storage_state",
+		"captured_url":   "https://app.example.invalid/account",
+		"captured_at":    "2026-07-24T10:00:01Z",
+		"cookies":        []map[string]any{},
+		"origins": []map[string]any{
+			{"origin": "https://app.example.invalid", "session_storage": []any{map[string]any{"name": "tab", "value": "popup"}}},
+		},
+		"extensions": map[string]any{},
+	}
+
+	mergedFromForwardPages := mergeRecordingStorageSnapshots(targetURL, primary, popup)
+	mergedFromReversedPages := mergeRecordingStorageSnapshots(targetURL, primary, popup)
+	if got, want := marshalRecordingStorageState(t, mergedFromForwardPages), marshalRecordingStorageState(t, mergedFromReversedPages); got != want {
+		t.Fatalf("primary-tab merge depended on non-primary page ordering:\nforward=%s\nreversed=%s", got, want)
+	}
+	if got := recordingStorageString(mergedFromForwardPages["captured_url"]); got != "https://app.example.invalid/sso/callback" {
+		t.Fatalf("merged captured_url = %q, want primary tab URL", got)
+	}
+	origins := recordingStorageObjects(mergedFromForwardPages["origins"])
+	if len(origins) != 1 {
+		t.Fatalf("merged origins = %v, want one same-origin state", origins)
+	}
+	sessionStorage := recordingStorageObjects(origins[0]["session_storage"])
+	if len(sessionStorage) != 1 || recordingStorageString(sessionStorage[0]["value"]) != "main" {
+		t.Fatalf("merged session storage = %v, want primary tab state", sessionStorage)
+	}
+}
+
+func TestP47SanitizeRecordingDownloadURLAndRetainFileName(t *testing.T) {
+	longQuery := strings.Repeat("x", 2050)
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "redacts signatures and strips credentials fragments",
+			raw:  "https://alice:password@example.invalid/reports/export.csv?foo=1&X-Amz-Signature=actual&sig=again#fragment",
+			want: "https://example.invalid/reports/export.csv?X-Amz-Signature=REDACTED&foo=1&sig=REDACTED",
+		},
+		{
+			name: "retains safe query",
+			raw:  "https://example.invalid/reports/export.csv?format=csv&page=1",
+			want: "https://example.invalid/reports/export.csv?format=csv&page=1",
+		},
+		{
+			name: "rejects data URL",
+			raw:  "data:text/plain,secret-download-content",
+			want: "",
+		},
+		{
+			name: "rejects non HTTP URL",
+			raw:  "ftp://example.invalid/export.csv",
+			want: "",
+		},
+		{
+			name: "drops oversized query rather than truncating it",
+			raw:  "https://example.invalid/reports/export.csv?payload=" + longQuery,
+			want: "https://example.invalid/reports/export.csv",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := models.SanitizeRecordingDownloadURL(tc.raw); got != tc.want {
+				t.Fatalf("SanitizeRecordingDownloadURL(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+
+	action := projectDownloadAnalysisAction("https://example.invalid/reports/export.csv?signature=test", "export.csv")
+	if action.Type != "download" || action.URL != "https://example.invalid/reports/export.csv?signature=REDACTED" || action.Text != "export.csv" {
+		t.Fatalf("download analysis action = %+v, want sanitized URL and file name", action)
+	}
+	if len(action.Attrs) != 0 {
+		t.Fatalf("download analysis attrs = %v, want no GUID/frame metadata", action.Attrs)
+	}
+}
+
+func TestP47MergedDownloadAnalysisActionSurvivesSameMillisecondClick(t *testing.T) {
+	timestamp := int64(1720000000000)
+	merged := mergeRecordedActions(
+		[]models.ScriptAction{{Type: "click", Timestamp: timestamp, Selector: "#export"}},
+		[]models.ScriptAction{{
+			Type:      "download",
+			Timestamp: timestamp,
+			URL:       "https://example.invalid/reports/export.csv",
+			Text:      "export.csv",
+		}},
+	)
+	if len(merged) != 2 {
+		t.Fatalf("merged actions = %+v, want click and download analysis actions", merged)
+	}
+	if merged[0].Type != "click" || merged[1].Type != "download" {
+		t.Fatalf("merged action order = %+v, want click then download", merged)
+	}
+
+	distinctDownloads := mergeRecordedActions(
+		[]models.ScriptAction{{
+			Type:      "download",
+			Timestamp: timestamp,
+			URL:       "https://example.invalid/reports/export.csv",
+			Text:      "first-export.csv",
+		}},
+		[]models.ScriptAction{{
+			Type:      "download",
+			Timestamp: timestamp,
+			URL:       "https://example.invalid/reports/export.csv",
+			Text:      "second-export.csv",
+		}},
+	)
+	if len(distinctDownloads) != 2 {
+		t.Fatalf("same-millisecond download events were deduplicated: %+v", distinctDownloads)
+	}
+}
+
+func marshalRecordingStorageState(t *testing.T, state map[string]any) string {
+	t.Helper()
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal recording storage state: %v", err)
+	}
+	return string(encoded)
+}
+
+func recordingStorageOrigins(state map[string]any) []string {
+	origins := make([]string, 0)
+	for _, raw := range recordingStorageValues(state["origins"]) {
+		origin, _ := raw.(map[string]any)
+		if value := recordingStorageString(origin["origin"]); value != "" {
+			origins = append(origins, value)
+		}
+	}
+	return origins
+}
+
+func TestP47RecorderScriptMarksOnlyExplicitDownloadLinks(t *testing.T) {
+	source, err := os.ReadFile("scripts/recorder.js")
+	if err != nil {
+		t.Fatalf("read recorder script: %v", err)
+	}
+	script := string(source)
+	if strings.Contains(script, "target.closest('a[href]')") {
+		t.Fatal("ordinary anchors must not be classified as download links")
+	}
+	for _, required := range []string{
+		"target.closest('a[download][href]')",
+		"sanitizeRecordingDownloadURL",
+		"download_url",
+		"download_filename_hint",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("recorder download-link contract missing %q", required)
+		}
+	}
+}
+
+func stringFromStorageState(state map[string]any, wantName string) string {
+	cookies, _ := state["cookies"].([]any)
+	for _, item := range cookies {
+		cookie, _ := item.(map[string]any)
+		if cookie["name"] == wantName {
+			return wantName
+		}
+	}
+	return ""
 }
 
 func TestP47RecorderSyncLoopPersistsRecordingSessionDraft(t *testing.T) {

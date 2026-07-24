@@ -135,10 +135,13 @@ func parsePageRecordingActionTrace(raw string, removed map[string]struct{}) ([]m
 	}
 	sanitized := sanitizePageRecordingDisplayValue(parsed, removed)
 	actions := actionTraceFromParsed(sanitized)
-	if actions == nil {
-		actions = []map[string]any{}
+	normalizedActions := make([]map[string]any, 0, len(actions))
+	for _, action := range actions {
+		if normalized, keep := models.NormalizeRecordingActionMap(action); keep {
+			normalizedActions = append(normalizedActions, normalized)
+		}
 	}
-	return actions, actions, nil
+	return normalizedActions, normalizedActions, nil
 }
 
 func parsePageRecordingObject(raw string, removed map[string]struct{}) (map[string]any, any, error) {

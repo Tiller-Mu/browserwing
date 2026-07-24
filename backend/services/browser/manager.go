@@ -37,6 +37,10 @@ var floatButtonScript string
 //go:embed scripts/xhr_interceptor.js
 var xhrInterceptorScriptForManager string
 
+var callBrowserDownloadBehavior = func(browser *rod.Browser, request *proto.BrowserSetDownloadBehavior) error {
+	return request.Call(browser)
+}
+
 func commonChromiumBinaryPaths() []string {
 	paths := []string{
 		"/usr/bin/google-chrome",
@@ -104,6 +108,54 @@ func applyChromiumLaunchArg(l *launcher.Launcher, arg string) *launcher.Launcher
 		return l.Set(flags.Flag(name), parts[1])
 	}
 	return l.Set(flags.Flag(name))
+}
+
+func cloneLauncherForRetry(source *launcher.Launcher) *launcher.Launcher {
+	retry := launcher.New()
+	retry.Flags = make(map[flags.Flag][]string, len(source.Flags))
+	for flag, values := range source.Flags {
+		retry.Flags[flag] = append([]string(nil), values...)
+	}
+	return retry
+}
+
+const browserProfileOwnerWriteAttempts = 2
+
+var (
+	writeBrowserProfileOwnerAfterLaunch  = writeBrowserProfileOwner
+	killLauncherAfterProfileOwnerFailure = func(l *launcher.Launcher) {
+		l.Kill()
+	}
+	browserProfileOwnerRetryDelay = 100 * time.Millisecond
+)
+
+// persistLaunchedBrowserProfileOwner makes the profile-recovery marker part of
+// local browser startup. Without a durable marker, a later process crash cannot
+// safely identify the profile owner, so the newly launched browser must stop.
+func persistLaunchedBrowserProfileOwner(ctx context.Context, l *launcher.Launcher, userDataDir, controlURL string) error {
+	if strings.TrimSpace(userDataDir) == "" {
+		return nil
+	}
+
+	owner := browserProfileOwner{
+		PID:        l.PID(),
+		ControlURL: controlURL,
+	}
+	var lastErr error
+	for attempt := 1; attempt <= browserProfileOwnerWriteAttempts; attempt++ {
+		if err := writeBrowserProfileOwnerAfterLaunch(userDataDir, owner); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			logger.Warn(ctx, "Failed to persist browser profile owner marker (attempt %d/%d): %v", attempt, browserProfileOwnerWriteAttempts, err)
+		}
+		if attempt < browserProfileOwnerWriteAttempts && browserProfileOwnerRetryDelay > 0 {
+			time.Sleep(browserProfileOwnerRetryDelay)
+		}
+	}
+
+	killLauncherAfterProfileOwnerFailure(l)
+	return fmt.Errorf("persist browser profile owner marker after %d attempts: %w", browserProfileOwnerWriteAttempts, lastErr)
 }
 
 // parseProxyURL 解析代理 URL，提取认证信息和地址
@@ -213,6 +265,8 @@ type Manager struct {
 	lastDownloadedFiles       []models.DownloadedFile // 最后一次录制下载的文件(用于页面内停止录制)
 	lastRecordingStorageScope *RecordingStorageScope  // 页面内停止结果绑定的项目录制作用域
 	inPageRecordingStopped    bool                    // 标记是否是页面内停止的录制
+	projectDownloadsDenied    bool                    // 项目录制期间拒绝真实下载
+	projectDownloadBrowser    *rod.Browser            // 需要恢复下载策略的浏览器
 	currentLanguage           string                  // 当前前端语言设置
 	downloadPath              string                  // 下载目录路径
 
@@ -346,6 +400,7 @@ func (m *Manager) start(ctx context.Context, loadGlobalCookieStore bool) error {
 	var url string
 	var browser *rod.Browser
 	var proxyUsername, proxyPassword string // 代理认证信息
+	localUserDataDir := ""
 
 	// 检查是否配置了远程 Chrome URL
 	if m.config.Browser != nil && m.config.Browser.ControlURL != "" {
@@ -460,6 +515,11 @@ func (m *Manager) start(ctx context.Context, loadGlobalCookieStore bool) error {
 
 					// 清理可能存在的锁文件（在启动前）
 					logger.Info(ctx, "Checking and cleaning up lock files before launch...")
+					if terminated, err := m.killTrackedChromeProfileOwner(ctx, userDataDir); err != nil {
+						logger.Warn(ctx, "Failed to terminate tracked Chrome profile owner: %v", err)
+					} else if terminated {
+						logger.Info(ctx, "Terminated the tracked Chrome profile owner before launch")
+					}
 					// 首先尝试杀死可能存在的孤儿 Chrome 进程（重启后残留的进程）
 					if err := m.killOrphanedChromeForDir(ctx, userDataDir); err != nil {
 						logger.Warn(ctx, "Failed to kill orphaned Chrome processes: %v", err)
@@ -478,6 +538,7 @@ func (m *Manager) start(ctx context.Context, loadGlobalCookieStore bool) error {
 					}
 
 					l = l.UserDataDir(userDataDir)
+					localUserDataDir = userDataDir
 					logger.Info(ctx, fmt.Sprintf("✓ Using user data directory: %s", userDataDir))
 				}
 			}
@@ -509,12 +570,16 @@ func (m *Manager) start(ctx context.Context, loadGlobalCookieStore bool) error {
 
 			// 重试启动
 			logger.Info(ctx, "Retrying browser launch...")
+			l = cloneLauncherForRetry(l)
 			url, err = l.Launch()
 			if err != nil {
 				logger.Error(ctx, "Browser launch failed on retry: %v", err)
 				return fmt.Errorf("failed to start browser (tried killing orphaned processes): %w", err)
 			}
 			logger.Info(ctx, "✓ Browser launched successfully on retry")
+		}
+		if err := persistLaunchedBrowserProfileOwner(ctx, l, localUserDataDir, url); err != nil {
+			return err
 		}
 
 		logger.Info(ctx, fmt.Sprintf("Browser control URL: %s", url))
@@ -655,8 +720,17 @@ func (m *Manager) Stop() error {
 
 	ctx := context.Background()
 
-	// 检查是否是远程模式
-	isRemoteMode := m.config.Browser != nil && m.config.Browser.ControlURL != ""
+	// The legacy fields mirror the current instance. Prefer the instance runtime
+	// whenever it exists so Stop never reads or kills another instance's profile.
+	var currentRuntime *BrowserInstanceRuntime
+	if m.currentInstanceID != "" {
+		currentRuntime = m.instances[m.currentInstanceID]
+	}
+	isRemoteMode := m.config != nil && m.config.Browser != nil && m.config.Browser.ControlURL != ""
+	if currentRuntime != nil && currentRuntime.instance != nil {
+		isRemoteMode = currentRuntime.instance.Type == "remote"
+	}
+	localUserDataDir := m.currentBrowserUserDataDirLocked()
 
 	if isRemoteMode {
 		logger.Info(ctx, "Disconnecting from remote browser...")
@@ -694,18 +768,23 @@ func (m *Manager) Stop() error {
 		// 5. ⚠️ 重要：不调用 launcher.Cleanup()，因为它会删除用户数据目录！
 		// 浏览器进程会在连接关闭后自动退出
 		// 如果需要强制杀死进程，可以调用 launcher.Kill() 而不是 Cleanup()
-		if m.launcher != nil {
-			// 只杀死进程，不清理目录
-			m.launcher.Kill()
+		currentLauncher := m.launcher
+		if currentRuntime != nil && currentRuntime.launcher != nil {
+			currentLauncher = currentRuntime.launcher
+		}
+		if currentLauncher != nil {
+			// Always terminate the launcher associated with the current instance.
+			// Recovery markers are only for a later process restart, never for Stop.
+			currentLauncher.Kill()
 			logger.Info(ctx, "Browser process terminated")
 		}
 
 		// 6. 清理本地浏览器的锁文件
-		if m.config.Browser != nil && m.config.Browser.UserDataDir != "" {
+		if localUserDataDir != "" {
 			// 等待浏览器完全退出
 			time.Sleep(500 * time.Millisecond)
 
-			if err := m.cleanupSingletonLock(ctx, m.config.Browser.UserDataDir); err != nil {
+			if err := m.cleanupSingletonLock(ctx, localUserDataDir); err != nil {
 				logger.Warn(ctx, "Failed to cleanup singleton lock after stop: %v", err)
 			} else {
 				logger.Info(ctx, "✓ Cleaned up singleton lock files")
@@ -713,9 +792,15 @@ func (m *Manager) Stop() error {
 		}
 	}
 
-	m.browser = nil
-	m.launcher = nil
-	m.isRunning = false
+	if m.currentInstanceID != "" {
+		m.finalizeStoppedCurrentInstanceRuntimeLocked(ctx, m.currentInstanceID)
+	} else {
+		m.browser = nil
+		m.launcher = nil
+		m.isRunning = false
+		m.activePage = nil
+		m.startTime = time.Time{}
+	}
 
 	if isRemoteMode {
 		logger.Info(ctx, "Disconnected from remote browser successfully")
@@ -723,6 +808,22 @@ func (m *Manager) Stop() error {
 		logger.Info(ctx, "Browser fully closed, user data saved")
 	}
 	return nil
+}
+
+// currentBrowserUserDataDirLocked returns the profile of the browser represented
+// by the legacy current fields. The caller must hold m.mu.
+func (m *Manager) currentBrowserUserDataDirLocked() string {
+	if m.currentInstanceID != "" {
+		if currentRuntime := m.instances[m.currentInstanceID]; currentRuntime != nil && currentRuntime.instance != nil && currentRuntime.instance.Type != "remote" {
+			if userDataDir := strings.TrimSpace(currentRuntime.instance.UserDataDir); userDataDir != "" {
+				return userDataDir
+			}
+		}
+	}
+	if m.config != nil && m.config.Browser != nil {
+		return strings.TrimSpace(m.config.Browser.UserDataDir)
+	}
+	return ""
 }
 
 // IsRunning 检查浏览器是否运行
@@ -1277,7 +1378,7 @@ func (m *Manager) startRecording(ctx context.Context, instanceID string, scope *
 	defer m.mu.Unlock()
 
 	// 获取指定实例的浏览器和活动页面
-	_, activePage, _, err := m.getInstanceBrowser(instanceID)
+	instanceBrowser, activePage, _, err := m.getInstanceBrowser(instanceID)
 	if err != nil {
 		return err
 	}
@@ -1301,9 +1402,15 @@ func (m *Manager) startRecording(ctx context.Context, instanceID string, scope *
 	scopes := []RecordingStorageScope{}
 	if scope != nil {
 		scopes = append(scopes, *scope)
+		if err := m.setProjectDownloadBehaviorLocked(instanceBrowser, true); err != nil {
+			return err
+		}
 	}
 	err = m.recorder.StartRecording(ctx, activePage, info.URL, currentLang, scopes...)
 	if err != nil {
+		if scope != nil {
+			m.restoreProjectDownloadBehaviorLocked(ctx)
+		}
 		return err
 	}
 	m.clearInPageRecordingStateLocked()
@@ -1332,7 +1439,12 @@ func (m *Manager) StopRecording(ctx context.Context) ([]models.ScriptAction, []m
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	return m.recorder.StopRecording(ctx)
+	_, projectScoped := m.recorder.CurrentStorageScope()
+	actions, downloadedFiles, err := m.recorder.StopRecording(ctx)
+	if projectScoped {
+		m.restoreProjectDownloadBehaviorLocked(ctx)
+	}
+	return actions, downloadedFiles, err
 }
 
 // StopRecordingWithStorageScope stops recording only when the active browser recorder
@@ -1341,10 +1453,28 @@ func (m *Manager) StopRecordingWithStorageScope(ctx context.Context, scope Recor
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if actions, downloadedFiles, ok := m.consumeInPageStoppedRecordingLocked(scope); ok {
+	if actions, downloadedFiles, ok := m.peekInPageStoppedRecordingLocked(scope); ok {
 		return actions, downloadedFiles, nil
 	}
-	return m.recorder.StopRecordingWithStorageScope(ctx, scope)
+
+	startURL := m.recorder.GetStartURL()
+	actions, downloadedFiles, err := m.recorder.StopRecordingWithStorageScope(ctx, scope)
+	if err != nil {
+		return nil, nil, err
+	}
+	m.restoreProjectDownloadBehaviorLocked(ctx)
+	m.publishStoppedRecordingResultLocked(scope, startURL, actions, downloadedFiles)
+	return actions, downloadedFiles, nil
+}
+
+// AcknowledgeInPageStoppedRecording clears a page-local stopped recording only
+// after the matching RecordingSession terminal state has been stored durably.
+func (m *Manager) AcknowledgeInPageStoppedRecording(scope RecordingStorageScope) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.inPageRecordingStopped && m.lastRecordingStorageScope != nil && m.lastRecordingStorageScope.matches(scope) {
+		m.clearInPageRecordingStateLocked()
+	}
 }
 
 // RecordingArtifactStorageKey converts a browser download path into a storage key
@@ -1376,9 +1506,74 @@ func (m *Manager) RecordingArtifactStorageKey(file models.DownloadedFile) string
 	return filepath.ToSlash(rel)
 }
 
+func (m *Manager) setProjectDownloadBehaviorLocked(browser *rod.Browser, deny bool) error {
+	if browser == nil {
+		return fmt.Errorf("project recording browser is unavailable")
+	}
+	behavior := proto.BrowserSetDownloadBehaviorBehaviorDeny
+	downloadPath := ""
+	if !deny {
+		behavior = proto.BrowserSetDownloadBehaviorBehaviorAllow
+		downloadPath = strings.TrimSpace(m.downloadPath)
+		if downloadPath == "" {
+			return fmt.Errorf("download path is unavailable")
+		}
+	}
+	if err := callBrowserDownloadBehavior(browser, &proto.BrowserSetDownloadBehavior{
+		Behavior:      behavior,
+		DownloadPath:  downloadPath,
+		EventsEnabled: true,
+	}); err != nil {
+		return fmt.Errorf("set project recording download behavior: %w", err)
+	}
+	m.projectDownloadsDenied = deny
+	if deny {
+		m.projectDownloadBrowser = browser
+	} else {
+		m.projectDownloadBrowser = nil
+	}
+	return nil
+}
+
+func (m *Manager) restoreProjectDownloadBehaviorLocked(ctx context.Context) {
+	if !m.projectDownloadsDenied {
+		return
+	}
+	browser := m.projectDownloadBrowser
+	if browser == nil {
+		browser = m.browser
+	}
+	if err := m.setProjectDownloadBehaviorLocked(browser, false); err != nil {
+		logger.Warn(ctx, "Failed to restore download behavior after project recording: %v", err)
+	}
+}
+
 // IsRecording 检查是否正在录制
 func (m *Manager) IsRecording() bool {
 	return m.recorder.IsRecording()
+}
+
+// CurrentRecordingStorageScope reports the active project recording scope only
+// while this manager still owns the recorder lifecycle.
+func (m *Manager) CurrentRecordingStorageScope() (RecordingStorageScope, bool) {
+	return m.recorder.CurrentStorageScope()
+}
+
+// ActiveRecordingStorageScope reports the current recorder lifecycle and its
+// project scope when the recorder belongs to a persisted recording session.
+func (m *Manager) ActiveRecordingStorageScope() (RecordingStorageScope, bool) {
+	return m.recorder.ActiveStorageScope()
+}
+
+// PendingStoppedRecordingStorageScope reports a page-local stop whose actions
+// and storage snapshot are still waiting for its RecordingSession to persist.
+func (m *Manager) PendingStoppedRecordingStorageScope() (RecordingStorageScope, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.inPageRecordingStopped || m.lastRecordingStorageScope == nil || m.lastRecordingStorageScope.isZero() {
+		return RecordingStorageScope{}, false
+	}
+	return *m.lastRecordingStorageScope, true
 }
 
 // GetRecordingInfo 获取录制信息
@@ -1403,9 +1598,22 @@ func (m *Manager) GetRecordingInfo() map[string]interface{} {
 	return info
 }
 
-// ConsumeLastRecordingStorageState returns and clears the latest storage snapshot when it matches scope.
-func (m *Manager) ConsumeLastRecordingStorageState(scope RecordingStorageScope) map[string]any {
-	return m.recorder.ConsumeLastStorageState(scope)
+// PeekLastRecordingStorageState returns the latest storage snapshot when it matches scope.
+// The caller must acknowledge it after any dependent durable write succeeds.
+func (m *Manager) PeekLastRecordingStorageState(scope RecordingStorageScope) map[string]any {
+	return m.recorder.PeekLastStorageState(scope)
+}
+
+// AcknowledgeLastRecordingStorageState clears the latest storage snapshot only
+// when it still belongs to scope.
+func (m *Manager) AcknowledgeLastRecordingStorageState(scope RecordingStorageScope) {
+	m.recorder.AcknowledgeLastStorageState(scope)
+}
+
+// DiscardLastRecordingStorageState abandons the matching snapshot after an
+// explicit recording-session cancellation.
+func (m *Manager) DiscardLastRecordingStorageState(scope RecordingStorageScope) {
+	m.recorder.DiscardLastStorageState(scope)
 }
 
 // ClearInPageRecordingState 清除页面内录制状态(供前端保存或取消后调用)
@@ -1415,7 +1623,7 @@ func (m *Manager) ClearInPageRecordingState() {
 	m.mu.Unlock()
 }
 
-func (m *Manager) consumeInPageStoppedRecordingLocked(scope RecordingStorageScope) ([]models.ScriptAction, []models.DownloadedFile, bool) {
+func (m *Manager) peekInPageStoppedRecordingLocked(scope RecordingStorageScope) ([]models.ScriptAction, []models.DownloadedFile, bool) {
 	if !m.inPageRecordingStopped || m.lastRecordingStorageScope == nil || !m.lastRecordingStorageScope.matches(scope) {
 		return nil, nil, false
 	}
@@ -1423,8 +1631,18 @@ func (m *Manager) consumeInPageStoppedRecordingLocked(scope RecordingStorageScop
 	copy(actions, m.lastRecordedActions)
 	downloadedFiles := make([]models.DownloadedFile, len(m.lastDownloadedFiles))
 	copy(downloadedFiles, m.lastDownloadedFiles)
-	m.clearInPageRecordingStateLocked()
 	return actions, downloadedFiles, true
+}
+
+func (m *Manager) publishStoppedRecordingResultLocked(scope RecordingStorageScope, startURL string, actions []models.ScriptAction, downloadedFiles []models.DownloadedFile) {
+	storedScope := scope
+	m.inPageRecordingStopped = true
+	m.lastRecordingStorageScope = &storedScope
+	m.lastRecordedActions = make([]models.ScriptAction, len(actions))
+	copy(m.lastRecordedActions, actions)
+	m.lastDownloadedFiles = make([]models.DownloadedFile, len(downloadedFiles))
+	copy(m.lastDownloadedFiles, downloadedFiles)
+	m.lastRecordedStartURL = startURL
 }
 
 func (m *Manager) clearInPageRecordingStateLocked() {
@@ -1763,40 +1981,41 @@ func (m *Manager) checkInPageRecordingRequests(ctx context.Context, page *rod.Pa
 			if err == nil && stopResult != nil && !stopResult.Value.Nil() {
 				logger.Info(ctx, "Detected in-page recording stop request")
 
-				// 获取录制信息(包含start_url)
+				// Publish the pending owner and stop the recorder under the same
+				// mutex. A concurrent project start then sees either an active
+				// recorder or this pending scope, never an ownerless gap.
+				m.mu.Lock()
 				recInfo := m.recorder.GetRecordingInfo()
 				stoppedScope, hasStoppedScope := m.recorder.CurrentStorageScope()
-
-				// 停止录制并获取下载文件信息
-				actions, downloadedFiles, err := m.recorder.StopRecording(ctx)
-
-				if err != nil {
-					logger.Error(ctx, "Failed to stop recording from in-page request: %v", err)
-				} else {
-					logger.Info(ctx, "✓ Recording stopped from in-page button, %d actions recorded, %d files downloaded",
-						len(actions), len(downloadedFiles))
-					// 保存录制结果、下载文件和URL,供前端获取
-					m.mu.Lock()
-					m.lastRecordedActions = actions
-					m.lastDownloadedFiles = downloadedFiles
-					m.inPageRecordingStopped = true
-					m.lastRecordingStorageScope = nil
-					if hasStoppedScope {
-						scope := stoppedScope
-						m.lastRecordingStorageScope = &scope
-					}
-					// 保存录制时的URL到持久化字段
-					if startURL, ok := recInfo["start_url"].(string); ok && startURL != "" {
-						m.lastRecordedStartURL = startURL
-						logger.Info(ctx, "Saved start URL: %s", startURL)
-					}
-					m.mu.Unlock()
-
-					// 通知页面:录制已停止
-					_, _ = page.Eval(`() => {
-						window.__recordingStoppedByInPage__ = true;
-					}`)
+				m.inPageRecordingStopped = true
+				m.lastRecordingStorageScope = nil
+				if hasStoppedScope {
+					scope := stoppedScope
+					m.lastRecordingStorageScope = &scope
 				}
+				actions, downloadedFiles, err := m.recorder.StopRecording(ctx)
+				if err != nil {
+					m.clearInPageRecordingStateLocked()
+					m.mu.Unlock()
+					logger.Error(ctx, "Failed to stop recording from in-page request: %v", err)
+					continue
+				}
+				if hasStoppedScope {
+					m.restoreProjectDownloadBehaviorLocked(ctx)
+				}
+				m.lastRecordedActions = actions
+				m.lastDownloadedFiles = downloadedFiles
+				if startURL, ok := recInfo["start_url"].(string); ok && startURL != "" {
+					m.lastRecordedStartURL = startURL
+					logger.Info(ctx, "Saved start URL: %s", startURL)
+				}
+				m.mu.Unlock()
+
+				logger.Info(ctx, "✓ Recording stopped from in-page button, %d actions recorded, %d files downloaded", len(actions), len(downloadedFiles))
+				// 通知页面:录制已停止
+				_, _ = page.Eval(`() => {
+					window.__recordingStoppedByInPage__ = true;
+				}`)
 			}
 
 		case <-ctx.Done():
@@ -2035,6 +2254,167 @@ func (m *Manager) lockFilesStillExist(userDataDir string) bool {
 	return false
 }
 
+// killTrackedChromeProfileOwner only terminates a process when its persisted
+// BrowserWing marker, local DevTools endpoint, and listening PID all agree.
+// This keeps profile recovery scoped to BrowserWing instead of user Chrome.
+func (m *Manager) killTrackedChromeProfileOwner(ctx context.Context, userDataDir string) (bool, error) {
+	if runtime.GOOS != "windows" {
+		return false, nil
+	}
+	owner, err := readBrowserProfileOwner(userDataDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !browserProfileOwnerDevtoolsResponding(ctx, owner) {
+		logger.Warn(ctx, "[killOrphanedChrome] Tracked profile owner PID %d did not confirm its local DevTools endpoint; skipping termination", owner.PID)
+		return false, nil
+	}
+	listenerPID, found, err := windowsListeningPIDForPort(owner.ControlURL)
+	if err != nil {
+		return false, err
+	}
+	if !found || listenerPID != owner.PID {
+		logger.Warn(ctx, "[killOrphanedChrome] Tracked profile owner PID %d does not match the local DevTools listener; skipping termination", owner.PID)
+		return false, nil
+	}
+	if err := terminateWindowsProcess(owner.PID); err != nil {
+		return false, err
+	}
+	if err := os.Remove(browserProfileOwnerMarkerPath(userDataDir)); err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("remove browser profile owner marker: %w", err)
+	}
+	return true, nil
+}
+
+func browserProfileOwnerDevtoolsResponding(ctx context.Context, owner browserProfileOwner) bool {
+	endpoint, err := browserProfileOwnerDevtoolsEndpoint(owner)
+	if err != nil {
+		return false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false
+	}
+	response, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return false
+	}
+	var version struct {
+		Browser              string `json:"Browser"`
+		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&version); err != nil {
+		return false
+	}
+	if !browserProfileOwnerDevtoolsProductSupported(version.Browser) || version.WebSocketDebuggerURL == "" {
+		return false
+	}
+	return browserProfileOwnerDevtoolsIdentityMatches(owner.ControlURL, version.WebSocketDebuggerURL)
+}
+
+type browserProfileOwnerDevtoolsIdentity struct {
+	host      string
+	port      int
+	browserID string
+}
+
+// browserProfileOwnerDevtoolsIdentityMatches proves that /json/version belongs
+// to the browser originally written into the profile-owner marker. Host and
+// PID alone are reusable, so a browser WebSocket path without its opaque
+// browser id is deliberately insufficient to authorize termination.
+func browserProfileOwnerDevtoolsIdentityMatches(ownerURL, reportedURL string) bool {
+	owner, ok := browserProfileOwnerDevtoolsIdentityFromURL(ownerURL)
+	if !ok {
+		return false
+	}
+	reported, ok := browserProfileOwnerDevtoolsIdentityFromURL(reportedURL)
+	return ok && owner == reported
+}
+
+func browserProfileOwnerDevtoolsIdentityFromURL(rawURL string) (browserProfileOwnerDevtoolsIdentity, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed == nil || !strings.EqualFold(parsed.Scheme, "ws") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return browserProfileOwnerDevtoolsIdentity{}, false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if !isLocalDevtoolsHost(host) {
+		return browserProfileOwnerDevtoolsIdentity{}, false
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil || port < 1 || port > 65535 {
+		return browserProfileOwnerDevtoolsIdentity{}, false
+	}
+	const browserPathPrefix = "/devtools/browser/"
+	if !strings.HasPrefix(parsed.Path, browserPathPrefix) {
+		return browserProfileOwnerDevtoolsIdentity{}, false
+	}
+	browserID := strings.TrimPrefix(parsed.Path, browserPathPrefix)
+	if browserID == "" || strings.Contains(browserID, "/") {
+		return browserProfileOwnerDevtoolsIdentity{}, false
+	}
+	return browserProfileOwnerDevtoolsIdentity{host: host, port: port, browserID: browserID}, true
+}
+
+func browserProfileOwnerDevtoolsProductSupported(product string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(product))
+	return strings.Contains(normalized, "chrome") || strings.Contains(normalized, "edg/")
+}
+
+func windowsListeningPIDForPort(controlURL string) (int, bool, error) {
+	parsed, err := url.Parse(controlURL)
+	if err != nil {
+		return 0, false, fmt.Errorf("parse local DevTools URL: %w", err)
+	}
+	port := parsed.Port()
+	if port == "" {
+		return 0, false, fmt.Errorf("local DevTools URL has no port")
+	}
+	output, err := exec.Command("netstat", "-ano", "-p", "tcp").CombinedOutput()
+	if err != nil {
+		return 0, false, fmt.Errorf("list TCP listeners: %w", err)
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 5 || !strings.EqualFold(fields[0], "TCP") || !strings.EqualFold(fields[3], "LISTENING") {
+			continue
+		}
+		if !strings.HasSuffix(fields[1], ":"+port) {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[len(fields)-1])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		return pid, true, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, false, fmt.Errorf("parse TCP listeners: %w", err)
+	}
+	return 0, false, nil
+}
+
+func terminateWindowsProcess(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("Chrome PID is invalid")
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("find tracked Chrome PID %d: %w", pid, err)
+	}
+	if err := process.Kill(); err != nil {
+		return fmt.Errorf("terminate tracked Chrome PID %d: %w", pid, err)
+	}
+	return nil
+}
+
 // killChromeByUserDataDir kills Chrome processes associated with the given user data directory.
 // It works on both Windows and Unix systems. Unlike KillOrphanedChromeProcesses which uses
 // m.config.Browser.UserDataDir, this method accepts an explicit directory parameter.
@@ -2090,8 +2470,8 @@ func (m *Manager) killOrphanedChromeWindows(ctx context.Context, userDataDir, di
 	cmd := exec.Command("wmic", "process", "where", "name='chrome.exe'", "get", "processid,commandline", "/format:csv")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		logger.Warn(ctx, "[killOrphanedChrome] WMIC query failed: %v (output: %s), falling back to taskkill", err, strings.TrimSpace(string(output)))
-		return m.killAllChromeWindows(ctx)
+		logger.Warn(ctx, "[killOrphanedChrome] WMIC query failed: %v (output: %s); skipping cleanup because the browser profile owner cannot be identified", err, strings.TrimSpace(string(output)))
+		return nil
 	}
 
 	outputStr := string(output)
@@ -2141,33 +2521,15 @@ func (m *Manager) killOrphanedChromeWindows(ctx context.Context, userDataDir, di
 		return nil
 	}
 
-	// If WMIC didn't find matching processes but lockfile is still held, try killing all Chrome.
+	// A stale lockfile without an identified owner is not sufficient evidence to kill
+	// unrelated Chrome windows that may belong to the user.
 	lockPath := filepath.Join(userDataDir, "lockfile")
 	if _, err := os.Stat(lockPath); err == nil {
-		logger.Warn(ctx, "[killOrphanedChrome] No matching processes found via WMIC, but lockfile exists. Falling back to kill all Chrome.")
-		return m.killAllChromeWindows(ctx)
+		logger.Warn(ctx, "[killOrphanedChrome] No matching process found via WMIC, but lockfile exists; skipping cleanup because the owner could not be identified")
+		return nil
 	}
 
 	logger.Info(ctx, "[killOrphanedChrome] No orphaned Chrome processes found")
-	return nil
-}
-
-// killAllChromeWindows kills ALL chrome.exe processes — used as a last resort.
-func (m *Manager) killAllChromeWindows(ctx context.Context) error {
-	logger.Warn(ctx, "[killOrphanedChrome] ⚠ Killing ALL Chrome processes (last resort)")
-	cmd := exec.Command("taskkill", "/F", "/IM", "chrome.exe", "/T")
-	output, err := cmd.CombinedOutput()
-	outputStr := strings.TrimSpace(string(output))
-	if err != nil {
-		lower := strings.ToLower(outputStr)
-		if strings.Contains(lower, "not found") || strings.Contains(lower, "没有找到") || strings.Contains(lower, "no running") {
-			logger.Info(ctx, "[killOrphanedChrome] No Chrome processes found")
-			return nil
-		}
-		logger.Warn(ctx, "[killOrphanedChrome] taskkill error: %v, output: %s", err, outputStr)
-		return fmt.Errorf("taskkill failed: %w (output: %s)", err, outputStr)
-	}
-	logger.Info(ctx, "[killOrphanedChrome] taskkill output: %s", outputStr)
 	return nil
 }
 
@@ -2325,6 +2687,49 @@ func (m *Manager) clearInstanceRuntimeLocked(ctx context.Context, instanceID str
 	}
 }
 
+// finalizeStoppedCurrentInstanceRuntimeLocked removes a runtime whose browser
+// process has already stopped and keeps the legacy current-instance mirror in
+// sync. The caller must hold m.mu.
+func (m *Manager) finalizeStoppedCurrentInstanceRuntimeLocked(ctx context.Context, instanceID string) {
+	runtime := m.instances[instanceID]
+	if runtime != nil {
+		if runtime.instance != nil {
+			runtime.instance.IsActive = false
+			runtime.instance.UpdatedAt = time.Now()
+			if m.db != nil {
+				if err := m.db.SaveBrowserInstance(runtime.instance); err != nil {
+					logger.Warn(ctx, "Failed to update instance status after stop: %v", err)
+				}
+			}
+		}
+		delete(m.instances, instanceID)
+	}
+
+	if m.currentInstanceID != instanceID {
+		return
+	}
+
+	m.currentInstanceID = ""
+	m.browser = nil
+	m.launcher = nil
+	m.isRunning = false
+	m.activePage = nil
+	m.startTime = time.Time{}
+
+	for id, candidate := range m.instances {
+		if candidate == nil || candidate.browser == nil {
+			continue
+		}
+		m.currentInstanceID = id
+		m.browser = candidate.browser
+		m.launcher = candidate.launcher
+		m.isRunning = true
+		m.activePage = candidate.activePage
+		m.startTime = candidate.startTime
+		return
+	}
+}
+
 // startInstanceInternalWithOptions 内部启动函数，调用者必须已持有锁。
 func (m *Manager) startInstanceInternalWithOptions(ctx context.Context, instanceID string, opts startInstanceOptions) error {
 	// 空 instanceID 回退：优先使用当前实例，否则查找默认实例
@@ -2393,6 +2798,7 @@ func (m *Manager) startInstanceInternalWithOptions(ctx context.Context, instance
 	var launcherObj *launcher.Launcher
 	var url string
 	var proxyUsername, proxyPassword string // 代理认证信息
+	var localUserDataDir string
 
 	if instance.Type == "remote" {
 		// 远程模式
@@ -2524,6 +2930,11 @@ func (m *Manager) startInstanceInternalWithOptions(ctx context.Context, instance
 			} else {
 				// 主动清理可能存在的锁文件（在启动前）
 				logger.Info(ctx, "Checking and cleaning up lock files before launch...")
+				if terminated, err := m.killTrackedChromeProfileOwner(ctx, instance.UserDataDir); err != nil {
+					logger.Warn(ctx, "Failed to terminate tracked Chrome profile owner for instance: %v", err)
+				} else if terminated {
+					logger.Info(ctx, "Terminated the tracked Chrome profile owner before instance launch")
+				}
 				// 首先尝试杀死可能存在的孤儿 Chrome 进程（重启后残留的进程）
 				if err := m.killOrphanedChromeForDir(ctx, instance.UserDataDir); err != nil {
 					logger.Warn(ctx, "Failed to kill orphaned Chrome processes for instance: %v", err)
@@ -2542,6 +2953,7 @@ func (m *Manager) startInstanceInternalWithOptions(ctx context.Context, instance
 				}
 
 				l = l.UserDataDir(instance.UserDataDir)
+				localUserDataDir = instance.UserDataDir
 				logger.Info(ctx, "Using user data directory: %s", instance.UserDataDir)
 			}
 		}
@@ -2569,12 +2981,16 @@ func (m *Manager) startInstanceInternalWithOptions(ctx context.Context, instance
 
 			// 重试启动
 			logger.Info(ctx, "[startInstanceInternal] Retrying Chrome launch...")
+			l = cloneLauncherForRetry(l)
 			url, err = l.Launch()
 			if err != nil {
 				logger.Error(ctx, "[startInstanceInternal] Chrome launch failed on retry: %v", err)
 				return fmt.Errorf("failed to launch browser (tried killing orphaned processes): %w", err)
 			}
 			logger.Info(ctx, "[startInstanceInternal] ✓ Chrome launched successfully on retry")
+		}
+		if err := persistLaunchedBrowserProfileOwner(ctx, l, localUserDataDir, url); err != nil {
+			return err
 		}
 
 		browser = rod.New().ControlURL(url)
@@ -2839,37 +3255,7 @@ func (m *Manager) StopInstance(ctx context.Context, instanceID string) error {
 		}
 	}
 
-	// 更新实例状态
-	runtime.instance.IsActive = false
-	runtime.instance.UpdatedAt = time.Now()
-	if err := m.db.SaveBrowserInstance(runtime.instance); err != nil {
-		logger.Warn(ctx, "Failed to update instance status: %v", err)
-	}
-
-	// 删除运行时信息
-	delete(m.instances, instanceID)
-
-	// 如果停止的是当前实例，清空当前实例 ID
-	if m.currentInstanceID == instanceID {
-		m.currentInstanceID = ""
-
-		// 向后兼容：清空旧字段
-		m.browser = nil
-		m.launcher = nil
-		m.isRunning = false
-		m.activePage = nil
-
-		// 尝试切换到第一个运行中的实例
-		for id := range m.instances {
-			m.currentInstanceID = id
-			runtime := m.instances[id]
-			m.browser = runtime.browser
-			m.launcher = runtime.launcher
-			m.isRunning = true
-			m.startTime = runtime.startTime
-			break
-		}
-	}
+	m.finalizeStoppedCurrentInstanceRuntimeLocked(ctx, instanceID)
 
 	logger.Info(ctx, "✓ Browser instance stopped: %s", runtime.instance.Name)
 	return nil

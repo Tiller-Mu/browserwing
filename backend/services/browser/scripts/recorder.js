@@ -4054,6 +4054,64 @@ if (window.__browserwingRecorder__) {
 		}
 		hideHighlight();
 	});
+
+	function isSensitiveRecordingDownloadQueryKey(rawKey) {
+		var key = String(rawKey || '').trim().toLowerCase().replace(/[\-\.\s]+/g, '_');
+		if (key.indexOf('x_amz_') === 0 || key.indexOf('x_goog_') === 0) {
+			return true;
+		}
+		var exact = {
+			token: true,
+			auth: true,
+			authorization: true,
+			secret: true,
+			signature: true,
+			sig: true,
+			credential: true,
+			credentials: true,
+			key: true,
+			api_key: true,
+			apikey: true,
+			password: true,
+			passwd: true,
+			session: true,
+			session_id: true
+		};
+		if (exact[key]) return true;
+		return /_(token|auth|secret|signature|credential|credentials|key|password|passwd|session)$/.test(key);
+	}
+
+	function sanitizeRecordingDownloadURL(rawURL) {
+		if (!rawURL) return '';
+		try {
+			var parsed = new URL(String(rawURL), window.location.href);
+			var scheme = parsed.protocol.toLowerCase();
+			if ((scheme !== 'http:' && scheme !== 'https:') || !parsed.host) return '';
+			parsed.protocol = scheme;
+			parsed.username = '';
+			parsed.password = '';
+			parsed.hash = '';
+			var entries = [];
+			parsed.searchParams.forEach(function(value, key) {
+				entries.push([key, isSensitiveRecordingDownloadQueryKey(key) ? 'REDACTED' : value]);
+			});
+			entries.sort(function(left, right) {
+				var leftKey = left[0] + '\u0000' + left[1];
+				var rightKey = right[0] + '\u0000' + right[1];
+				return leftKey < rightKey ? -1 : (leftKey > rightKey ? 1 : 0);
+			});
+			var query = entries.map(function(entry) {
+				return encodeURIComponent(entry[0]) + '=' + encodeURIComponent(entry[1]);
+			}).join('&');
+			parsed.search = query ? '?' + query : '';
+			var sanitized = parsed.toString();
+			if (sanitized.length <= 2048) return sanitized;
+			parsed.search = '';
+			return parsed.toString();
+		} catch (error) {
+			return '';
+		}
+	}
 	
 	// 监听点击事件 - 使用capture模式记录操作
 	document.addEventListener('click', function(e) {
@@ -4285,6 +4343,19 @@ if (window.__browserwingRecorder__) {
 				x: e.clientX || 0,
 				y: e.clientY || 0
 			};
+			// Only declared download anchors receive link metadata. Other links may
+			// navigate, submit OAuth, or log out; actual response-driven downloads
+			// are captured separately through Browser.downloadWillBegin.
+			var downloadLink = target.closest ? target.closest('a[download][href]') : null;
+			if (downloadLink) {
+				var downloadURL = sanitizeRecordingDownloadURL(downloadLink.href || downloadLink.getAttribute('href') || '');
+				var downloadName = downloadLink.getAttribute('download') || '';
+				if (downloadURL || downloadName) {
+					action.attrs = {};
+					if (downloadURL) action.attrs.download_url = downloadURL;
+					if (downloadName) action.attrs.download_filename_hint = downloadName;
+				}
+			}
 			
 			recordAction(action, target, 'click');
 			

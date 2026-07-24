@@ -127,6 +127,7 @@ type RecordingSession struct {
 	PageID            uint      `gorm:"index:idx_recording_session_scope,not null" json:"page_id"`
 	RecordingKind     string    `gorm:"size:50;not null" json:"recording_kind"`
 	AuthContext       string    `gorm:"size:50;not null" json:"auth_context"`
+	SourceAuthStateID *uint     `gorm:"index" json:"source_auth_state_id,omitempty"`
 	TargetURL         string    `gorm:"type:text" json:"target_url"`
 	Status            string    `gorm:"size:50;index;not null" json:"status"`
 	ActionsJSON       string    `gorm:"type:text" json:"actions_json"`

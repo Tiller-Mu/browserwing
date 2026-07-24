@@ -6,7 +6,7 @@ import { projectApi } from '../api/project'
 import Toast from '../components/Toast'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { useLanguage } from '../i18n'
-import { buildP45SaveRecordingPayload } from './p45RecordingUiContract'
+import { buildP45SaveRecordingPayload, resolveP45InPageStoppedRecordingAction } from './p45RecordingUiContract'
 import type { P45AuthContext, P45RecordingKind, PageRecordingContextResponse, StopPageRecordingSessionResponse } from '../api/project'
 
 interface BrowserStatus {
@@ -53,8 +53,11 @@ export const createRecordingCancelController = (options: {
         input.recordingSessionId,
       )
       options.setProjectRecordingSession?.(response.data)
+      await options.clearLocalRecordingState()
+      return response.data
     }
     await options.clearLocalRecordingState()
+    return undefined
   },
 })
 
@@ -178,7 +181,16 @@ export default function BrowserManager() {
 
     projectApi.getPageRecordingSession(Number(projectId), Number(versionId), Number(pageId), recordingSessionId)
       .then((response) => {
-        setProjectRecordingSession(response.data)
+        setProjectRecordingSession((current) => {
+          if (
+            current?.recording_session_id === recordingSessionId &&
+            current.status !== 'recording' &&
+            response.data.status === 'recording'
+          ) {
+            return current
+          }
+          return response.data
+        })
         if (response.data.status === 'stopped') {
           setRecordedActions(Array.from({ length: Number(response.data.action_count || 0) }, (_, index) => ({
             type: 'recorded',
@@ -237,6 +249,41 @@ export default function BrowserManager() {
       console.error('获取浏览器状态失败:', err)
     }
   }
+
+  const cleanRecordingState = useCallback(async () => {
+    setShowSaveDialog(false)
+    setScriptName('')
+    setScriptDescription('')
+    setRecordedActions([])
+    setHasShownStopMessage(false)
+  }, [])
+
+  const cancelZeroActionProjectRecording = useCallback(async () => {
+    if (!isProjectRecordingContext || !projectId || !versionId || !pageId || !recordingSessionId) {
+      throw new Error('缺少项目录制会话，请从页面管理重新开始录制')
+    }
+    try {
+      setSavingScript(true)
+      const response = await projectApi.cancelPageRecordingSession(
+        Number(projectId),
+        Number(versionId),
+        Number(pageId),
+        recordingSessionId,
+      )
+      setProjectRecordingSession(response.data)
+      await cleanRecordingState()
+      await api.clearInPageRecordingState()
+      showMessage('零动作业务录制已取消', 'success')
+      navigate(`/projects/${projectId}/versions/${versionId}/pages`)
+      return true
+    } catch (err: any) {
+      console.error('自动取消零动作项目录制失败:', err)
+      showMessage(err.response?.data?.error || err.message || '取消项目录制失败', 'error')
+      return false
+    } finally {
+      setSavingScript(false)
+    }
+  }, [cleanRecordingState, isProjectRecordingContext, navigate, pageId, projectId, recordingSessionId, showMessage, versionId])
 
   const handleStart = async () => {
     try {
@@ -379,33 +426,47 @@ export default function BrowserManager() {
         let stoppedCount = Number(status.count || status.actions?.length || 0)
         let stoppedActions = status.actions || []
         if (isProjectRecordingContext && projectId && versionId && pageId && recordingSessionId) {
-          try {
-            const stopResponse = await projectApi.stopPageRecordingSession(
-              Number(projectId),
-              Number(versionId),
-              Number(pageId),
-              recordingSessionId,
-              {},
-            )
-            setProjectRecordingSession(stopResponse.data)
-            stoppedCount = Number(stopResponse.data.action_count || stoppedCount)
-            if (stoppedActions.length === 0 && stoppedCount > 0) {
-              stoppedActions = Array.from({ length: stoppedCount }, (_, index) => ({
-                type: 'recorded',
-                timestamp: index,
-                selector: '',
-              }))
+          const stoppedSession = projectRecordingSession?.recording_session_id === recordingSessionId && projectRecordingSession.status === 'stopped'
+            ? projectRecordingSession
+            : null
+          if (stoppedSession) {
+            stoppedCount = Number(stoppedSession.action_count || 0)
+          } else {
+            try {
+              const stopResponse = await projectApi.stopPageRecordingSession(
+                Number(projectId),
+                Number(versionId),
+                Number(pageId),
+                recordingSessionId,
+                {},
+              )
+              setProjectRecordingSession(stopResponse.data)
+              stoppedCount = Number(stopResponse.data.action_count || 0)
+            } catch (stopErr: any) {
+              console.error('同步项目录制停止状态失败:', stopErr)
+              showMessage(stopErr.response?.data?.error || stopErr.message || '同步项目录制停止状态失败', 'error')
+              return
             }
-          } catch (stopErr: any) {
-            console.error('同步项目录制停止状态失败:', stopErr)
-            showMessage(stopErr.response?.data?.error || stopErr.message || '同步项目录制停止状态失败', 'error')
-            setHasShownStopMessage(true)
-            return
+          }
+          if (stoppedActions.length === 0 && stoppedCount > 0) {
+            stoppedActions = Array.from({ length: stoppedCount }, (_, index) => ({
+              type: 'recorded',
+              timestamp: index,
+              selector: '',
+            }))
           }
         }
-        // 显示保存对话框
+        const stoppedAction = resolveP45InPageStoppedRecordingAction({
+          isProjectRecordingContext,
+          recordingKind,
+          actionCount: stoppedCount,
+        })
+        if (stoppedAction === 'cancel_zero_action_project_recording') {
+          await cancelZeroActionProjectRecording()
+          return
+        }
         setRecordedActions(stoppedActions)
-        if (stoppedCount > 0) {
+        if (stoppedAction === 'show_save_dialog' || stoppedAction === 'show_login_auth_dialog') {
           setShowSaveDialog(true)
         } else {
           await cleanRecordingState()
@@ -421,7 +482,7 @@ export default function BrowserManager() {
     } catch (err) {
       console.error('获取录制状态失败:', err)
     }
-  }, [hasShownStopMessage, isProjectRecordingContext, pageId, projectId, recordingSessionId, showMessage, t, versionId])
+  }, [cancelZeroActionProjectRecording, cleanRecordingState, hasShownStopMessage, isProjectRecordingContext, pageId, projectId, projectRecordingSession, recordingKind, recordingSessionId, showMessage, t, versionId])
 
   loadRecordingStatusRef.current = loadRecordingStatus
 
@@ -609,16 +670,27 @@ export default function BrowserManager() {
           showMessage('缺少项目录制会话，请从页面管理重新开始录制', 'error')
           return
         }
-        const response = await projectApi.stopPageRecordingSession(Number(projectId), Number(versionId), Number(pageId), recordingSessionId, {})
-        setProjectRecordingSession(response.data)
-        const actionCount = Number(response.data.action_count || 0)
+        const stoppedSession = projectRecordingSession?.recording_session_id === recordingSessionId && projectRecordingSession.status === 'stopped'
+          ? projectRecordingSession
+          : (await projectApi.stopPageRecordingSession(Number(projectId), Number(versionId), Number(pageId), recordingSessionId, {})).data
+        setProjectRecordingSession(stoppedSession)
+        const actionCount = Number(stoppedSession.action_count || 0)
+        const stoppedAction = resolveP45InPageStoppedRecordingAction({
+          isProjectRecordingContext: true,
+          recordingKind,
+          actionCount,
+        })
+        if (stoppedAction === 'cancel_zero_action_project_recording') {
+          await cancelZeroActionProjectRecording()
+          return
+        }
         setRecordedActions(Array.from({ length: actionCount }, (_, index) => ({
           type: 'recorded',
           timestamp: index,
           selector: '',
         })))
         showMessage(`项目录制已停止 - ${t('browser.messages.recordStopSuccess', { count: actionCount })}`, 'success')
-        if (actionCount > 0) {
+        if (stoppedAction === 'show_save_dialog' || stoppedAction === 'show_login_auth_dialog') {
           setShowSaveDialog(true)
         } else {
           await cleanRecordingState()
@@ -648,7 +720,7 @@ export default function BrowserManager() {
     }
   }
 
-  const captureProjectAuthState = async () => {
+  const captureProjectAuthState = async (recordingSessionId?: string) => {
     if (!projectId || !versionId || !pageId) {
       throw new Error('缺少项目录制上下文')
     }
@@ -656,6 +728,7 @@ export default function BrowserManager() {
       name: '项目登录态',
       captured_page_id: Number(pageId),
       captured_url: projectRecordingTargetUrl || recordingStatus.start_url || openUrl,
+      recording_session_id: recordingSessionId,
       replace: true,
     })
   }
@@ -735,12 +808,13 @@ export default function BrowserManager() {
                 target_url: projectRecordingTargetUrl || recordingStatus.start_url || openUrl,
               },
               recordingSessionId,
+              retainAuthSnapshot: shouldSavePageScript && shouldCaptureAuthState,
             })
           )
           savedMessage = response.data.message
         }
         if (shouldCaptureAuthState) {
-          await captureProjectAuthState()
+          await captureProjectAuthState(recordingSessionId)
         }
         showMessage(
           shouldSavePageScript && shouldCaptureAuthState
@@ -777,14 +851,6 @@ export default function BrowserManager() {
     }
   }
 
-  const cleanRecordingState = async () => {
-    setShowSaveDialog(false)
-    setScriptName('')
-    setScriptDescription('')
-    setRecordedActions([])
-    setHasShownStopMessage(false)
-  }
-
   const handleCancelRecording = async () => {
     try {
       setSavingScript(true)
@@ -793,7 +859,7 @@ export default function BrowserManager() {
         clearLocalRecordingState: cleanRecordingState,
         setProjectRecordingSession,
       })
-      await controller.cancelRecording({
+      const cancelledSession = await controller.cancelRecording({
         isProjectRecordingContext,
         projectId,
         versionId,
@@ -801,7 +867,7 @@ export default function BrowserManager() {
         recordingSessionId,
       })
       if (isProjectRecordingContext) {
-        showMessage('项目录制已取消', 'success')
+        showMessage(cancelledSession?.auth_snapshot_discarded ? '登录态快照已放弃' : '项目录制已取消', 'success')
         navigateBackToProjectPages()
       }
     } catch (err: any) {
@@ -887,44 +953,55 @@ export default function BrowserManager() {
   
   const quickLinks = getQuickLinks()
   const isLoginFlowProjectRecording = isProjectRecordingContext && recordingKind === 'login_flow'
+  const isZeroActionLoginRecording = isLoginFlowProjectRecording && recordedActions.length === 0
 
   const saveRecordingDialog = showSaveDialog ? (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" style={{ marginTop: 0, marginBottom: 0 }}>
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-md w-full p-6">
-        <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-4">{t('browser.script.saveRecording')}</h3>
+        <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-4">
+          {isZeroActionLoginRecording ? '登录态录制完成' : t('browser.script.saveRecording')}
+        </h3>
 
         <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              {isLoginFlowProjectRecording ? '录制名称（保存主流程时必填）' : t('browser.script.name')}
-              {!isLoginFlowProjectRecording && <span className="text-gray-900 dark:text-gray-100"> *</span>}
-            </label>
-            <input
-              type="text"
-              value={scriptName}
-              onChange={(e) => setScriptName(e.target.value)}
-              placeholder={t('browser.script.namePlaceholder')}
-              className="input w-full"
-            />
-          </div>
+          {!isZeroActionLoginRecording && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  {isLoginFlowProjectRecording ? '录制名称（保存主流程时必填）' : t('browser.script.name')}
+                  {!isLoginFlowProjectRecording && <span className="text-gray-900 dark:text-gray-100"> *</span>}
+                </label>
+                <input
+                  type="text"
+                  value={scriptName}
+                  onChange={(e) => setScriptName(e.target.value)}
+                  placeholder={t('browser.script.namePlaceholder')}
+                  className="input w-full"
+                />
+              </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              {t('browser.script.description')}
-            </label>
-            <textarea
-              value={scriptDescription}
-              onChange={(e) => setScriptDescription(e.target.value)}
-              placeholder={t('browser.script.descriptionPlaceholder')}
-              rows={3}
-              className="input w-full"
-            />
-          </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  {t('browser.script.description')}
+                </label>
+                <textarea
+                  value={scriptDescription}
+                  onChange={(e) => setScriptDescription(e.target.value)}
+                  placeholder={t('browser.script.descriptionPlaceholder')}
+                  rows={3}
+                  className="input w-full"
+                />
+              </div>
+            </>
+          )}
 
           {isLoginFlowProjectRecording && (
             <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-900/40 rounded-lg text-sm text-blue-800 dark:text-blue-200 flex gap-2">
               <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>登录流程结束后，可以一次保存主流程并更新当前版本的项目登录态。</span>
+              <span>
+                {isZeroActionLoginRecording
+                  ? '未记录页面操作，不能保存空主流程；你仍可更新当前版本的项目登录态或放弃该快照。'
+                  : '登录流程结束后，可以一次保存主流程并更新当前版本的项目登录态。'}
+              </span>
             </div>
           )}
 
@@ -941,7 +1018,25 @@ export default function BrowserManager() {
             </div>
           </div>
 
-          {isLoginFlowProjectRecording ? (
+          {isZeroActionLoginRecording ? (
+            <div className="space-y-2 pt-4">
+              <button
+                onClick={() => handleSaveScript('capture_auth_only')}
+                disabled={savingScript}
+                className="btn-primary w-full flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {savingScript ? <Loader className="w-5 h-5 animate-spin" /> : <ShieldCheck className="w-5 h-5" />}
+                <span>仅更新登录态</span>
+              </button>
+              <button
+                onClick={handleCancelRecording}
+                disabled={savingScript}
+                className="btn-ghost w-full"
+              >
+                {t('browser.script.cancel')}
+              </button>
+            </div>
+          ) : isLoginFlowProjectRecording ? (
             <div className="space-y-2 pt-4">
               <button
                 onClick={() => handleSaveScript('save_and_capture_auth')}
@@ -1857,6 +1952,7 @@ export default function BrowserManager() {
 
 export const p45BrowserManagerContract = {
   buildSaveRecordingPayload: buildP45SaveRecordingPayload,
+  resolveInPageStoppedRecordingAction: resolveP45InPageStoppedRecordingAction,
   syncProjectRecordingDraft: projectApi.syncPageRecordingSession,
   cancelProjectRecordingSession: projectApi.cancelPageRecordingSession,
   createRecordingCancelController,

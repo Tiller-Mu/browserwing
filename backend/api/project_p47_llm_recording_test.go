@@ -721,6 +721,256 @@ func TestP47StartRecordingPersistsSessionScopeAndRejectsHierarchyMismatch(t *tes
 	}
 }
 
+func TestP47StartRecordingReturnsExistingActiveSessionWithoutRestartingRuntime(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	fakeRuntime := newContractP45Runtime()
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
+	payload := map[string]any{
+		"recording_kind": "login_flow",
+		"auth_context":   "clean",
+		"target_url":     "https://example.invalid/app/login",
+	}
+
+	first := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, payload)
+	env.requireStatus(t, first, http.StatusOK)
+	firstBody := env.decodeObject(t, first)
+	firstSessionID := strings.TrimSpace(fmt.Sprint(firstBody["recording_session_id"]))
+	if firstSessionID == "" {
+		t.Fatalf("first recording_session_id missing: %s", first.Body.String())
+	}
+
+	second := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, payload)
+	env.requireStatus(t, second, http.StatusConflict)
+	secondBody := env.decodeObject(t, second)
+	if secondBody["error"] != "recording_session_active" {
+		t.Fatalf("duplicate start error = %v, want recording_session_active", secondBody["error"])
+	}
+	if got := strings.TrimSpace(fmt.Sprint(secondBody["recording_session_id"])); got != firstSessionID {
+		t.Fatalf("duplicate start recording_session_id = %q, want %q", got, firstSessionID)
+	}
+	if got := uint(secondBody["page_id"].(float64)); got != page.ID {
+		t.Fatalf("duplicate start page_id = %d, want %d", got, page.ID)
+	}
+
+	env.requireP47RecordingSessionTotalCount(t, 1)
+	fakeRuntime.requireEvents(t, "new_clean_context", "open_target_url", "start_recording")
+}
+
+func TestP47StartRecordingFailsStaleSessionWhenRuntimeOwnershipIsLost(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	fakeRuntime := newContractP45Runtime()
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
+	now := time.Now().UTC()
+	stale := models.RecordingSession{
+		ProjectID:     project.ID,
+		VersionID:     version.ID,
+		PageID:        page.ID,
+		RecordingKind: "login_flow",
+		AuthContext:   "clean",
+		TargetURL:     "https://example.invalid/app/login",
+		Status:        "recording",
+		StartedAt:     now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := env.db.Create(&stale).Error; err != nil {
+		t.Fatalf("seed stale RecordingSession: %v", err)
+	}
+
+	res := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, map[string]any{
+		"recording_kind": "login_flow",
+		"auth_context":   "clean",
+		"target_url":     "https://example.invalid/app/login",
+	})
+	env.requireStatus(t, res, http.StatusOK)
+	if err := env.db.First(&stale, stale.ID).Error; err != nil {
+		t.Fatalf("reload stale RecordingSession: %v", err)
+	}
+	if stale.Status != "failed" || !strings.Contains(stale.ErrorMessage, "runtime ownership") {
+		t.Fatalf("stale RecordingSession = %+v, want failed runtime-ownership loss", stale)
+	}
+	env.requireP47RecordingSessionTotalCount(t, 2)
+	fakeRuntime.requireEvents(t, "new_clean_context", "open_target_url", "start_recording")
+}
+
+func TestP47StopAndCancelKeepPendingResultUntilTheirSessionWritesSucceed(t *testing.T) {
+	t.Run("stop transaction failure", func(t *testing.T) {
+		env := newGenerateContractEnv(t)
+		project, version, page := env.seedProjectVersionPage(t)
+		secondPage := env.seedPageInVersion(t, version.ID, "stop retry page")
+		fakeRuntime := newContractP45Runtime()
+		fakeRuntime.stopPublishesPending = true
+		env.installProjectAuthRuntimeFake(t, fakeRuntime)
+
+		start := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, map[string]any{
+			"recording_kind": "login_flow",
+			"auth_context":   "clean",
+			"target_url":     "https://example.invalid/login",
+		})
+		env.requireStatus(t, start, http.StatusOK)
+		sessionID := strings.TrimSpace(fmt.Sprint(env.decodeObject(t, start)["recording_session_id"]))
+		env.failNextRecordingSessionUpdate(t)
+		sessionPath := fmt.Sprintf("/api/v1/projects/%d/versions/%d/pages/%d/recording-session/%s", project.ID, version.ID, page.ID, sessionID)
+
+		failedStop := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/stop", map[string]any{}, "")
+		env.requireStatus(t, failedStop, http.StatusInternalServerError)
+		fakeRuntime.requirePendingStoppedSession(t, sessionID)
+
+		blockedStart := env.startPageRecordingSession(t, project.ID, version.ID, secondPage.ID, map[string]any{
+			"recording_kind": "business_flow",
+			"auth_context":   "clean",
+			"target_url":     "https://example.invalid/orders",
+		})
+		env.requireStatus(t, blockedStart, http.StatusConflict)
+		env.requireP47RecordingSession(t, map[string]any{
+			"project_id": project.ID,
+			"version_id": version.ID,
+			"page_id":    page.ID,
+			"status":     "recording",
+		})
+
+		retryStop := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/stop", map[string]any{}, "")
+		env.requireStatus(t, retryStop, http.StatusOK)
+		fakeRuntime.requireAcknowledgedStoppedSession(t, sessionID)
+	})
+
+	t.Run("cancel update failure", func(t *testing.T) {
+		env := newGenerateContractEnv(t)
+		project, version, page := env.seedProjectVersionPage(t)
+		secondPage := env.seedPageInVersion(t, version.ID, "cancel retry page")
+		fakeRuntime := newContractP45Runtime()
+		fakeRuntime.stopPublishesPending = true
+		env.installProjectAuthRuntimeFake(t, fakeRuntime)
+
+		start := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, map[string]any{
+			"recording_kind": "login_flow",
+			"auth_context":   "clean",
+			"target_url":     "https://example.invalid/login",
+		})
+		env.requireStatus(t, start, http.StatusOK)
+		sessionID := strings.TrimSpace(fmt.Sprint(env.decodeObject(t, start)["recording_session_id"]))
+		env.failNextRecordingSessionUpdate(t)
+		sessionPath := fmt.Sprintf("/api/v1/projects/%d/versions/%d/pages/%d/recording-session/%s", project.ID, version.ID, page.ID, sessionID)
+
+		failedCancel := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/cancel", nil, "")
+		env.requireStatus(t, failedCancel, http.StatusInternalServerError)
+		fakeRuntime.requirePendingStoppedSession(t, sessionID)
+
+		blockedStart := env.startPageRecordingSession(t, project.ID, version.ID, secondPage.ID, map[string]any{
+			"recording_kind": "business_flow",
+			"auth_context":   "clean",
+			"target_url":     "https://example.invalid/orders",
+		})
+		env.requireStatus(t, blockedStart, http.StatusConflict)
+		env.requireP47RecordingSession(t, map[string]any{
+			"project_id": project.ID,
+			"version_id": version.ID,
+			"page_id":    page.ID,
+			"status":     "recording",
+		})
+
+		retryCancel := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/cancel", nil, "")
+		env.requireStatus(t, retryCancel, http.StatusOK)
+		fakeRuntime.requireAcknowledgedStoppedSession(t, sessionID)
+	})
+}
+
+func TestP47StartRecordingKeepsInPageStoppedSessionUntilStopPersists(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	secondPage := env.seedPageInVersion(t, version.ID, "next recording page")
+	fakeRuntime := newContractP45Runtime()
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
+	payload := map[string]any{
+		"recording_kind": "login_flow",
+		"auth_context":   "clean",
+		"target_url":     "https://example.invalid/app/login",
+	}
+
+	first := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, payload)
+	env.requireStatus(t, first, http.StatusOK)
+	firstSessionID := strings.TrimSpace(fmt.Sprint(env.decodeObject(t, first)["recording_session_id"]))
+	if firstSessionID == "" {
+		t.Fatalf("first recording_session_id missing: %s", first.Body.String())
+	}
+	if err := env.db.Model(&models.RecordingSession{}).
+		Where("id = ?", firstSessionID).
+		Updates(map[string]any{
+			"actions_json": `[ {"type":"click","selector":"#login"} ]`,
+			"action_count": 1,
+		}).Error; err != nil {
+		t.Fatalf("seed stopped recording draft: %v", err)
+	}
+	fakeRuntime.markInPageStopped(firstSessionID)
+
+	second := env.startPageRecordingSession(t, project.ID, version.ID, secondPage.ID, payload)
+
+	env.requireStatus(t, second, http.StatusConflict)
+	secondBody := env.decodeObject(t, second)
+	if secondBody["error"] != "browser_recording_active" {
+		t.Fatalf("in-page stopped start error = %v, want browser_recording_active", secondBody["error"])
+	}
+	var firstSession models.RecordingSession
+	if err := env.db.First(&firstSession, firstSessionID).Error; err != nil {
+		t.Fatalf("reload in-page stopped session: %v", err)
+	}
+	if firstSession.Status != "recording" || firstSession.ActionCount != 1 {
+		t.Fatalf("in-page stopped session = %+v, want persisted recording draft", firstSession)
+	}
+	env.requireP47RecordingSessionTotalCount(t, 1)
+}
+
+func TestP47StartRecordingSerializesCrossPageStartsAgainstOneGlobalRecorder(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, firstPage := env.seedProjectVersionPage(t)
+	secondPage := env.seedPageInVersion(t, version.ID, "second recording page")
+	fakeRuntime := newContractP45Runtime()
+	firstStartEntered := make(chan struct{})
+	releaseFirstStart := make(chan struct{})
+	fakeRuntime.startEntered = firstStartEntered
+	fakeRuntime.releaseStart = releaseFirstStart
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
+	payload := map[string]any{
+		"recording_kind": "login_flow",
+		"auth_context":   "clean",
+		"target_url":     "https://example.invalid/app/login",
+	}
+
+	firstResult := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		firstResult <- env.startPageRecordingSession(t, project.ID, version.ID, firstPage.ID, payload)
+	}()
+	select {
+	case <-firstStartEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first recording start did not reach the runtime")
+	}
+
+	secondResult := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		secondResult <- env.startPageRecordingSession(t, project.ID, version.ID, secondPage.ID, payload)
+	}()
+	select {
+	case result := <-secondResult:
+		t.Fatalf("second page started before the first runtime start completed: status=%d body=%s", result.Code, result.Body.String())
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(releaseFirstStart)
+
+	first := <-firstResult
+	second := <-secondResult
+	env.requireStatus(t, first, http.StatusOK)
+	env.requireStatus(t, second, http.StatusConflict)
+	secondBody := env.decodeObject(t, second)
+	if secondBody["error"] != "browser_recording_active" {
+		t.Fatalf("cross-page start error = %v, want browser_recording_active", secondBody["error"])
+	}
+	env.requireP47RecordingSessionTotalCount(t, 1)
+	fakeRuntime.requireEvents(t, "new_clean_context", "open_target_url", "start_recording")
+}
+
 func TestP47RecordingSessionSummaryAndStopUseProductionRoutes(t *testing.T) {
 	env := newGenerateContractEnv(t)
 	project, version, page := env.seedProjectVersionPage(t)
@@ -838,6 +1088,78 @@ func TestP47RecordingSessionSyncPersistsActionsAndRejectsTerminalStates(t *testi
 	p47RequireRecordingAction(t, row, 0, "click", "#create-order")
 }
 
+func TestP47RecordingSessionSyncNormalizesUntrustedDownloadMetadata(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	fakeRuntime := newContractP45Runtime()
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
+
+	started := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, map[string]any{
+		"recording_kind": "business_flow",
+		"auth_context":   "clean",
+		"target_url":     "https://example.invalid/app/orders",
+	})
+	env.requireStatus(t, started, http.StatusOK)
+	sessionID := strings.TrimSpace(fmt.Sprint(env.decodeObject(t, started)["recording_session_id"]))
+	rawSignedURL := "https://user:password@example.invalid/export.csv?signature=raw-secret&format=csv#fragment"
+
+	sync := env.p47JSONRequest(t, http.MethodPost, fmt.Sprintf(
+		"/api/v1/projects/%d/versions/%d/pages/%d/recording-session/%s/sync",
+		project.ID, version.ID, page.ID, sessionID,
+	), map[string]any{
+		"actions": []map[string]any{
+			{
+				"type": "download",
+				"url":  rawSignedURL,
+				"text": "export.csv",
+				"attrs": map[string]any{
+					"download_url": rawSignedURL,
+				},
+			},
+			{
+				"type": "click",
+				"attrs": map[string]any{
+					"download_url":           "data:text/plain,raw-secret",
+					"download_filename_hint": "data-export.csv",
+				},
+			},
+			{
+				"type": "download",
+				"url":  "blob:https://example.invalid/opaque-download",
+				"text": "blob-export.csv",
+			},
+		},
+	}, "")
+	env.requireStatus(t, sync, http.StatusOK)
+
+	row := env.latestP47RecordingSessionRow(t, project.ID, version.ID, page.ID)
+	actions := p47ParseActionsJSON(t, p47RowValue(row, "actions_json"))
+	if len(actions) != 2 {
+		t.Fatalf("persisted actions = %v, want invalid download action removed", actions)
+	}
+	if got, want := fmt.Sprint(actions[0]["url"]), "https://example.invalid/export.csv?format=csv&signature=REDACTED"; got != want {
+		t.Fatalf("persisted download URL = %q, want %q", got, want)
+	}
+	attrs, _ := actions[0]["attrs"].(map[string]any)
+	if got := fmt.Sprint(attrs["download_url"]); got != fmt.Sprint(actions[0]["url"]) {
+		t.Fatalf("persisted download attrs URL = %q, want normalized URL %q", got, actions[0]["url"])
+	}
+	if clickAttrs, ok := actions[1]["attrs"].(map[string]any); ok {
+		if _, exists := clickAttrs["download_url"]; exists {
+			t.Fatalf("persisted click action retained data URL metadata: %v", clickAttrs)
+		}
+		if _, exists := clickAttrs["download_filename_hint"]; exists {
+			t.Fatalf("persisted click action retained filename without a safe URL: %v", clickAttrs)
+		}
+	}
+	encoded := fmt.Sprint(p47RowValue(row, "actions_json"))
+	for _, secret := range []string{"raw-secret", "user:password", "#fragment", "data:text", "blob:"} {
+		if strings.Contains(encoded, secret) {
+			t.Fatalf("persisted actions_json leaked %q: %s", secret, encoded)
+		}
+	}
+}
+
 func TestP47CancelRecordingSessionCancelsActiveSessionAndProtectsPageScript(t *testing.T) {
 	env := newGenerateContractEnv(t)
 	project, version, page := env.seedProjectVersionPage(t)
@@ -944,6 +1266,71 @@ func TestP47CancelRecordingSessionCancelsActiveSessionAndProtectsPageScript(t *t
 		"actions_json": "#create-order",
 	})
 	fakeRuntime.requireEvents(t, "new_clean_context", "open_target_url", "start_recording", "stop_recording")
+}
+
+func TestP47RecordingLifecycleWaitsForCancelPersistenceBeforeNextStart(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	siblingPage := env.seedPageInVersion(t, version.ID, "lifecycle sibling page")
+	fakeRuntime := newContractP45Runtime()
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
+
+	initialStart := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, map[string]any{
+		"recording_kind": "login_flow",
+		"auth_context":   "clean",
+		"target_url":     "https://example.invalid/login",
+	})
+	env.requireStatus(t, initialStart, http.StatusOK)
+	initialSessionID := strings.TrimSpace(fmt.Sprint(env.decodeObject(t, initialStart)["recording_session_id"]))
+	initialSessionPath := fmt.Sprintf(
+		"/api/v1/projects/%d/versions/%d/pages/%d/recording-session/%s",
+		project.ID, version.ID, page.ID, initialSessionID,
+	)
+
+	fakeRuntime.stopEntered = make(chan struct{})
+	releaseStop := make(chan struct{})
+	fakeRuntime.releaseStop = releaseStop
+	cancelResult := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		cancelResult <- env.p47JSONRequest(t, http.MethodPost, initialSessionPath+"/cancel", nil, "")
+	}()
+	<-fakeRuntime.stopEntered
+
+	nextStartResult := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		nextStartResult <- env.startPageRecordingSession(t, project.ID, version.ID, siblingPage.ID, map[string]any{
+			"recording_kind": "business_flow",
+			"auth_context":   "clean",
+			"target_url":     "https://example.invalid/app/orders",
+		})
+	}()
+
+	select {
+	case earlyStart := <-nextStartResult:
+		close(releaseStop)
+		<-cancelResult
+		t.Fatalf("next recording start completed before cancel persisted its terminal state: status=%d body=%s", earlyStart.Code, earlyStart.Body.String())
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(releaseStop)
+	cancel := <-cancelResult
+	env.requireStatus(t, cancel, http.StatusOK)
+	nextStart := <-nextStartResult
+	env.requireStatus(t, nextStart, http.StatusOK)
+
+	env.requireP47RecordingSession(t, map[string]any{
+		"project_id": project.ID,
+		"version_id": version.ID,
+		"page_id":    page.ID,
+		"status":     "cancelled",
+	})
+	env.requireP47RecordingSession(t, map[string]any{
+		"project_id": project.ID,
+		"version_id": version.ID,
+		"page_id":    siblingPage.ID,
+		"status":     "recording",
+	})
 }
 
 func TestP47CancelRecordingSessionAllowsStoppedUnsavedSession(t *testing.T) {
@@ -1155,6 +1542,7 @@ func TestP47StopRecordingSessionFinalizesPersistedDraftWhenBrowserAlreadyStopped
 		}).Error; err != nil {
 		t.Fatalf("seed persisted draft actions: %v", err)
 	}
+	fakeRuntime.markInPageStopped(sessionID)
 	sessionPath := fmt.Sprintf(
 		"/api/v1/projects/%d/versions/%d/pages/%d/recording-session/%s",
 		project.ID, version.ID, page.ID, sessionID,
@@ -1175,6 +1563,57 @@ func TestP47StopRecordingSessionFinalizesPersistedDraftWhenBrowserAlreadyStopped
 		"actions_json": "#create-order",
 		"action_count": float64(1),
 	})
+	fakeRuntime.requireAcknowledgedStoppedSession(t, sessionID)
+}
+
+func TestP47StopRecordingSessionIsIdempotentForStoppedZeroActionLoginSession(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	fakeRuntime := newContractP45Runtime()
+	fakeRuntime.stopPublishesPending = true
+	env.installProjectAuthRuntimeFake(t, fakeRuntime)
+
+	start := env.startPageRecordingSession(t, project.ID, version.ID, page.ID, map[string]any{
+		"recording_kind": "login_flow",
+		"auth_context":   "clean",
+		"target_url":     "https://example.invalid/login",
+	})
+	env.requireStatus(t, start, http.StatusOK)
+	sessionID := strings.TrimSpace(fmt.Sprint(env.decodeObject(t, start)["recording_session_id"]))
+	sessionPath := fmt.Sprintf(
+		"/api/v1/projects/%d/versions/%d/pages/%d/recording-session/%s",
+		project.ID, version.ID, page.ID, sessionID,
+	)
+
+	firstStop := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/stop", map[string]any{
+		"dom_snapshot": map[string]any{"title": "persisted zero-action login stop"},
+	}, "")
+	env.requireStatus(t, firstStop, http.StatusOK)
+	firstBody := env.decodeObject(t, firstStop)
+	if firstBody["status"] != "stopped" || firstBody["action_count"] != float64(0) {
+		t.Fatalf("first zero-action stop = %v, want stopped zero-action session", firstBody)
+	}
+	beforeRetry := env.latestP47RecordingSessionRow(t, project.ID, version.ID, page.ID)
+	persistedSnapshot := strings.TrimSpace(fmt.Sprint(p47RowValue(beforeRetry, "dom_snapshot")))
+
+	// A response may be lost after persistence. Recreate a same-scope pending
+	// result to prove the retry only acknowledges it rather than stopping again.
+	fakeRuntime.markInPageStopped(sessionID)
+	retryStop := env.p47JSONRequest(t, http.MethodPost, sessionPath+"/stop", map[string]any{
+		"dom_snapshot": map[string]any{"title": "must not overwrite persisted stop"},
+	}, "")
+	env.requireStatus(t, retryStop, http.StatusOK)
+	retryBody := env.decodeObject(t, retryStop)
+	if retryBody["status"] != "stopped" || retryBody["action_count"] != float64(0) {
+		t.Fatalf("idempotent stop retry = %v, want stopped zero-action session", retryBody)
+	}
+	fakeRuntime.requireAcknowledgedStoppedSession(t, sessionID)
+	fakeRuntime.requireEvents(t, "new_clean_context", "open_target_url", "start_recording", "stop_recording")
+
+	row := env.latestP47RecordingSessionRow(t, project.ID, version.ID, page.ID)
+	if got := strings.TrimSpace(fmt.Sprint(p47RowValue(row, "dom_snapshot"))); got != persistedSnapshot {
+		t.Fatalf("idempotent stop retry changed persisted DOM snapshot: got %q want %q", got, persistedSnapshot)
+	}
 }
 
 func TestP47CancelledFailedAndInvalidMetaDoNotReplacePageScript(t *testing.T) {
