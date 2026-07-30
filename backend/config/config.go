@@ -35,7 +35,9 @@ type DatabaseConfig struct {
 }
 
 type SecurityConfig struct {
-	LLMAPIKeyEncryptionKey string `json:"llm_api_key_encryption_key,omitempty" toml:"llm_api_key_encryption_key,omitempty"`
+	LLMAPIKeyEncryptionKey          string `json:"llm_api_key_encryption_key,omitempty" toml:"llm_api_key_encryption_key,omitempty"`
+	ProjectAuthStateEncryptionKey   string `json:"project_auth_state_encryption_key,omitempty" toml:"project_auth_state_encryption_key,omitempty"`
+	ProjectAuthStateEncryptionKeyID string `json:"project_auth_state_encryption_key_id,omitempty" toml:"project_auth_state_encryption_key_id,omitempty"`
 }
 
 type LLMConfig struct {

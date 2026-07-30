@@ -39,21 +39,23 @@ type MCPHTTPHandler interface {
 }
 
 type Handler struct {
-	db              storage.Store
-	browserManager  *browser.Manager
-	executor        *executor2.Executor // Executor 实例
-	config          *config.Config
-	llmManager      *llm.Manager
-	mcpServer       MCPHTTPHandler    // MCP 服务器（使用 interface{} 避免循环依赖）
-	agentManager    interface{}       // Agent 管理器（用于 LLM 配置更新后的热加载）
-	scheduler       interface{}       // 定时任务调度器
-	explorer        *browser.Explorer // AI 探索器
-	versionInfo     VersionInfo
-	testCaseRunner  *testCaseRunnerHolder
-	projectAuth     *projectAuthRuntimeHolder
-	playbotAgent    *playbotAgentHolder
-	playbotRuns     *playbotRunHub
-	llmConfigTester llmConfigTesterFunc
+	db                 storage.Store
+	browserManager     *browser.Manager
+	executor           *executor2.Executor // Executor 实例
+	config             *config.Config
+	llmManager         *llm.Manager
+	mcpServer          MCPHTTPHandler    // MCP 服务器（使用 interface{} 避免循环依赖）
+	agentManager       interface{}       // Agent 管理器（用于 LLM 配置更新后的热加载）
+	scheduler          interface{}       // 定时任务调度器
+	explorer           *browser.Explorer // AI 探索器
+	versionInfo        VersionInfo
+	testCaseRunner     *testCaseRunnerHolder
+	projectAuth        *projectAuthRuntimeHolder
+	recordingLifecycle *RecordingLifecycleService
+	recordingRecovery  *RecordingRecoveryCoordinator
+	playbotAgent       *playbotAgentHolder
+	playbotRuns        *playbotRunHub
+	llmConfigTester    llmConfigTesterFunc
 }
 
 type testCaseRunnerHolder struct {
@@ -74,7 +76,7 @@ func NewHandler(
 	llmMgr *llm.Manager,
 ) *Handler {
 	exec := executor2.NewExecutor(browserMgr)
-	return &Handler{
+	handler := &Handler{
 		db:             db,
 		browserManager: browserMgr,
 		executor:       exec, // 初始化 Executor
@@ -85,6 +87,10 @@ func NewHandler(
 		projectAuth:    newProjectAuthRuntimeHolder(newBrowserProjectAuthRuntime(browserMgr)),
 		playbotRuns:    newPlaybotRunHub(15*time.Minute, 200),
 	}
+	// The lifecycle service is an application-level owner. Its runtime is the
+	// forwarding holder, not a snapshot of the current Manager adapter.
+	handler.recordingLifecycle = NewRecordingLifecycleService(db.GormDB(), handler.ensureProjectAuthRuntimeHolder(), cfg)
+	return handler
 }
 
 func newTestCaseRunnerHolder(runner any) *testCaseRunnerHolder {
@@ -115,6 +121,27 @@ func (h *Handler) ensureProjectAuthRuntimeHolder() *projectAuthRuntimeHolder {
 
 func (h *Handler) SetProjectAuthRuntimeForTest(runtime any) {
 	h.ensureProjectAuthRuntimeHolder().set(adaptInjectedProjectAuthRuntime(runtime))
+}
+
+func (h *Handler) ensureRecordingLifecycleService() *RecordingLifecycleService {
+	if h.recordingLifecycle == nil {
+		h.recordingLifecycle = NewRecordingLifecycleService(h.db.GormDB(), h.ensureProjectAuthRuntimeHolder(), h.config)
+	}
+	return h.recordingLifecycle
+}
+
+func (h *Handler) ensureRecordingRecoveryCoordinator() *RecordingRecoveryCoordinator {
+	if h.recordingRecovery == nil {
+		h.recordingRecovery = NewRecordingRecoveryCoordinator(h.ensureRecordingLifecycleService(), h.browserManager)
+	}
+	return h.recordingRecovery
+}
+
+// StartRecordingLifecycle wires runtime events and one startup recovery pass
+// after the store and browser Manager have been constructed. It is intentionally
+// separate from router creation so test runtime replacement remains dynamic.
+func (h *Handler) StartRecordingLifecycle(ctx context.Context) {
+	h.ensureRecordingRecoveryCoordinator().Start(ctx)
 }
 
 func (h *Handler) SetLLMConfigTesterForTest(tester func(context.Context, *models.LLMConfigModel) (map[string]any, error)) {

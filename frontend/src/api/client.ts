@@ -647,19 +647,6 @@ export const api = {
   getCurrentBrowserInstance: () =>
     client.get<{ instance: BrowserInstance }>('/browser/instances/current'),
 
-  // 录制相关
-  startRecording: (instanceId?: string) =>
-    client.post<{ message: string }>('/browser/record/start', { instance_id: instanceId }),
-
-  stopRecording: () =>
-    client.post<{ message: string; actions: ScriptAction[]; count: number }>('/browser/record/stop'),
-
-  getRecordingStatus: () =>
-    client.get<{ is_recording: boolean; start_url?: string; start_time?: string; duration?: number; actions?: ScriptAction[]; count?: number }>('/browser/record/status'),
-
-  clearInPageRecordingState: () =>
-    client.post<{ success: boolean }>('/browser/record/clear-state'),
-
   // 脚本相关
   getScripts: (params?: { page?: number; page_size?: number; group?: string; tag?: string; is_builtin?: string }) =>
     client.get<{ scripts: Script[]; total: number; page: number; page_size: number; builtin_count: number; user_count: number }>('/scripts', { params }),

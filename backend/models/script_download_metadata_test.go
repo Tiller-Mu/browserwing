@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -83,5 +84,38 @@ func TestSanitizeRecordingDownloadURLRedactsCompoundCredentialQueryKeys(t *testi
 	const safeURL = "https://example.invalid/export.csv?format=csv&keynote=agenda&page=2"
 	if got := SanitizeRecordingDownloadURL(safeURL); got != safeURL {
 		t.Fatalf("SanitizeRecordingDownloadURL(%q) = %q, want safe query unchanged", safeURL, got)
+	}
+}
+
+func TestNormalizeRecordingActionsJSONCanonicalizesSparseAndGoZeroValues(t *testing.T) {
+	sparse := []byte(`[{"type":"click","selector":"#save"}]`)
+	runtime, err := json.Marshal([]ScriptAction{{Type: "click", Selector: "#save"}})
+	if err != nil {
+		t.Fatalf("marshal runtime action: %v", err)
+	}
+
+	normalizedSparse, _, err := NormalizeRecordingActionsJSON(sparse)
+	if err != nil {
+		t.Fatalf("normalize sparse action: %v", err)
+	}
+	normalizedRuntime, _, err := NormalizeRecordingActionsJSON(runtime)
+	if err != nil {
+		t.Fatalf("normalize runtime action: %v", err)
+	}
+	if normalizedRuntime != normalizedSparse {
+		t.Fatalf("normalized runtime action = %s, want sparse form %s", normalizedRuntime, normalizedSparse)
+	}
+
+	dom := json.RawMessage(`{"schema_version":1,"kind":"semantic_dom_snapshot","url":"https://example.invalid/save","title":"Save","elements":[]}`)
+	sparseFingerprint, err := RecordingDraftFingerprintV1(sparse, dom)
+	if err != nil {
+		t.Fatalf("fingerprint sparse action: %v", err)
+	}
+	runtimeFingerprint, err := RecordingDraftFingerprintV1(runtime, dom)
+	if err != nil {
+		t.Fatalf("fingerprint runtime action: %v", err)
+	}
+	if runtimeFingerprint != sparseFingerprint {
+		t.Fatalf("runtime fingerprint = %s, want sparse fingerprint %s", runtimeFingerprint, sparseFingerprint)
 	}
 }

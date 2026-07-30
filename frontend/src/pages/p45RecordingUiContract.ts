@@ -3,11 +3,15 @@ import type {
   P45RecordingKind,
   P45RecordingMeta,
   PageRecordingDetail,
-  CaptureProjectAuthStateRequest,
   ProjectAuthStateSummary,
   SavePageRecordingRequest,
   TestPage,
 } from '../api/project';
+import {
+  type RecordingOperationLedger,
+  recordingOperationFailureIsTerminal,
+  startRecordingOperationKey,
+} from './recordingLifecycleOperationLedger';
 
 export interface P45AuthStateSummaryView {
   id: number;
@@ -34,7 +38,7 @@ export interface P45PageManagementRowView {
 }
 
 export interface P45AuthStateActionView {
-  kind: 'capture_project_auth_state' | 'delete_project_auth_state';
+  kind: 'delete_project_auth_state';
   disabled?: boolean;
 }
 
@@ -104,7 +108,6 @@ export function buildP45PageManagementView(input: {
     layout: 'table',
     authState: input.authState,
     authStateActions: [
-      { kind: 'capture_project_auth_state' },
       { kind: 'delete_project_auth_state', disabled: !input.authState },
     ],
     rows: input.pages.map((page) => ({
@@ -148,23 +151,10 @@ export function createP45AuthStateController(options: {
   projectId: number;
   versionId: number;
   api: {
-    captureProjectAuthState: (
-      projectId: number,
-      versionId: number,
-      payload: CaptureProjectAuthStateRequest,
-    ) => Promise<{ data: { auth_state: ProjectAuthStateSummary | null } }>;
     deleteProjectAuthState: (projectId: number, versionId: number) => Promise<unknown>;
   };
 }) {
   return {
-    async capture(input: CaptureProjectAuthStateRequest = {}) {
-      const response = await options.api.captureProjectAuthState(options.projectId, options.versionId, {
-        name: '项目登录态',
-        replace: true,
-        ...input,
-      });
-      return buildP45AuthStateSummary(response.data.auth_state);
-    },
     async remove() {
       await options.api.deleteProjectAuthState(options.projectId, options.versionId);
       return null;
@@ -175,12 +165,15 @@ export function createP45AuthStateController(options: {
 export function createP45RecordingController(options: {
   projectId: number;
   versionId: number;
+  operationLedger: RecordingOperationLedger;
+  browserInstanceId?: string;
+  runtimePageIDFor?: (pageId: number) => string;
   api: {
     startPageRecordingSession: (
       projectId: number,
       versionId: number,
       pageId: number,
-      payload: { recording_kind: P45RecordingKind; auth_context: P45AuthContext; target_url?: string },
+		payload: { operation_id: string; recording_kind: P45RecordingKind; auth_context: P45AuthContext; target_url?: string; browser_instance_id: string; runtime_page_id: string },
     ) => Promise<{
       data?: {
         error?: string;
@@ -206,13 +199,22 @@ export function createP45RecordingController(options: {
       targetUrl?: string;
     }) {
       const targetUrl = input.targetUrl?.trim();
-      const startPayload: { recording_kind: P45RecordingKind; auth_context: P45AuthContext; target_url?: string } = {
+	  const acceptedTargetURL = targetUrl && /^https?:\/\//i.test(targetUrl) ? targetUrl : undefined;
+      const browserInstanceId = options.browserInstanceId || 'default';
+      const runtimePageId = options.runtimePageIDFor?.(input.pageId) || `project-page:${input.pageId}`;
+      const operationKey = startRecordingOperationKey({
+        projectId: String(options.projectId),
+        versionId: String(options.versionId),
+        pageId: String(input.pageId),
+        recordingKind: input.recordingKind,
+      });
+      const startPayload = options.operationLedger.prepare(operationKey, {
         recording_kind: input.recordingKind,
         auth_context: input.authContext,
-      };
-      if (targetUrl && /^https?:\/\//i.test(targetUrl)) {
-        startPayload.target_url = targetUrl;
-      }
+		target_url: acceptedTargetURL,
+        browser_instance_id: browserInstanceId,
+        runtime_page_id: runtimePageId,
+      }).payload;
       let response: Awaited<ReturnType<typeof options.api.startPageRecordingSession>>;
       try {
         response = await options.api.startPageRecordingSession(options.projectId, options.versionId, input.pageId, startPayload);
@@ -239,10 +241,12 @@ export function createP45RecordingController(options: {
           activeSessionData.recording_meta?.recording_kind !== input.recordingKind ||
           activeSessionData.recording_meta?.auth_context !== input.authContext
         ) {
+          if (recordingOperationFailureIsTerminal(error)) options.operationLedger.settle(operationKey);
           throw error;
         }
         response = { data: activeSessionData };
       }
+      options.operationLedger.settle(operationKey);
       const data = response.data;
       const recordingKind = data?.recording_meta?.recording_kind || input.recordingKind;
       const authContext = data?.recording_meta?.auth_context || input.authContext;
@@ -265,13 +269,13 @@ export function createP45RecordingController(options: {
 }
 
 export function buildP45SaveRecordingPayload(input: {
-  name: string;
+	name: string;
   actionTrace: string;
   domSnapshot: string;
   recordingMeta: P45RecordingMeta;
   recordingSessionId?: string | null;
   retainAuthSnapshot?: boolean;
-}): SavePageRecordingRequest {
+}): Omit<SavePageRecordingRequest, 'operation_id'> {
   return {
     name: input.name,
     action_trace: input.actionTrace,

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/browserwing/browserwing/config"
 	"github.com/browserwing/browserwing/models"
@@ -17,31 +16,60 @@ import (
 
 // ProjectHandlers 包含了项目和版本相关的 API 处理器
 type ProjectHandlers struct {
-	store                storage.Store
-	config               *config.Config
-	testCaseRunner       *testCaseRunnerHolder
-	projectAuth          *projectAuthRuntimeHolder
-	playbotAgent         *playbotAgentHolder
-	playbotRuns          *playbotRunHub
-	recordingLifecycleMu sync.Mutex
+	store          storage.Store
+	config         *config.Config
+	testCaseRunner *testCaseRunnerHolder
+	projectAuth    *projectAuthRuntimeHolder
+	lifecycle      *RecordingLifecycleService
+	recovery       *RecordingRecoveryCoordinator
+	playbotAgent   *playbotAgentHolder
+	playbotRuns    *playbotRunHub
 }
 
 // NewProjectHandlers 创建处理器实例
-func NewProjectHandlers(store storage.Store, cfg *config.Config, runnerHolder *testCaseRunnerHolder, authHolder *projectAuthRuntimeHolder, agentHolder *playbotAgentHolder, runHub *playbotRunHub) *ProjectHandlers {
+func NewProjectHandlers(store storage.Store, cfg *config.Config, runnerHolder *testCaseRunnerHolder, authHolder *projectAuthRuntimeHolder, agentHolder *playbotAgentHolder, runHub *playbotRunHub, lifecycle *RecordingLifecycleService, recovery ...*RecordingRecoveryCoordinator) *ProjectHandlers {
 	var holder *testCaseRunnerHolder
 	holder = runnerHolder
+	var coordinator *RecordingRecoveryCoordinator
+	if len(recovery) > 0 {
+		coordinator = recovery[0]
+	}
 	return &ProjectHandlers{
 		store:          store,
 		config:         cfg,
 		testCaseRunner: holder,
 		projectAuth:    authHolder,
+		lifecycle:      lifecycle,
+		recovery:       coordinator,
 		playbotAgent:   agentHolder,
 		playbotRuns:    runHub,
 	}
 }
 
+func (h *ProjectHandlers) recordingRecoveryCoordinator() *RecordingRecoveryCoordinator {
+	if h.recovery != nil {
+		return h.recovery
+	}
+	return NewRecordingRecoveryCoordinator(h.recordingLifecycleService(), nil)
+}
+
 func (h *ProjectHandlers) gormDB() *gorm.DB {
 	return h.store.GormDB()
+}
+
+func (h *ProjectHandlers) writeRecordingLifecycleResult(c *gin.Context, result recordingLifecycleResult, err error) {
+	if err == nil {
+		c.JSON(result.Status, result.Body)
+		return
+	}
+	if lifecycle, ok := err.(*recordingLifecycleError); ok {
+		if lifecycle.RetryAfter > 0 {
+			c.Header("Retry-After", strconv.Itoa(lifecycle.RetryAfter))
+		}
+		c.JSON(lifecycle.Status, gin.H{"error": lifecycle.Detail, "code": lifecycle.Code})
+		return
+	}
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "recording lifecycle failed", "code": "recording_lifecycle_store_failed"})
 }
 
 func (h *ProjectHandlers) ListProjects(c *gin.Context) {
@@ -227,6 +255,10 @@ func (h *ProjectHandlers) CloneVersion(c *gin.Context) {
 	}
 
 	tx := h.gormDB().Begin()
+	if tx.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start clone transaction"})
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			tx.Rollback()
@@ -240,6 +272,11 @@ func (h *ProjectHandlers) CloneVersion(c *gin.Context) {
 		return
 	}
 
+	rollbackStoreFailure := func() {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clone version"})
+	}
+
 	// 1. 创建新版本
 	newVersion := models.ProjectVersion{
 		ProjectID:   sourceVersion.ProjectID,
@@ -247,14 +284,17 @@ func (h *ProjectHandlers) CloneVersion(c *gin.Context) {
 		Description: "Cloned from " + sourceVersion.VersionName,
 	}
 	if err := tx.Create(&newVersion).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		rollbackStoreFailure()
 		return
 	}
 
 	// 2. 深度克隆 Pages
 	var pages []models.TestPage
-	tx.Where("version_id = ?", sourceVersion.ID).Find(&pages)
+	if err := tx.Where("version_id = ?", sourceVersion.ID).Find(&pages).Error; err != nil {
+		rollbackStoreFailure()
+		return
+	}
+	normalizer := NewRecordingNormalizer()
 
 	for _, p := range pages {
 		newPage := models.TestPage{
@@ -263,25 +303,51 @@ func (h *ProjectHandlers) CloneVersion(c *gin.Context) {
 			Path:        p.Path,
 			Description: p.Description,
 		}
-		tx.Create(&newPage)
+		if err := tx.Create(&newPage).Error; err != nil {
+			rollbackStoreFailure()
+			return
+		}
 
 		// 3. 深度克隆 PageScripts
 		var scripts []models.PageScript
-		tx.Where("page_id = ?", p.ID).Find(&scripts)
+		if err := tx.Where("page_id = ?", p.ID).Find(&scripts).Error; err != nil {
+			rollbackStoreFailure()
+			return
+		}
 		for _, s := range scripts {
-			newScript := models.PageScript{
-				PageID:            newPage.ID,
-				Name:              s.Name,
-				ActionTrace:       s.ActionTrace,
-				DOMSnapshot:       s.DOMSnapshot,
-				RecordingMetaJSON: s.RecordingMetaJSON,
+			normalized, err := normalizer.NormalizePageScript(s)
+			if err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusUnprocessableEntity, gin.H{
+					"error":                 "recording source is invalid",
+					"code":                  "recording_source_invalid",
+					"source_page_id":        p.ID,
+					"source_page_script_id": s.ID,
+					"reason":                "page_script_normalization_failed",
+				})
+				return
 			}
-			tx.Create(&newScript)
+			newScript := models.PageScript{
+				PageID:                newPage.ID,
+				Name:                  s.Name,
+				ActionTrace:           normalized.ActionsJSON,
+				DOMSnapshot:           normalized.DOMSnapshot,
+				RecordingMetaJSON:     normalized.RecordingMetaJSON,
+				PageScriptContentHash: normalized.PageScriptContentHash,
+				NormalizerVersion:     normalized.NormalizerVersion,
+			}
+			if err := tx.Create(&newScript).Error; err != nil {
+				rollbackStoreFailure()
+				return
+			}
 		}
 
 		// 4. 深度克隆 TestCases
 		var cases []models.TestCase
-		tx.Where("page_id = ?", p.ID).Find(&cases)
+		if err := tx.Where("page_id = ?", p.ID).Find(&cases).Error; err != nil {
+			rollbackStoreFailure()
+			return
+		}
 		for _, c1 := range cases {
 			newCase := models.TestCase{
 				PageID:        newPage.ID,
@@ -291,7 +357,10 @@ func (h *ProjectHandlers) CloneVersion(c *gin.Context) {
 				ScriptContent: c1.ScriptContent,
 				Status:        c1.Status,
 			}
-			tx.Create(&newCase)
+			if err := tx.Create(&newCase).Error; err != nil {
+				rollbackStoreFailure()
+				return
+			}
 		}
 	}
 
@@ -379,58 +448,24 @@ func (h *ProjectHandlers) SavePageRecording(c *gin.Context) {
 	}
 
 	var req struct {
+		OperationID        string          `json:"operation_id"`
 		Name               string          `json:"name"`
-		ActionTrace        string          `json:"action_trace"`
-		DOMSnapshot        string          `json:"dom_snapshot"`
 		RecordingMeta      json.RawMessage `json:"recording_meta"`
 		RecordingSessionID string          `json:"recording_session_id"`
-		RetainAuthSnapshot bool            `json:"retain_auth_snapshot"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 		return
 	}
-	if strings.TrimSpace(req.RecordingSessionID) != "" {
-		h.saveRecordingSessionAsPageScript(c, projectID, versionID, pageID, req.RecordingSessionID, req.RecordingMeta, req.Name, req.RetainAuthSnapshot)
+	if strings.TrimSpace(req.RecordingSessionID) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "recording_session_id is required", "code": "legacy_recording_route_removed"})
 		return
 	}
-
-	recordingMetaJSON := ""
-	if len(req.RecordingMeta) > 0 && strings.TrimSpace(string(req.RecordingMeta)) != "null" {
-		var meta p45RecordingMeta
-		if err := json.Unmarshal(req.RecordingMeta, &meta); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "recording_meta JSON is invalid"})
-			return
-		}
-		if err := validateRecordingMeta(meta, false); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		normalizedMeta, err := json.Marshal(meta)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "recording_meta JSON is invalid"})
-			return
-		}
-		recordingMetaJSON = string(normalizedMeta)
-	}
-
-	newScript := models.PageScript{
-		PageID:            pageID,
-		Name:              req.Name,
-		ActionTrace:       req.ActionTrace,
-		DOMSnapshot:       req.DOMSnapshot,
-		RecordingMetaJSON: recordingMetaJSON,
-	}
-
-	if err := h.gormDB().Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("page_id = ?", pageID).Delete(&models.PageScript{}).Error; err != nil {
-			return err
-		}
-		return tx.Create(&newScript).Error
-	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	session, err := h.loadRecordingSessionByID(req.RecordingSessionID)
+	if err != nil || session.ProjectID != projectID || session.VersionID != versionID || session.PageID != pageID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "RecordingSession not found", "code": "recording_session_not_found"})
 		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "主流程录制保存成功", "script": newScript})
+	result, lifecycleErr := h.recordingLifecycleService().Save(c.Request.Context(), saveRecordingLifecycleInput{OperationID: req.OperationID, Session: session, Name: req.Name, RecordingMeta: req.RecordingMeta})
+	h.writeRecordingLifecycleResult(c, result, lifecycleErr)
 }

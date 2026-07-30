@@ -1,10 +1,31 @@
 package browser
 
 import (
+	"context"
 	"testing"
 
 	"github.com/browserwing/browserwing/models"
 )
+
+func TestPlayerRefusesToTypeRedactedSensitiveInput(t *testing.T) {
+	player := NewPlayer("en")
+	err := player.executeInput(context.Background(), nil, models.ScriptAction{
+		Type:           "input",
+		Value:          "{{REDACTED_SECRET}}",
+		SensitiveInput: true,
+	})
+	if err == nil || err.Error() != "recording_sensitive_input_unresolved" {
+		t.Fatalf("executeInput sensitive redaction error = %v", err)
+	}
+}
+
+func TestPlayerRefusesRedactedPlaceholderWithoutSensitiveMarker(t *testing.T) {
+	player := NewPlayer("en")
+	err := player.executeInput(context.Background(), nil, models.ScriptAction{Type: "input", Value: "{{REDACTED_SECRET}}"})
+	if err == nil || err.Error() != "recording_sensitive_input_unresolved" {
+		t.Fatalf("executeInput markerless redaction error = %v", err)
+	}
+}
 
 func TestEnsureReturn(t *testing.T) {
 	tests := []struct {

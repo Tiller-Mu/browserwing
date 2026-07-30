@@ -404,12 +404,16 @@ func loadRefinementPageContext(db *gorm.DB, pageID uint) (snapshot any, intentPl
 		}
 		return nil, nil, nil, fmt.Errorf("load page script context failed: %w", err)
 	}
+	normalized, normalizeErr := NewRecordingNormalizer().NormalizePageScript(script)
+	if normalizeErr != nil {
+		return nil, nil, []map[string]string{{"code": "recording_source_invalid", "message": "Latest page recording cannot be normalized safely"}}, nil
+	}
 
-	snapshot, err = parseOptionalContextJSON(script.DOMSnapshot)
+	snapshot, err = parseOptionalContextJSON(normalized.DOMSnapshot)
 	if err != nil {
 		warnings = append(warnings, map[string]string{"code": "invalid_snapshot", "message": "Latest page snapshot is not valid JSON"})
 	}
-	intentPlan, err = parseOptionalContextJSON(script.ActionTrace)
+	intentPlan, err = parseOptionalContextJSON(normalized.ActionsJSON)
 	if err != nil {
 		warnings = append(warnings, map[string]string{"code": "invalid_intent_plan", "message": "Latest action trace is not valid JSON"})
 	}

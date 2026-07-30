@@ -35,6 +35,7 @@ export const p45CleanBusinessRecordingSessionRequest = {
 } satisfies { recording_kind: P45RecordingKind; auth_context: P45AuthContext };
 
 export const p45SaveRecordingPayload: Parameters<typeof projectApi.savePageRecording>[3] = {
+  operation_id: '00000000-0000-4000-8000-000000000045',
   name: '业务主流程',
   action_trace: '{"steps":[]}',
   dom_snapshot: '{"elements":[]}',

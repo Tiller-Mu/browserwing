@@ -3508,7 +3508,7 @@ if (window.__browserwingRecorder__) {
 	};
 	
 	// 获取元素的可访问名称（Accessible Name）
-	var getAccessibleName = function(el) {
+	var getAccessibleName = function(el, includeCurrentValue) {
 		if (!el) return '';
 		
 		// 1. aria-label 优先级最高
@@ -3543,7 +3543,7 @@ if (window.__browserwingRecorder__) {
 		if (el.alt) return el.alt.trim();
 		
 		// 8. value 属性（按钮等）
-		if (el.value && (el.tagName === 'BUTTON' || el.tagName === 'INPUT')) {
+		if (includeCurrentValue !== false && el.value && (el.tagName === 'BUTTON' || el.tagName === 'INPUT')) {
 			return el.value.trim();
 		}
 		
@@ -3566,11 +3566,11 @@ if (window.__browserwingRecorder__) {
 	};
 	
 	// 推断操作对象
-	var inferObject = function(el) {
+	var inferObject = function(el, includeCurrentValue) {
 		if (!el) return 'element';
 		
 		// 优先使用可访问名称
-		var name = getAccessibleName(el);
+		var name = getAccessibleName(el, includeCurrentValue);
 		if (name) return name;
 		
 		// 使用 name 属性
@@ -3787,6 +3787,54 @@ if (window.__browserwingRecorder__) {
 	
 	// ============= 结束：语义信息提取辅助函数 =============
 	
+	// SensitiveInputPolicyV1 keeps credential-shaped values out of the recorder
+	// queue before they can reach sessionStorage, runtime receipts, or logs.
+	var REDACTED_SENSITIVE_INPUT = '{{REDACTED_SECRET}}';
+	var normalizeSensitiveInputHint = function(value) {
+		return String(value || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, '');
+	};
+	var sensitiveInputHintMatches = function(value) {
+		var normalized = normalizeSensitiveInputHint(value);
+		if (!normalized) return false;
+		var tokens = [
+			'password', 'passwd', 'pwd', 'secret', 'token', 'apikey', 'authorization', 'authcode', 'otp', 'onetimecode', 'verificationcode',
+			'密码', '口令', '验证码', '动态码', '校验码', '卡号', '银行卡', '安全码', 'cvv', 'cvc'
+		];
+		for (var index = 0; index < tokens.length; index++) {
+			if (normalized.indexOf(tokens[index]) !== -1) return true;
+		}
+		return false;
+	};
+	var isSensitiveInputElement = function(element) {
+		if (!element) return false;
+		var type = String(element.getAttribute && element.getAttribute('type') || element.type || '').toLowerCase();
+		if (type === 'password') return true;
+		var autocomplete = normalizeSensitiveInputHint(element.getAttribute && element.getAttribute('autocomplete'));
+		var sensitiveAutocomplete = ['currentpassword', 'newpassword', 'onetimecode', 'ccnumber', 'cccsc', 'ccexp', 'ccexpmonth', 'ccexpyear'];
+		for (var index = 0; index < sensitiveAutocomplete.length; index++) {
+			if (autocomplete === sensitiveAutocomplete[index]) return true;
+		}
+		var hints = [
+			element.getAttribute && element.getAttribute('name'),
+			element.id,
+			element.getAttribute && element.getAttribute('aria-label'),
+			element.getAttribute && element.getAttribute('placeholder')
+		];
+		for (var hintIndex = 0; hintIndex < hints.length; hintIndex++) {
+			if (sensitiveInputHintMatches(hints[hintIndex])) return true;
+		}
+		return false;
+	};
+	var redactSensitiveInputAction = function(action, element) {
+		if (!action || action.type !== 'input') return action;
+		if (!action.sensitive_input && !isSensitiveInputElement(element)) return action;
+		action.sensitive_input = true;
+		action.sensitive_input_policy_version = 1;
+		action.value = REDACTED_SENSITIVE_INPUT;
+		if (action.accessibility) action.accessibility.value = REDACTED_SENSITIVE_INPUT;
+		return action;
+	};
+
 	// 为操作添加语义信息（Intent, Accessibility, Context, Evidence）
 	var enrichActionWithSemantics = function(action, element, eventType) {
 		if (!element) return action;
@@ -3798,18 +3846,28 @@ if (window.__browserwingRecorder__) {
 				selectors = getSelector(element);
 			}
 			
+			// Sensitive controls must never use their live value as a semantic
+			// fallback.  Password inputs without labels used to leak through both
+			// accessibility.name and intent.object here.
+			var sensitiveInput = !!action.sensitive_input || isSensitiveInputElement(element);
+
 			// 1. 填充 Intent（操作意图）
 			action.intent = {
 				verb: inferVerb(eventType, element),
-				object: inferObject(element)
+				object: inferObject(element, !sensitiveInput)
 			};
 			
 			// 2. 填充 Accessibility（可访问性信息）
 			action.accessibility = {
 				role: getRole(element),
-				name: getAccessibleName(element),
-				value: element.value || ''
+				name: getAccessibleName(element, !sensitiveInput),
+				value: sensitiveInput ? REDACTED_SENSITIVE_INPUT : (element.value || '')
 			};
+			if (sensitiveInput) {
+				action.sensitive_input = true;
+				action.sensitive_input_policy_version = 1;
+				action.value = REDACTED_SENSITIVE_INPUT;
+			}
 			
 			// 3. 填充 Context（上下文信息）
 			action.context = {
@@ -3834,6 +3892,7 @@ if (window.__browserwingRecorder__) {
 	
 	// 记录操作的辅助函数（带去重）
 	var recordAction = function(action, element, eventType) {
+		action = redactSensitiveInputAction(action, element);
 		// 去重逻辑：检查最近的操作是否与当前操作重复
 		if (window.__recordedActions__.length > 0) {
 			var lastAction = window.__recordedActions__[window.__recordedActions__.length - 1];

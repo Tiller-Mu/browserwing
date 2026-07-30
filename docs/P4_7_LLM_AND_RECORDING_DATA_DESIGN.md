@@ -4,6 +4,8 @@
 
 P4.7 不直接做最终体验拉通，不做 P5 多用户成员权限。它解决的是底座问题：后续“页面录制 -> 智能生成用例”和 P5 权限隔离不能继续依赖分散的 LLM 入口、页面 `sessionStorage` 草稿或裸磁盘路径。
 
+> P4.7.6 已完成。本文早期 RecordingSession 描述如与下文 P4.7.6 收束条款冲突，以 P4.7.6 为准；HTTP Stop 已切换到与页面 runtime 相同的 Coordinator `recording_stopped` event 收口，本轮时序红测与定向、全量回归均已通过。
+
 ## 阶段协作要求
 
 P4.7 必须继续遵守项目契约流程，不能由开发者直接按本文档实现生产代码。
@@ -369,3 +371,31 @@ P4.7 收口时必须满足：
 - 至少完成一次人工或自动化冒烟：开始项目页面录制、同步动作、停止、保存 PageScript、确认旧 PageScript 替换行为。
 - `docs/DEVELOPMENT_PLAN.md` 已更新阶段状态。
 - `docs/CONTRACT_RECORDS.md` 只在审核通过后更新，不在规划阶段提前写入。
+
+## 十二、P4.7.6 录制生命周期收束（已完成）
+
+`RecordingLifecycleService` 是 Start、Sync、Stop、Save、Capture、Cancel 的唯一业务编排入口。HTTP handler 只解析参数、传递身份上下文、映射稳定错误码并序列化响应；HTTP Stop 必须委托 Coordinator，Coordinator 先建立 pending operation、再驱动 scoped runtime Stop，并只经 `recording_stopped` event 分支提交会话 `stopped`。Manager 只管理当前进程中的 runtime lease、receipt 和冻结登录态快照；Recorder 只采集；Playbot 只接收已固定、脱敏的 `recording_source`。
+
+### 12.1 持久化和并发
+
+- 每个动作强制全局 UUID `operation_id`。`RecordingOperation` 以 `pending|completed|failed` 保存 canonical request hash、scope、runtime effect 与脱敏响应/错误；相同 ID 重试重放，同 ID 不同请求冲突。
+- Start 使用 `starting` 中间状态：事务先写 pending operation、session、runtime target 身份和 `base_page_flow_revision`，runtime lease 成功后才转为 `recording`。Cancel 收口 `starting` 时同时终结原 Start operation。
+- Session 持久化变更均以 status + `lifecycle_revision` CAS；Sync 另以单调 `sync_revision` 和 payload hash 判断重放、过期与冲突。
+- PostgreSQL partial unique index 限制每个实例最多一个 `starting|recording` 会话，并限制同一 `runtime_effect_key` 最多一个 pending operation。
+- Save 比较 `TestPage.page_flow_revision` 与开始录制时基线；不一致返回 `page_script_replaced_conflict`，不会串行覆盖别人的主流程。已 saved 的旧 session 被后续录制替换后，新 Save 返回 `page_script_superseded`。
+- `draft_sync` 仅在 revision 严格大于持久化 `sync_revision` 时写入。`recording_stopped` receipt 的 revision 小于或等于当前草稿时只证明运行时停止，不能覆盖 ActionTrace、DOMSnapshot、RecordingMeta、draft hash 或 sync revision；它仅可通过 `source_receipt_id + artifact_fingerprint` 去重补充已净化的下载产物。
+
+### 12.2 receipt、恢复和登录态
+
+- Start、Stop、Capture 在 runtime side effect 前建立 pending operation。HTTP Stop 与页面/恢复 Stop 共享 Coordinator 的 `recording_stopped` event 收口；Coordinator 是生产路径中唯一调用 Stop 提交 `RecordingSession.stopped` 的入口。Stop final receipt 与 Capture auth snapshot 只有在数据库事务成功后 ACK；数据库故障保持 pending，不提前释放。
+- runtime receipt 具有 `available|claimed|acked|released|expired` 生命周期。claim 绑定完整 `RecordingStorageScope + operation_id + claim_generation`，过期可接管；ACK/Release 只消费仍匹配该三元身份的 receipt，取消或竞争失败释放而非采用 receipt。
+- Coordinator 对 runtime event 使用明确的 `Ack|Release|Retry` disposition，而不按错误码猜测。只有业务事务已提交才 ACK 或 Release；数据库、锁、CAS 可重试和上下文错误一律 Retry。scope mismatch 必须先持久化会话及 pending Start/Stop 的 `runtime_receipt_scope_mismatch` 失败，再 Release；已终态 tombstone 直接 ACK。
+- Start reservation 具有 `reserved|cancelling|running` 状态和可取消 context/done 信号。DB fence 每 10 秒续租；更高 generation 只能取消并等待旧 reserved driver 完成清理，绝不并行执行页面副作用；running target 仅复用并重绑定 fence。
+- pending Stop/Capture 只通过 `RecoverPendingOperation` 恢复；服务启动恢复器与相同 operation 重试必须调用该入口。Stop 在 runtime receipt 丢失时仅当 `IsRecoverableRecordingDraft` 满足结构/事实完整性才收口；未发布 Capture snapshot 在后端重启后终态失败为 `auth_snapshot_unavailable`。
+- `ProjectAuthState` 反向记录 source session 与唯一 snapshot receipt，不在 `RecordingSession` 写资产指针。登录态以单一活动 AES-256-GCM key 加密；AAD 绑定用途、state ID、项目、加密版本与 key ID。部署需显式执行 `backend/storage/migrations/20260724_p476_project_auth_state_ciphertext.sql` 清除旧 `state_json` 明文并标记旧资产 `invalid`，应用启动不会静默清理。
+
+### 12.3 Normalizer 与下游边界
+
+`RecordingNormalizer` 是 Sync、Stop、Save、历史 PageScript 和 Playbot 输入的唯一规范化 seam。它产出持久化 PageScript 视图及从该结果派生的 `recording_source`，两者分别具有内容 hash 和 schema/version 标识。Cookie、Storage、密码、token、Authorization、本地路径、二进制、危险下载 URL 及附属不安全元数据不得进入 `recording_source`。AI generation job 必须持久化创建时的不可变 `recording_source`/hash；旧 PageScript 被替换或删除不得级联删除既有生成任务、TestCase 或执行记录。
+
+Save 的 candidate 必须在事务锁外生成，并同时保存 session lifecycle revision 和 draft hash；锁内发现 Stop 已改变草稿或初读 `recording` 已转为 `stopped` 时退出并重算，禁止发布零值 candidate。前端 operation ledger 通过 `prepare(key, canonicalPayload)` 冻结深拷贝请求；相同输入复用原 operation ID 与 payload，输入变化本地返回 `recording_operation_input_changed`，不发 HTTP。

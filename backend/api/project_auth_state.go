@@ -18,6 +18,7 @@ import (
 	"github.com/browserwing/browserwing/pkg/logger"
 	"github.com/browserwing/browserwing/services/browser"
 	"github.com/gin-gonic/gin"
+	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 	"gorm.io/gorm"
 )
@@ -30,6 +31,8 @@ const (
 )
 
 var errRecordingSessionStorageSnapshotUnavailable = errors.New("recording session storage snapshot is unavailable")
+var errProjectRecordingStartInProgress = errors.New("project recording start is already in progress")
+var errProjectRecordingStopInProgress = errors.New("project recording stop is already in progress")
 
 type projectAuthRuntime interface {
 	CaptureProjectAuthState(context.Context, map[string]any) (map[string]any, error)
@@ -39,6 +42,8 @@ type projectAuthRuntime interface {
 	ActivePageRecording() (recordingSessionID string, active bool)
 	PendingStoppedPageRecording() (recordingSessionID string, pending bool)
 	AcknowledgeStoppedPageRecording(context.Context, map[string]any)
+	DiscardStoppedPageRecording(context.Context, map[string]any)
+	ReleaseRecordingSessionResources(context.Context, map[string]any)
 	AcknowledgeProjectAuthStateCapture(context.Context, map[string]any)
 	DiscardProjectAuthStateCapture(context.Context, map[string]any)
 	HasProjectAuthStateCapture(context.Context, map[string]any) bool
@@ -67,11 +72,79 @@ func (h *projectAuthRuntimeHolder) get() projectAuthRuntime {
 	return h.runtime
 }
 
+// The lifecycle service is long-lived.  Forward every call through the holder
+// instead of retaining the runtime present when the router was built, so test
+// replacement and Manager recreation are observed without creating a second
+// business orchestrator.
+func (h *projectAuthRuntimeHolder) CaptureProjectAuthState(ctx context.Context, input map[string]any) (map[string]any, error) {
+	return h.runtimeOrUnavailable().CaptureProjectAuthState(ctx, input)
+}
+func (h *projectAuthRuntimeHolder) SaveProjectAuthState(ctx context.Context, input map[string]any) error {
+	return h.runtimeOrUnavailable().SaveProjectAuthState(ctx, input)
+}
+func (h *projectAuthRuntimeHolder) StartPageRecording(ctx context.Context, input map[string]any) (map[string]any, error) {
+	return h.runtimeOrUnavailable().StartPageRecording(ctx, input)
+}
+func (h *projectAuthRuntimeHolder) StopPageRecording(ctx context.Context, input map[string]any) (map[string]any, error) {
+	return h.runtimeOrUnavailable().StopPageRecording(ctx, input)
+}
+func (h *projectAuthRuntimeHolder) ActivePageRecording() (string, bool) {
+	return h.runtimeOrUnavailable().ActivePageRecording()
+}
+func (h *projectAuthRuntimeHolder) PendingStoppedPageRecording() (string, bool) {
+	return h.runtimeOrUnavailable().PendingStoppedPageRecording()
+}
+func (h *projectAuthRuntimeHolder) AcknowledgeStoppedPageRecording(ctx context.Context, input map[string]any) {
+	h.runtimeOrUnavailable().AcknowledgeStoppedPageRecording(ctx, input)
+}
+func (h *projectAuthRuntimeHolder) DiscardStoppedPageRecording(ctx context.Context, input map[string]any) {
+	h.runtimeOrUnavailable().DiscardStoppedPageRecording(ctx, input)
+}
+func (h *projectAuthRuntimeHolder) ReleaseRecordingSessionResources(ctx context.Context, input map[string]any) {
+	h.runtimeOrUnavailable().ReleaseRecordingSessionResources(ctx, input)
+}
+func (h *projectAuthRuntimeHolder) AcknowledgeProjectAuthStateCapture(ctx context.Context, input map[string]any) {
+	h.runtimeOrUnavailable().AcknowledgeProjectAuthStateCapture(ctx, input)
+}
+func (h *projectAuthRuntimeHolder) DiscardProjectAuthStateCapture(ctx context.Context, input map[string]any) {
+	h.runtimeOrUnavailable().DiscardProjectAuthStateCapture(ctx, input)
+}
+func (h *projectAuthRuntimeHolder) HasProjectAuthStateCapture(ctx context.Context, input map[string]any) bool {
+	return h.runtimeOrUnavailable().HasProjectAuthStateCapture(ctx, input)
+}
+func (h *projectAuthRuntimeHolder) PrepareTestExecution(ctx context.Context, input map[string]any) error {
+	return h.runtimeOrUnavailable().PrepareTestExecution(ctx, input)
+}
+func (h *projectAuthRuntimeHolder) RestoreProjectAuthState(ctx context.Context, input map[string]any) error {
+	return h.runtimeOrUnavailable().RestoreProjectAuthState(ctx, input)
+}
+
+// These optional lookups are intentionally forwarded by the holder rather
+// than captured when LifecycleService is constructed. Recovery must observe a
+// replacement Manager/runtime in tests and after runtime recreation, while
+// remaining scoped to the session-bound identity.
+func (h *projectAuthRuntimeHolder) HasActivePageRecordingScope(ctx context.Context, input map[string]any) bool {
+	locator, ok := h.get().(recordingRuntimeScopeLocator)
+	return ok && locator.HasActivePageRecordingScope(ctx, input)
+}
+
+func (h *projectAuthRuntimeHolder) HasPendingStoppedPageRecordingScope(ctx context.Context, input map[string]any) bool {
+	locator, ok := h.get().(recordingRuntimeScopeLocator)
+	return ok && locator.HasPendingStoppedPageRecordingScope(ctx, input)
+}
+
+func (h *projectAuthRuntimeHolder) runtimeOrUnavailable() projectAuthRuntime {
+	if runtime := h.get(); runtime != nil {
+		return runtime
+	}
+	return unavailableProjectAuthRuntime{}
+}
+
 func (h *ProjectHandlers) projectAuthRuntime() projectAuthRuntime {
 	if h.projectAuth == nil {
 		return nil
 	}
-	return h.projectAuth.get()
+	return h.projectAuth
 }
 
 type injectedProjectAuthRuntime struct {
@@ -124,8 +197,57 @@ func (r *injectedProjectAuthRuntime) PendingStoppedPageRecording() (string, bool
 	return recordingSessionID, pending
 }
 
+func (r *injectedProjectAuthRuntime) HasActivePageRecordingScope(ctx context.Context, input map[string]any) bool {
+	return r.invokeScopedRuntimeLookup("HasActivePageRecordingScope", ctx, input)
+}
+
+func (r *injectedProjectAuthRuntime) HasPendingStoppedPageRecordingScope(ctx context.Context, input map[string]any) bool {
+	return r.invokeScopedRuntimeLookup("HasPendingStoppedPageRecordingScope", ctx, input)
+}
+
+func (r *injectedProjectAuthRuntime) invokeScopedRuntimeLookup(name string, ctx context.Context, input map[string]any) bool {
+	if locator, ok := r.target.(recordingRuntimeScopeLocator); ok {
+		switch name {
+		case "HasActivePageRecordingScope":
+			return locator.HasActivePageRecordingScope(ctx, input)
+		case "HasPendingStoppedPageRecordingScope":
+			return locator.HasPendingStoppedPageRecordingScope(ctx, input)
+		}
+	}
+	method := reflect.ValueOf(r.target).MethodByName(name)
+	if !method.IsValid() || method.Type().NumIn() != 2 || method.Type().NumOut() != 1 || method.Type().Out(0).Kind() != reflect.Bool {
+		return false
+	}
+	if !reflect.TypeOf(ctx).AssignableTo(method.Type().In(0)) || !reflect.TypeOf(input).AssignableTo(method.Type().In(1)) {
+		return false
+	}
+	return method.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(input)})[0].Bool()
+}
+
 func (r *injectedProjectAuthRuntime) AcknowledgeStoppedPageRecording(ctx context.Context, input map[string]any) {
 	method := reflect.ValueOf(r.target).MethodByName("AcknowledgeStoppedPageRecording")
+	if !method.IsValid() || method.Type().NumIn() != 2 || method.Type().NumOut() != 0 {
+		return
+	}
+	if !reflect.TypeOf(ctx).AssignableTo(method.Type().In(0)) || !reflect.TypeOf(input).AssignableTo(method.Type().In(1)) {
+		return
+	}
+	method.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(input)})
+}
+
+func (r *injectedProjectAuthRuntime) DiscardStoppedPageRecording(ctx context.Context, input map[string]any) {
+	method := reflect.ValueOf(r.target).MethodByName("DiscardStoppedPageRecording")
+	if !method.IsValid() || method.Type().NumIn() != 2 || method.Type().NumOut() != 0 {
+		return
+	}
+	if !reflect.TypeOf(ctx).AssignableTo(method.Type().In(0)) || !reflect.TypeOf(input).AssignableTo(method.Type().In(1)) {
+		return
+	}
+	method.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(input)})
+}
+
+func (r *injectedProjectAuthRuntime) ReleaseRecordingSessionResources(ctx context.Context, input map[string]any) {
+	method := reflect.ValueOf(r.target).MethodByName("ReleaseRecordingSessionResources")
 	if !method.IsValid() || method.Type().NumIn() != 2 || method.Type().NumOut() != 0 {
 		return
 	}
@@ -238,6 +360,12 @@ func (unavailableProjectAuthRuntime) PendingStoppedPageRecording() (string, bool
 func (unavailableProjectAuthRuntime) AcknowledgeStoppedPageRecording(context.Context, map[string]any) {
 }
 
+func (unavailableProjectAuthRuntime) DiscardStoppedPageRecording(context.Context, map[string]any) {
+}
+
+func (unavailableProjectAuthRuntime) ReleaseRecordingSessionResources(context.Context, map[string]any) {
+}
+
 func (unavailableProjectAuthRuntime) AcknowledgeProjectAuthStateCapture(context.Context, map[string]any) {
 }
 
@@ -257,6 +385,7 @@ func (unavailableProjectAuthRuntime) RestoreProjectAuthState(context.Context, ma
 }
 
 type captureProjectAuthStateRequest struct {
+	OperationID        string   `json:"operation_id"`
 	Name               string   `json:"name"`
 	CapturedPageID     uint     `json:"captured_page_id"`
 	CapturedURL        string   `json:"captured_url"`
@@ -267,10 +396,12 @@ type captureProjectAuthStateRequest struct {
 }
 
 type startPageRecordingSessionRequest struct {
+	OperationID       string `json:"operation_id"`
 	RecordingKind     string `json:"recording_kind"`
 	AuthContext       string `json:"auth_context"`
 	TargetURL         string `json:"target_url"`
 	BrowserInstanceID string `json:"browser_instance_id"`
+	RuntimePageID     string `json:"runtime_page_id"`
 }
 
 type p45RecordingMeta struct {
@@ -309,8 +440,7 @@ func (h *ProjectHandlers) CaptureProjectAuthState(c *gin.Context) {
 	if !ok {
 		return
 	}
-	version, err := h.loadProjectVersion(projectID, versionID)
-	if err != nil {
+	if _, err := h.loadProjectVersion(projectID, versionID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project or version not found"})
 		return
 	}
@@ -320,110 +450,18 @@ func (h *ProjectHandlers) CaptureProjectAuthState(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 		return
 	}
-	if req.CapturedPageID != 0 {
-		if _, err := h.loadPageInVersion(versionID, req.CapturedPageID); err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Project, version, or page not found"})
-			return
-		}
-	}
 	recordingSessionID := strings.TrimSpace(req.RecordingSessionID)
-	if req.RecordingSessionID != "" && recordingSessionID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "recording_session_id must not be blank",
-			"code":  "recording_session_id_invalid",
-		})
+	if recordingSessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "recording_session_id is required", "code": "recording_session_id_invalid"})
 		return
 	}
-	if recordingSessionID != "" {
-		h.recordingLifecycleMu.Lock()
-		defer h.recordingLifecycleMu.Unlock()
-
-		session, err := h.loadRecordingSessionByID(recordingSessionID)
-		if err != nil || session.ProjectID != projectID || session.VersionID != versionID || session.PageID != req.CapturedPageID {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "RecordingSession not found",
-				"code":  "recording_session_not_found",
-			})
-			return
-		}
-		if session.RecordingKind != recordingKindLoginFlow || session.AuthContext != authContextClean {
-			c.JSON(http.StatusConflict, gin.H{
-				"error": "RecordingSession cannot capture project auth state",
-				"code":  "recording_session_auth_capture_not_allowed",
-			})
-			return
-		}
-		if session.Status != "stopped" && session.Status != "saved" {
-			c.JSON(http.StatusConflict, gin.H{
-				"error": "RecordingSession is not ready to capture project auth state",
-				"code":  "recording_session_auth_capture_not_ready",
-			})
-			return
-		}
-	}
-	if req.Replace != nil && !*req.Replace {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "replace=false is not supported for Project auth state"})
+	session, err := h.loadRecordingSessionByID(recordingSessionID)
+	if err != nil || session.ProjectID != projectID || session.VersionID != versionID || (req.CapturedPageID != 0 && session.PageID != req.CapturedPageID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "RecordingSession not found", "code": "recording_session_not_found"})
 		return
 	}
-
-	runtime := h.projectAuthRuntime()
-	if runtime == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Project auth runtime is not configured"})
-		return
-	}
-
-	captureInput := map[string]any{
-		"project_id":           projectID,
-		"version_id":           versionID,
-		"base_url":             version.BaseURL,
-		"captured_page_id":     req.CapturedPageID,
-		"captured_url":         req.CapturedURL,
-		"origin_allowlist":     req.OriginAllowlist,
-		"browser_instance_id":  req.BrowserInstanceID,
-		"recording_session_id": recordingSessionID,
-	}
-	state, err := runtime.CaptureProjectAuthState(c.Request.Context(), captureInput)
-	if err != nil {
-		if recordingSessionID != "" && errors.Is(err, errRecordingSessionStorageSnapshotUnavailable) {
-			c.JSON(http.StatusConflict, gin.H{
-				"error": "RecordingSession auth snapshot is unavailable",
-				"code":  "recording_session_auth_snapshot_unavailable",
-			})
-			return
-		}
-		logger.Warn(c.Request.Context(), "Capture project auth state failed: project_id=%d version_id=%d category=%s error=%v", projectID, versionID, projectAuthCaptureFailureCategory(err), err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Capture project auth state failed"})
-		return
-	}
-	state = filterProjectAuthStorageState(state, version.BaseURL, req.OriginAllowlist, req.CapturedURL)
-
-	row, err := buildProjectAuthStateRow(projectID, versionID, req, state)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if err := runtime.SaveProjectAuthState(c.Request.Context(), map[string]any{
-		"project_id":   projectID,
-		"version_id":   versionID,
-		"auth_state":   projectAuthStateSummary(row),
-		"state_digest": row.StateDigest,
-	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Save project auth state failed"})
-		return
-	}
-
-	if err := h.gormDB().Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("project_id = ? AND version_id = ? AND status = ?", projectID, versionID, "active").
-			Delete(&models.ProjectAuthState{}).Error; err != nil {
-			return err
-		}
-		return tx.Create(&row).Error
-	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	runtime.AcknowledgeProjectAuthStateCapture(c.Request.Context(), captureInput)
-	c.JSON(http.StatusOK, gin.H{"auth_state": projectAuthStateSummary(row)})
+	result, lifecycleErr := h.recordingLifecycleService().Capture(c.Request.Context(), captureRecordingLifecycleInput{OperationID: req.OperationID, ProjectID: projectID, VersionID: versionID, Session: session, Name: req.Name, CapturedURL: req.CapturedURL, OriginAllowlist: req.OriginAllowlist, Replace: req.Replace})
+	h.writeRecordingLifecycleResult(c, result, lifecycleErr)
 }
 
 func (h *ProjectHandlers) DeleteProjectAuthState(c *gin.Context) {
@@ -485,184 +523,16 @@ func (h *ProjectHandlers) StartPageRecordingSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 		return
 	}
-	meta := p45RecordingMeta{
-		SchemaVersion: 1,
-		RecordingKind: strings.TrimSpace(req.RecordingKind),
-		AuthContext:   strings.TrimSpace(req.AuthContext),
-		TargetURL:     strings.TrimSpace(req.TargetURL),
+	targetURL := strings.TrimSpace(req.TargetURL)
+	if targetURL == "" {
+		targetURL = buildPageURL(version.BaseURL, page.Path)
 	}
-	if meta.TargetURL == "" {
-		meta.TargetURL = buildPageURL(version.BaseURL, page.Path)
-	}
-	if err := validateRecordingMeta(meta, false); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	var auth *models.ProjectAuthState
-	if meta.AuthContext == authContextProjectSaved {
-		auth, err = h.loadActiveProjectAuthState(projectID, versionID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if auth == nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Project auth state is required"})
-			return
-		}
-	}
-	runtime := h.projectAuthRuntime()
-	if runtime == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Project auth runtime is not configured"})
-		return
-	}
-
-	// Manager owns one process-global recorder. Serialize every durable session
-	// transition with the runtime lifecycle so stale reconciliation cannot race a
-	// stop or cancel after the recorder has stopped but before its row is terminal.
-	h.recordingLifecycleMu.Lock()
-	defer h.recordingLifecycleMu.Unlock()
-
-	var activeSessions []models.RecordingSession
-	if err := h.gormDB().
-		Where("status = ?", "recording").
-		Order("id DESC").
-		Find(&activeSessions).Error; err != nil {
-		logger.Error(c.Request.Context(), "Failed to find active page recordings: err=%v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "recording_session_query_failed"})
-		return
-	}
-	runtimeSessionID, runtimeOwnsSession := runtime.ActivePageRecording()
-	if !runtimeOwnsSession {
-		runtimeSessionID, runtimeOwnsSession = runtime.PendingStoppedPageRecording()
-	}
-	if runtimeOwnsSession {
-		for _, activeSession := range activeSessions {
-			if fmt.Sprint(activeSession.ID) != runtimeSessionID {
-				continue
-			}
-			if activeSession.PageID != pageID {
-				c.JSON(http.StatusConflict, gin.H{
-					"error":  "browser_recording_active",
-					"detail": "Another page recording is already active",
-				})
-				return
-			}
-			response := gin.H{
-				"error":                "recording_session_active",
-				"recording_session_id": runtimeSessionID,
-				"page_id":              activeSession.PageID,
-				"recording_meta":       recordingSessionMeta(activeSession),
-			}
-			if activeSession.RecordingKind != meta.RecordingKind || activeSession.AuthContext != meta.AuthContext {
-				response["detail"] = "A different recording flow is already active"
-			}
-			c.JSON(http.StatusConflict, response)
-			return
-		}
-		c.JSON(http.StatusConflict, gin.H{
-			"error":  "browser_recording_active",
-			"detail": "Another browser recording is already active",
-		})
-		return
-	}
-	if len(activeSessions) > 0 {
-		staleSessionIDs := make([]uint, 0, len(activeSessions))
-		for _, activeSession := range activeSessions {
-			staleSessionIDs = append(staleSessionIDs, activeSession.ID)
-		}
-		if err := h.gormDB().Model(&models.RecordingSession{}).
-			Where("id IN ? AND status = ?", staleSessionIDs, "recording").
-			Updates(map[string]any{
-				"status":        "failed",
-				"error_message": "Recording runtime ownership was lost",
-				"updated_at":    time.Now().UTC(),
-			}).Error; err != nil {
-			logger.Error(c.Request.Context(), "Failed to fail stale page recordings: err=%v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "recording_session_reconcile_failed"})
-			return
-		}
-	}
-	now := time.Now().UTC()
-	session := models.RecordingSession{
-		ProjectID:     projectID,
-		VersionID:     versionID,
-		PageID:        pageID,
-		RecordingKind: meta.RecordingKind,
-		AuthContext:   meta.AuthContext,
-		TargetURL:     meta.TargetURL,
-		Status:        "recording",
-		ActionCount:   0,
-		StartedAt:     now,
-		CreatedBy:     stringFromAny(c.GetString("user_id")),
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}
-	if auth != nil {
-		sourceAuthStateID := auth.ID
-		session.SourceAuthStateID = &sourceAuthStateID
-	}
-	if err := h.gormDB().Create(&session).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	sessionID := fmt.Sprint(session.ID)
-	input := map[string]any{
-		"project_id":              projectID,
-		"version_id":              versionID,
-		"page_id":                 pageID,
-		"recording_session_id":    sessionID,
-		"recording_kind":          meta.RecordingKind,
-		"auth_context":            meta.AuthContext,
-		"target_url":              meta.TargetURL,
-		"browser_instance_id":     req.BrowserInstanceID,
-		"use_global_cookie_store": false,
-	}
-	if auth != nil {
-		input["auth_state"] = projectAuthStateSummary(*auth)
-		input["auth_state_json"] = auth.StateJSON
-	}
-	result, err := runtime.StartPageRecording(c.Request.Context(), input)
-	if err != nil {
-		safeDetail := safeProjectRecordingStartError(err)
-		logger.Error(
-			c.Request.Context(),
-			"Failed to start project page recording: project_id=%d version_id=%d page_id=%d recording_kind=%s auth_context=%s detail=%s",
-			projectID,
-			versionID,
-			pageID,
-			meta.RecordingKind,
-			meta.AuthContext,
-			safeDetail,
-		)
-		_ = h.gormDB().Model(&models.RecordingSession{}).
-			Where("id = ? AND status = ?", session.ID, "recording").
-			Updates(map[string]any{
-				"status":        "failed",
-				"error_message": safeDetail,
-				"updated_at":    time.Now().UTC(),
-			}).Error
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":  "Start page recording failed",
-			"detail": safeDetail,
-		})
-		return
-	}
-	if result == nil {
-		result = map[string]any{}
-	}
-	result["recording_session_id"] = sessionID
-	result["recording_meta"] = map[string]any{
-		"schema_version": meta.SchemaVersion,
-		"recording_kind": meta.RecordingKind,
-		"auth_context":   meta.AuthContext,
-		"auth_state_id":  session.SourceAuthStateID,
-		"target_url":     meta.TargetURL,
-	}
-	if auth != nil {
-		result["auth_state"] = projectAuthStateSummary(*auth)
-	}
-	c.JSON(http.StatusOK, result)
+	result, lifecycleErr := h.recordingLifecycleService().Start(c.Request.Context(), startRecordingLifecycleInput{
+		OperationID: req.OperationID, ProjectID: projectID, VersionID: versionID, PageID: pageID,
+		RecordingKind: strings.TrimSpace(req.RecordingKind), AuthContext: strings.TrimSpace(req.AuthContext), TargetURL: targetURL,
+		BrowserInstanceID: strings.TrimSpace(req.BrowserInstanceID), RuntimePageID: strings.TrimSpace(req.RuntimePageID), CreatedBy: c.GetString("user_id"),
+	})
+	h.writeRecordingLifecycleResult(c, result, lifecycleErr)
 }
 
 func recordingSessionMeta(session models.RecordingSession) map[string]any {
@@ -734,6 +604,21 @@ func (h *ProjectHandlers) loadActiveProjectAuthState(projectID, versionID uint) 
 		}
 		return nil, err
 	}
+	if strings.TrimSpace(auth.StateCiphertext) == "" {
+		// P4.7.6 deliberately has no plaintext fallback. Existing plaintext must
+		// be removed by the explicit deployment migration before this version is
+		// enabled; startup never mutates user auth state silently.
+		return nil, fmt.Errorf("encrypted project auth state is unavailable")
+	}
+	cipher, err := newProjectAuthStateCipher(h.config)
+	if err != nil {
+		return nil, err
+	}
+	plain, err := cipher.decrypt(auth)
+	if err != nil {
+		return nil, err
+	}
+	auth.StateJSON = plain
 	return &auth, nil
 }
 
@@ -1046,8 +931,22 @@ func (r *browserProjectAuthRuntime) CaptureProjectAuthState(ctx context.Context,
 		VersionID:          uintFromAny(input["version_id"]),
 		PageID:             uintFromAny(input["captured_page_id"]),
 		RecordingSessionID: stringFromAny(input["recording_session_id"]),
+		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
+		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
+		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
+		LeaseGeneration:    stringFromAny(input["lease_generation"]),
 	}
 	if strings.TrimSpace(scope.RecordingSessionID) != "" {
+		operationID := stringFromAny(input["operation_id"])
+		if operationID != "" && r.manager != nil {
+			state, receiptID, claimGeneration, err := r.manager.ClaimRecordingStorageState(scope, operationID)
+			if err != nil {
+				return nil, errRecordingSessionStorageSnapshotUnavailable
+			}
+			state["runtime_snapshot_receipt_id"] = receiptID
+			state["runtime_snapshot_claim_generation"] = claimGeneration
+			return state, nil
+		}
 		if snapshot := r.peekRecordingStorageState(scope); snapshot != nil {
 			return snapshot, nil
 		}
@@ -1071,7 +970,8 @@ func (r *browserProjectAuthRuntime) captureActiveProjectAuthState(ctx context.Co
 	if r.manager == nil {
 		return nil, fmt.Errorf("browser manager is not configured")
 	}
-	page := r.manager.GetActivePage()
+	instanceID := stringFromAny(input["browser_instance_id"])
+	page := r.manager.GetActivePageForInstance(instanceID)
 	if page == nil {
 		return nil, fmt.Errorf("please open a page first")
 	}
@@ -1137,24 +1037,6 @@ func (r *browserProjectAuthRuntime) peekRecordingStorageState(scope browser.Reco
 	return r.manager.PeekLastRecordingStorageState(scope)
 }
 
-func (r *browserProjectAuthRuntime) acknowledgeRecordingStorageState(scope browser.RecordingStorageScope) {
-	if r.acknowledgeRecordingStorageStateFn != nil {
-		r.acknowledgeRecordingStorageStateFn(scope)
-		return
-	}
-	if r.manager == nil {
-		return
-	}
-	r.manager.AcknowledgeLastRecordingStorageState(scope)
-}
-
-func (r *browserProjectAuthRuntime) discardRecordingStorageState(scope browser.RecordingStorageScope) {
-	if r.manager == nil {
-		return
-	}
-	r.manager.DiscardLastRecordingStorageState(scope)
-}
-
 func (r *browserProjectAuthRuntime) SaveProjectAuthState(context.Context, map[string]any) error {
 	return nil
 }
@@ -1175,37 +1057,123 @@ func (r *browserProjectAuthRuntime) StartPageRecording(ctx context.Context, inpu
 		return nil, fmt.Errorf("target_url is required")
 	}
 	instanceID := stringFromAny(input["browser_instance_id"])
-	if !r.manager.IsRunning() {
-		if err := r.manager.StartWithoutGlobalCookieStore(ctx); err != nil {
-			return nil, err
-		}
+	scope := browser.RecordingStorageScope{
+		ProjectID:          uintFromAny(input["project_id"]),
+		VersionID:          uintFromAny(input["version_id"]),
+		PageID:             uintFromAny(input["captured_page_id"]),
+		RecordingSessionID: stringFromAny(input["recording_session_id"]),
+		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
+		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
+		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
+		LeaseGeneration:    stringFromAny(input["lease_generation"]),
 	}
-	if err := r.manager.OpenIsolatedPage(ctx, "about:blank", "", instanceID); err != nil {
+	driverToken := strings.TrimSpace(stringFromAny(input["runtime_driver_token"]))
+	driverGeneration := uint64(uintFromAny(input["runtime_driver_claim_generation"]))
+	if r.manager == nil {
+		return nil, fmt.Errorf("browser manager is not configured")
+	}
+	driverCtx, running, err := r.manager.AcquireRecordingStartTarget(ctx, scope, driverToken, driverGeneration)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errProjectRecordingStartInProgress, err)
+	}
+	if running {
+		return map[string]any{"recording_session_id": scope.RecordingSessionID}, nil
+	}
+	if driverCtx == nil {
+		return nil, fmt.Errorf("%w: missing runtime start driver context", errProjectRecordingStartInProgress)
+	}
+	started := false
+	var isolatedPage *rod.Page
+	defer func() {
+		if !started {
+			// The page belongs to this reservation until Recorder.Start commits
+			// it. A fenced/cancelled driver must close only its own target before
+			// releasing the reservation, never leave it as the instance active
+			// page for a later generation.
+			r.manager.CloseIsolatedRecordingPage(context.Background(), instanceID, isolatedPage)
+			r.manager.ReleaseRecordingStartTarget(scope, driverToken, driverGeneration)
+		}
+	}()
+	heartbeatDone := make(chan struct{})
+	defer close(heartbeatDone)
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatDone:
+				return
+			case <-driverCtx.Done():
+				return
+			case <-ticker.C:
+				if r.manager.HeartbeatRecordingStartTarget(scope, driverToken, driverGeneration) != nil {
+					return
+				}
+			}
+		}
+	}()
+	checkFence := func() error {
+		if err := driverCtx.Err(); err != nil {
+			return fmt.Errorf("%w: runtime start driver was cancelled", errProjectRecordingStartInProgress)
+		}
+		if err := r.manager.HeartbeatRecordingStartTarget(scope, driverToken, driverGeneration); err != nil {
+			return fmt.Errorf("%w: %v", errProjectRecordingStartInProgress, err)
+		}
+		return nil
+	}
+	if err := checkFence(); err != nil {
 		return nil, err
 	}
-	if stringFromAny(input["auth_context"]) == authContextProjectSaved {
-		if err := r.RestoreProjectAuthState(ctx, input); err != nil {
+	if r.manager != nil && r.manager.IsRecordingStorageScopeActive(scope) {
+		started = true
+		return map[string]any{"recording_session_id": scope.RecordingSessionID}, nil
+	}
+	if !r.manager.IsRunning() {
+		if err := r.manager.StartWithoutGlobalCookieStore(driverCtx); err != nil {
 			return nil, err
 		}
 	}
-	page := r.manager.GetActivePage()
-	if page == nil {
+	if err := checkFence(); err != nil {
+		return nil, err
+	}
+	if err := r.manager.OpenIsolatedPage(driverCtx, "about:blank", "", instanceID); err != nil {
+		return nil, err
+	}
+	isolatedPage = r.manager.GetActivePageForInstance(instanceID)
+	if isolatedPage == nil {
 		return nil, fmt.Errorf("isolated recording page is not available")
 	}
+	if stringFromAny(input["auth_context"]) == authContextProjectSaved {
+		if err := checkFence(); err != nil {
+			return nil, err
+		}
+		if err := r.RestoreProjectAuthState(driverCtx, input); err != nil {
+			return nil, err
+		}
+	}
+	if err := checkFence(); err != nil {
+		return nil, err
+	}
+	page := isolatedPage.Context(driverCtx)
 	if err := page.Timeout(60 * time.Second).Navigate(targetURL); err != nil {
 		return nil, fmt.Errorf("failed to navigate isolated recording page: %w", err)
+	}
+	if err := checkFence(); err != nil {
+		return nil, err
 	}
 	if err := page.Timeout(60 * time.Second).WaitLoad(); err != nil {
 		return nil, fmt.Errorf("failed to wait isolated recording page load: %w", err)
 	}
-	if err := r.manager.StartRecordingWithStorageScope(ctx, instanceID, browser.RecordingStorageScope{
-		ProjectID:          uintFromAny(input["project_id"]),
-		VersionID:          uintFromAny(input["version_id"]),
-		PageID:             uintFromAny(input["page_id"]),
-		RecordingSessionID: stringFromAny(input["recording_session_id"]),
-	}); err != nil {
+	if err := checkFence(); err != nil {
 		return nil, err
 	}
+	if err := r.manager.StartRecordingWithStorageScopeReservation(driverCtx, instanceID, scope, driverToken, driverGeneration); err != nil {
+		if errors.Is(err, browser.ErrRecordingStartReservationInProgress) {
+			return nil, fmt.Errorf("%w: %v", errProjectRecordingStartInProgress, err)
+		}
+		return nil, err
+	}
+	started = true
 	return map[string]any{"recording_session_id": fmt.Sprintf("project-recording-%d", time.Now().UnixNano())}, nil
 }
 
@@ -1223,6 +1191,25 @@ func (r *browserProjectAuthRuntime) ActivePageRecording() (string, bool) {
 	return scope.RecordingSessionID, true
 }
 
+// HasActivePageRecordingScope is the lifecycle recovery adapter. It never
+// uses Manager's compatibility/global active pointer: the full persisted
+// runtime scope must match before a pending Stop defers its database closure.
+func (r *browserProjectAuthRuntime) HasActivePageRecordingScope(_ context.Context, input map[string]any) bool {
+	if r.manager == nil {
+		return false
+	}
+	return r.manager.IsRecordingStorageScopeActive(browser.RecordingStorageScope{
+		ProjectID:          uintFromAny(input["project_id"]),
+		VersionID:          uintFromAny(input["version_id"]),
+		PageID:             uintFromAny(input["page_id"]),
+		RecordingSessionID: stringFromAny(input["recording_session_id"]),
+		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
+		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
+		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
+		LeaseGeneration:    stringFromAny(input["lease_generation"]),
+	})
+}
+
 func (r *browserProjectAuthRuntime) PendingStoppedPageRecording() (string, bool) {
 	if r.manager == nil {
 		return "", false
@@ -1234,34 +1221,104 @@ func (r *browserProjectAuthRuntime) PendingStoppedPageRecording() (string, bool)
 	return scope.RecordingSessionID, true
 }
 
+func (r *browserProjectAuthRuntime) HasPendingStoppedPageRecordingScope(_ context.Context, input map[string]any) bool {
+	if r.manager == nil {
+		return false
+	}
+	return r.manager.HasPendingFinalRecordingReceipt(browser.RecordingStorageScope{
+		ProjectID:          uintFromAny(input["project_id"]),
+		VersionID:          uintFromAny(input["version_id"]),
+		PageID:             uintFromAny(input["page_id"]),
+		RecordingSessionID: stringFromAny(input["recording_session_id"]),
+		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
+		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
+		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
+		LeaseGeneration:    stringFromAny(input["lease_generation"]),
+	})
+}
+
 func (r *browserProjectAuthRuntime) AcknowledgeStoppedPageRecording(_ context.Context, input map[string]any) {
 	if r.manager == nil {
 		return
 	}
-	r.manager.AcknowledgeInPageStoppedRecording(browser.RecordingStorageScope{
+	r.manager.AcknowledgeFinalRecordingReceipt(browser.RecordingStorageScope{
 		ProjectID:          uintFromAny(input["project_id"]),
 		VersionID:          uintFromAny(input["version_id"]),
 		PageID:             uintFromAny(input["page_id"]),
 		RecordingSessionID: stringFromAny(input["recording_session_id"]),
+		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
+		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
+		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
+		LeaseGeneration:    stringFromAny(input["lease_generation"]),
+	}, stringFromAny(input["runtime_final_receipt_id"]), stringFromAny(input["operation_id"]), uint64(uintFromAny(input["runtime_final_receipt_claim_generation"])))
+}
+
+func (r *browserProjectAuthRuntime) DiscardStoppedPageRecording(_ context.Context, input map[string]any) {
+	if r.manager == nil {
+		return
+	}
+	r.manager.ReleaseFinalRecordingReceipt(browser.RecordingStorageScope{
+		ProjectID:          uintFromAny(input["project_id"]),
+		VersionID:          uintFromAny(input["version_id"]),
+		PageID:             uintFromAny(input["page_id"]),
+		RecordingSessionID: stringFromAny(input["recording_session_id"]),
+		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
+		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
+		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
+		LeaseGeneration:    stringFromAny(input["lease_generation"]),
+	}, stringFromAny(input["runtime_final_receipt_id"]), stringFromAny(input["operation_id"]), uint64(uintFromAny(input["runtime_final_receipt_claim_generation"])))
+}
+
+func (r *browserProjectAuthRuntime) ReleaseRecordingSessionResources(_ context.Context, input map[string]any) {
+	if r.manager == nil {
+		return
+	}
+	r.manager.ReleaseRecordingSessionResources(browser.RecordingStorageScope{
+		ProjectID:          uintFromAny(input["project_id"]),
+		VersionID:          uintFromAny(input["version_id"]),
+		PageID:             uintFromAny(input["page_id"]),
+		RecordingSessionID: stringFromAny(input["recording_session_id"]),
+		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
+		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
+		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
+		LeaseGeneration:    stringFromAny(input["lease_generation"]),
 	})
 }
 
 func (r *browserProjectAuthRuntime) AcknowledgeProjectAuthStateCapture(_ context.Context, input map[string]any) {
-	r.acknowledgeRecordingStorageState(browser.RecordingStorageScope{
-		ProjectID:          uintFromAny(input["project_id"]),
-		VersionID:          uintFromAny(input["version_id"]),
-		PageID:             uintFromAny(input["captured_page_id"]),
-		RecordingSessionID: stringFromAny(input["recording_session_id"]),
-	})
-}
-
-func (r *browserProjectAuthRuntime) DiscardProjectAuthStateCapture(_ context.Context, input map[string]any) {
-	r.discardRecordingStorageState(browser.RecordingStorageScope{
+	scope := browser.RecordingStorageScope{
 		ProjectID:          uintFromAny(input["project_id"]),
 		VersionID:          uintFromAny(input["version_id"]),
 		PageID:             uintFromAny(input["page_id"]),
 		RecordingSessionID: stringFromAny(input["recording_session_id"]),
-	})
+		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
+		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
+		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
+		LeaseGeneration:    stringFromAny(input["lease_generation"]),
+	}
+	if r.manager != nil {
+		r.manager.AcknowledgeClaimedRecordingStorageState(scope, stringFromAny(input["runtime_snapshot_receipt_id"]), stringFromAny(input["operation_id"]), uint64(uintFromAny(input["runtime_snapshot_claim_generation"])))
+		return
+	}
+	if r.acknowledgeRecordingStorageStateFn != nil {
+		r.acknowledgeRecordingStorageStateFn(scope)
+	}
+}
+
+func (r *browserProjectAuthRuntime) DiscardProjectAuthStateCapture(_ context.Context, input map[string]any) {
+	scope := browser.RecordingStorageScope{
+		ProjectID:          uintFromAny(input["project_id"]),
+		VersionID:          uintFromAny(input["version_id"]),
+		PageID:             uintFromAny(input["page_id"]),
+		RecordingSessionID: stringFromAny(input["recording_session_id"]),
+		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
+		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
+		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
+		LeaseGeneration:    stringFromAny(input["lease_generation"]),
+	}
+	if r.manager != nil {
+		r.manager.ReleaseClaimedRecordingStorageState(scope, stringFromAny(input["runtime_snapshot_receipt_id"]), stringFromAny(input["operation_id"]), uint64(uintFromAny(input["runtime_snapshot_claim_generation"])))
+	}
 }
 
 func (r *browserProjectAuthRuntime) HasProjectAuthStateCapture(_ context.Context, input map[string]any) bool {
@@ -1270,6 +1327,10 @@ func (r *browserProjectAuthRuntime) HasProjectAuthStateCapture(_ context.Context
 		VersionID:          uintFromAny(input["version_id"]),
 		PageID:             uintFromAny(input["page_id"]),
 		RecordingSessionID: stringFromAny(input["recording_session_id"]),
+		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
+		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
+		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
+		LeaseGeneration:    stringFromAny(input["lease_generation"]),
 	}) != nil
 }
 
@@ -1279,10 +1340,29 @@ func (r *browserProjectAuthRuntime) StopPageRecording(ctx context.Context, input
 		VersionID:          uintFromAny(input["version_id"]),
 		PageID:             uintFromAny(input["page_id"]),
 		RecordingSessionID: stringFromAny(input["recording_session_id"]),
+		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
+		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
+		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
+		LeaseGeneration:    stringFromAny(input["lease_generation"]),
 	}
-	actions, downloadedFiles, err := r.stopRecordingWithStorageScope(ctx, scope)
+	operationID := stringFromAny(input["operation_id"])
+	var actions []models.ScriptAction
+	var downloadedFiles []models.DownloadedFile
+	var domSnapshot json.RawMessage
+	var err error
+	if operationID != "" && r.manager != nil {
+		actions, downloadedFiles, err = r.manager.StopRecordingWithClaim(ctx, scope, operationID)
+	} else {
+		actions, downloadedFiles, err = r.stopRecordingWithStorageScope(ctx, scope)
+	}
 	if err != nil {
+		if errors.Is(err, browser.ErrRecordingStopInProgress) {
+			return nil, errProjectRecordingStopInProgress
+		}
 		return nil, err
+	}
+	if r.manager != nil {
+		domSnapshot = r.manager.FinalRecordingDOMSnapshot(scope)
 	}
 	artifacts := make([]map[string]any, 0, len(downloadedFiles))
 	for _, file := range downloadedFiles {
@@ -1301,9 +1381,25 @@ func (r *browserProjectAuthRuntime) StopPageRecording(ctx context.Context, input
 			"sensitive":       true,
 		})
 	}
+	receiptID := ""
+	receiptRevision := uint64(0)
+	if r.manager != nil {
+		receiptID, receiptRevision, claimGeneration := r.manager.FinalRecordingReceiptInfo(scope)
+		return map[string]any{
+			"actions":                                actions,
+			"artifacts":                              artifacts,
+			"dom_snapshot":                           domSnapshot,
+			"runtime_final_receipt_id":               receiptID,
+			"runtime_final_receipt_claim_generation": claimGeneration,
+			"runtime_final_sync_revision":            receiptRevision,
+		}, nil
+	}
 	return map[string]any{
-		"actions":   actions,
-		"artifacts": artifacts,
+		"actions":                     actions,
+		"artifacts":                   artifacts,
+		"dom_snapshot":                domSnapshot,
+		"runtime_final_receipt_id":    receiptID,
+		"runtime_final_sync_revision": receiptRevision,
 	}, nil
 }
 
@@ -1336,19 +1432,20 @@ func (r *browserProjectAuthRuntime) RestoreProjectAuthState(ctx context.Context,
 	if err := json.Unmarshal([]byte(rawState), &state); err != nil {
 		return fmt.Errorf("project auth state is corrupted")
 	}
-	page := r.manager.GetActivePage()
+	instanceID := stringFromAny(input["browser_instance_id"])
+	page := r.manager.GetActivePageForInstance(instanceID)
 	if page == nil {
-		if err := r.manager.OpenIsolatedPage(ctx, "about:blank", "", stringFromAny(input["browser_instance_id"])); err != nil {
+		if err := r.manager.OpenIsolatedPage(ctx, "about:blank", "", instanceID); err != nil {
 			return err
 		}
-		page = r.manager.GetActivePage()
+		page = r.manager.GetActivePageForInstance(instanceID)
 	}
 	if page == nil {
 		return fmt.Errorf("browser page is not available")
 	}
 	cookies := cookiesForRestore(state["cookies"])
 	if len(cookies) > 0 {
-		if err := page.SetCookies(cookies); err != nil {
+		if err := page.Context(ctx).SetCookies(cookies); err != nil {
 			return err
 		}
 	}
@@ -1361,17 +1458,17 @@ func (r *browserProjectAuthRuntime) RestoreProjectAuthState(ctx context.Context,
 		if origin == "" {
 			continue
 		}
-		if err := page.Timeout(60 * time.Second).Navigate(origin); err != nil {
+		if err := page.Context(ctx).Timeout(60 * time.Second).Navigate(origin); err != nil {
 			return fmt.Errorf("navigate to auth origin %s failed: %w", origin, err)
 		}
-		if err := page.Timeout(60 * time.Second).WaitLoad(); err != nil {
+		if err := page.Context(ctx).Timeout(60 * time.Second).WaitLoad(); err != nil {
 			return fmt.Errorf("wait auth origin %s load failed: %w", origin, err)
 		}
 		script := fmt.Sprintf(`(items) => {
 			for (const item of items.local_storage || []) localStorage.setItem(item.name, item.value || "");
 			for (const item of items.session_storage || []) sessionStorage.setItem(item.name, item.value || "");
 		}`)
-		if _, err := page.Eval(script, map[string]any{
+		if _, err := page.Context(ctx).Eval(script, map[string]any{
 			"local_storage":   originObj["local_storage"],
 			"session_storage": originObj["session_storage"],
 		}); err != nil {
@@ -1451,6 +1548,10 @@ func uintFromAny(value any) uint {
 	switch v := value.(type) {
 	case uint:
 		return v
+	case uint64:
+		return uint(v)
+	case uint32:
+		return uint(v)
 	case int:
 		if v < 0 {
 			return 0

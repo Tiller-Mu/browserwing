@@ -41,6 +41,23 @@ go test ./services/browser/ -run TestParseProxyURL -v
 go test ./pkg/downloader/ -v
 ```
 
+### P4.7.6 录制生命周期回归
+
+当前状态：已完成。本节时序回归（含 HTTP Stop 的 Coordinator `recording_stopped` event 收口）、后端包级/全量回归、前端契约/类型/构建和 `git diff --check` 均已复验通过。
+
+```bash
+cd backend
+go test ./api -run TestP476 -count=1 -v
+go test ./services/browser -run "Test.*(Recording|Receipt|Snapshot)" -count=1 -v
+go test ./... -count=1
+
+cd ../frontend
+pnpm run type-check
+pnpm run build
+```
+
+覆盖范围：六个生命周期动作的 `operation_id` 重放、`starting`/Cancel、pending runtime effect 去重、Stop/Capture 重启收口、页面 flow CAS、saved superseded、完整 scope + operation + claim generation 的 receipt claim/释放、等 revision 下仅 `captured_at` 变化的 final identity、页面内 Stop/HTTP 共享 runtime driver、AES-GCM 登录态密文、旧录制路由删除及 `recording_source` 脱敏。
+
 ### 测试覆盖范围
 
 | 模块 | 文件 | 用例数 | 覆盖内容 |

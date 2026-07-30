@@ -58,6 +58,7 @@ export interface ProjectAuthStateResponse {
 }
 
 export interface CaptureProjectAuthStateRequest {
+	operation_id: string;
   name?: string;
   captured_page_id?: number;
   captured_url?: string;
@@ -68,10 +69,12 @@ export interface CaptureProjectAuthStateRequest {
 }
 
 export interface StartPageRecordingSessionRequest {
+	operation_id: string;
   recording_kind: P45RecordingKind;
   auth_context: P45AuthContext;
   target_url?: string;
-  browser_instance_id?: string;
+	browser_instance_id: string;
+	runtime_page_id: string;
 }
 
 export interface PageRecordingSessionResponse {
@@ -87,6 +90,7 @@ export interface PageRecordingContextResponse {
 }
 
 export interface SavePageRecordingRequest {
+	operation_id: string;
   name: string;
   action_trace: string;
   dom_snapshot: string;
@@ -94,6 +98,12 @@ export interface SavePageRecordingRequest {
   recording_session_id?: string;
   retain_auth_snapshot?: boolean;
 }
+
+export interface RecordingOperationRequest {
+	operation_id: string;
+}
+
+export const newRecordingOperationID = (): string => crypto.randomUUID();
 
 export interface StopPageRecordingSessionResponse {
   id: number;
@@ -184,7 +194,7 @@ export const projectApi = {
   getProjectAuthState: (projectId: number, versionId: number) =>
     client.get<ProjectAuthStateResponse>(`/projects/${projectId}/versions/${versionId}/auth-state`),
   captureProjectAuthState: (projectId: number, versionId: number, data: CaptureProjectAuthStateRequest) =>
-    client.post<ProjectAuthStateResponse>(`/projects/${projectId}/versions/${versionId}/auth-state/capture`, data),
+	client.post<ProjectAuthStateResponse>(`/projects/${projectId}/versions/${versionId}/auth-state/capture`, data),
   deleteProjectAuthState: (projectId: number, versionId: number) =>
     client.delete<{ message: string }>(`/projects/${projectId}/versions/${versionId}/auth-state`),
 
@@ -198,17 +208,17 @@ export const projectApi = {
   getPageRecordingContext: (projectId: number, versionId: number, pageId: number) =>
     client.get<PageRecordingContextResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-context`),
   startPageRecordingSession: (projectId: number, versionId: number, pageId: number, data: StartPageRecordingSessionRequest) =>
-    client.post<PageRecordingSessionResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-session`, data),
+	client.post<PageRecordingSessionResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-session`, data),
   getPageRecordingSession: (projectId: number, versionId: number, pageId: number, sessionId: string) =>
     client.get<StopPageRecordingSessionResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-session/${sessionId}`),
-  syncPageRecordingSession: (projectId: number, versionId: number, pageId: number, sessionId: string, data: { actions?: unknown[]; dom_snapshot?: unknown }) =>
-    client.post<StopPageRecordingSessionResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-session/${sessionId}/sync`, data),
-  stopPageRecordingSession: (projectId: number, versionId: number, pageId: number, sessionId: string, data: { dom_snapshot?: unknown } = {}) =>
-    client.post<StopPageRecordingSessionResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-session/${sessionId}/stop`, data),
-  cancelPageRecordingSession: (projectId: number, versionId: number, pageId: number, sessionId: string): Promise<{ data: StopPageRecordingSessionResponse }> =>
-    client.post<StopPageRecordingSessionResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-session/${sessionId}/cancel`, {}),
+  syncPageRecordingSession: (projectId: number, versionId: number, pageId: number, sessionId: string, data: RecordingOperationRequest & { sync_revision: number; actions: unknown[]; dom_snapshot?: unknown }) =>
+	client.post<StopPageRecordingSessionResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-session/${sessionId}/sync`, data),
+  stopPageRecordingSession: (projectId: number, versionId: number, pageId: number, sessionId: string, data: RecordingOperationRequest & { dom_snapshot?: unknown }) =>
+	client.post<StopPageRecordingSessionResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-session/${sessionId}/stop`, data),
+  cancelPageRecordingSession: (projectId: number, versionId: number, pageId: number, sessionId: string, data: RecordingOperationRequest): Promise<{ data: StopPageRecordingSessionResponse }> =>
+	client.post<StopPageRecordingSessionResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recording-session/${sessionId}/cancel`, data),
   savePageRecording: (projectId: number, versionId: number, pageId: number, data: SavePageRecordingRequest) =>
-    client.post<{ message: string; script: any }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recordings`, data),
+	client.post<{ message: string; script: any }>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recordings`, data),
   getLatestPageRecording: (projectId: number, versionId: number, pageId: number) =>
     client.get<PageRecordingDetailResponse>(`/projects/${projectId}/versions/${versionId}/pages/${pageId}/recordings/latest`),
   listTestCases: (projectId: number, versionId: number, pageId: number) =>

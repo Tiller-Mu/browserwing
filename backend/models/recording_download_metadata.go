@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 	"unicode"
@@ -76,6 +77,9 @@ func NormalizeRecordingActionsJSON(raw []byte) (string, int, error) {
 	}
 	normalized := make([]map[string]any, 0, len(actions))
 	for _, action := range actions {
+		if strings.TrimSpace(stringFromRecordingActionMap(action["type"])) == "" {
+			return "", 0, fmt.Errorf("recording action type is required")
+		}
 		if action, keep := NormalizeRecordingActionMap(action); keep {
 			normalized = append(normalized, action)
 		}
@@ -112,7 +116,79 @@ func NormalizeRecordingActionMap(action map[string]any) (map[string]any, bool) {
 			normalized["attrs"] = attrs
 		}
 	}
+	canonicalizeRecordingActionZeroValues(normalized)
 	return normalized, true
+}
+
+// canonicalizeRecordingActionZeroValues makes sparse Sync JSON and the JSON
+// produced by marshaling ScriptAction compare as the same action. ScriptAction
+// predates omitempty tags on several scalar fields, so Recorder emits their Go
+// zero values while browser JSON commonly omits them. Only declared action
+// fields are collapsed; unknown non-zero extension fields remain part of the
+// semantic recording identity.
+func canonicalizeRecordingActionZeroValues(action map[string]any) {
+	for _, key := range []string{
+		"selector", "xpath", "value", "url", "text", "tag_name",
+		"key", "extract_type", "attribute_name", "js_code", "variable_name", "extracted_data",
+		"description", "accept", "remark", "method", "xhr_id",
+		"screenshot_mode", "ai_control_prompt", "ai_control_xpath", "ai_control_llm_config_id",
+	} {
+		if value, ok := action[key]; ok && recordingActionEmptyString(value) {
+			delete(action, key)
+		}
+	}
+	for _, key := range []string{
+		"timestamp", "sensitive_input_policy_version", "duration", "x", "y",
+		"scroll_x", "scroll_y", "status", "screenshot_width", "screenshot_height",
+	} {
+		if value, ok := action[key]; ok && recordingActionZeroNumber(value) {
+			delete(action, key)
+		}
+	}
+	for _, key := range []string{"sensitive_input", "multiple"} {
+		if value, ok := action[key]; ok && recordingActionFalse(value) {
+			delete(action, key)
+		}
+	}
+	for _, key := range []string{"attrs", "file_paths", "file_names"} {
+		if value, ok := action[key]; ok && recordingActionEmptyCollection(value) {
+			delete(action, key)
+		}
+	}
+	for _, key := range []string{"condition", "intent", "accessibility", "context", "evidence"} {
+		if value, ok := action[key]; ok && value == nil {
+			delete(action, key)
+		}
+	}
+}
+
+func recordingActionEmptyString(value any) bool {
+	text, ok := value.(string)
+	return ok && text == ""
+}
+
+func recordingActionZeroNumber(value any) bool {
+	number, ok := value.(float64)
+	return ok && number == 0
+}
+
+func recordingActionFalse(value any) bool {
+	flag, ok := value.(bool)
+	return ok && !flag
+}
+
+func recordingActionEmptyCollection(value any) bool {
+	if value == nil {
+		return true
+	}
+	switch typed := value.(type) {
+	case []any:
+		return len(typed) == 0
+	case map[string]any:
+		return len(typed) == 0
+	default:
+		return false
+	}
 }
 
 func normalizeRecordingDownloadAttrs(attrs map[string]string) map[string]string {

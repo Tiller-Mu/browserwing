@@ -24,16 +24,23 @@ type p475RecordingSource struct {
 }
 
 func buildP475RecordingSource(script models.PageScript) (p475RecordingSource, error) {
-	actions, err := parseP475ActionTrace(script.ActionTrace)
+	normalized, err := NewRecordingNormalizer().NormalizePageScript(script)
 	if err != nil {
 		return p475RecordingSource{}, err
 	}
-	snapshot, err := parseP475Object(script.DOMSnapshot, "页面快照 JSON 非法")
-	if err != nil {
+	var parsedMeta p45RecordingMeta
+	if err := json.Unmarshal([]byte(normalized.RecordingMetaJSON), &parsedMeta); err != nil {
 		return p475RecordingSource{}, err
 	}
-	meta, parsedMeta, err := parseP475RecordingMetaObject(script.RecordingMetaJSON)
-	if err != nil {
+	var actions []map[string]any
+	var snapshot, meta map[string]any
+	if err := json.Unmarshal([]byte(normalized.ActionsJSON), &actions); err != nil {
+		return p475RecordingSource{}, err
+	}
+	if err := json.Unmarshal([]byte(normalized.DOMSnapshot), &snapshot); err != nil {
+		return p475RecordingSource{}, err
+	}
+	if err := json.Unmarshal([]byte(normalized.RecordingMetaJSON), &meta); err != nil {
 		return p475RecordingSource{}, err
 	}
 	authContext := strings.TrimSpace(parsedMeta.AuthContext)
@@ -42,11 +49,11 @@ func buildP475RecordingSource(script models.PageScript) (p475RecordingSource, er
 	}
 	return p475RecordingSource{
 		PageScriptID: fmt.Sprintf("ps_%d", script.ID),
-		ActionTrace:  sanitizeP475ActionTrace(actions),
-		DOMSnapshot:  sanitizeP475Object(snapshot),
-		Meta:         sanitizeP475Object(meta),
+		ActionTrace:  actions,
+		DOMSnapshot:  snapshot,
+		Meta:         meta,
 		AuthContext:  authContext,
-		SourceHash:   p475SourceHash(script.ActionTrace, script.DOMSnapshot, script.RecordingMetaJSON),
+		SourceHash:   normalized.RecordingSourceHash,
 	}, nil
 }
 

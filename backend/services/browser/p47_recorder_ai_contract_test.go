@@ -23,6 +23,41 @@ func TestP47RecorderInjectedScriptCarriesExplicitLLMConfigInAIRequests(t *testin
 	}
 }
 
+func TestP476RecorderRedactsSensitiveInputsBeforeRecordingQueue(t *testing.T) {
+	scriptBytes, err := os.ReadFile(filepath.Join("scripts", "recorder.js"))
+	if err != nil {
+		t.Fatalf("read production recorder.js: %v", err)
+	}
+	script := string(scriptBytes)
+	for _, required := range []string{
+		"SensitiveInputPolicyV1",
+		"sensitive_input",
+		"currentpassword",
+		"onetimecode",
+		"验证码",
+		"{{REDACTED_SECRET}}",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("recorder.js is missing sensitive-input contract marker %q", required)
+		}
+	}
+	if !strings.Contains(script, "getAccessibleName(element, !sensitiveInput)") || !strings.Contains(script, "inferObject(element, !sensitiveInput)") {
+		t.Fatal("sensitive inputs must not use live element.value as an accessible-name or intent fallback")
+	}
+	redaction := strings.Index(script, "action = redactSensitiveInputAction(action, element);")
+	queueOffset := -1
+	if redaction >= 0 {
+		queueOffset = strings.Index(script[redaction:], "window.__recordedActions__.push(action);")
+	}
+	if redaction < 0 || queueOffset < 0 {
+		t.Fatalf("sensitive input must be redacted before queueing actions: redaction=%d queueOffset=%d", redaction, queueOffset)
+	}
+	queue := redaction + queueOffset
+	if redaction > queue {
+		t.Fatalf("sensitive input must be redacted before queueing actions: redaction=%d queue=%d", redaction, queue)
+	}
+}
+
 func p47AIExtractionRequestAssignments(script string) []string {
 	const marker = "window.__aiExtractionRequest__ = {"
 	var assignments []string

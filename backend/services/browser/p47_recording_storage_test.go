@@ -65,10 +65,7 @@ func TestP47ScopedStopKeepsMatchingInPageStoppedRecordingUntilAcknowledged(t *te
 		RecordingSessionID: "session-a",
 	}
 	manager := NewManager(&config.Config{AssetsDir: t.TempDir()}, nil, nil)
-	manager.inPageRecordingStopped = true
-	manager.lastRecordingStorageScope = &scope
-	manager.lastRecordedActions = []models.ScriptAction{{Type: "click", Selector: "#submit"}}
-	manager.lastDownloadedFiles = []models.DownloadedFile{{FileName: "export.csv", FilePath: filepath.Join(manager.config.AssetsDir, "downloads", "export.csv")}}
+	manager.recordingRegistry.finalBySession[scope.RecordingSessionID] = &recordingFinalReceipt{receiptID: "p47-final", scope: scope, actions: []models.ScriptAction{{Type: "click", Selector: "#submit"}}, downloadedFiles: []models.DownloadedFile{{FileName: "export.csv", FilePath: filepath.Join(manager.config.AssetsDir, "downloads", "export.csv")}}, state: recordingReceiptAvailable}
 
 	actions, downloadedFiles, err := manager.StopRecordingWithStorageScope(context.Background(), scope)
 	if err != nil {
@@ -80,24 +77,25 @@ func TestP47ScopedStopKeepsMatchingInPageStoppedRecordingUntilAcknowledged(t *te
 	if len(downloadedFiles) != 1 || downloadedFiles[0].FileName != "export.csv" {
 		t.Fatalf("downloaded files = %+v, want preserved in-page stopped downloads", downloadedFiles)
 	}
-	if !manager.inPageRecordingStopped || manager.lastRecordingStorageScope == nil {
-		t.Fatal("matching scoped stop should retain the in-page stopped marker until persistence acknowledgement")
+	if _, pending := manager.PendingStoppedRecordingStorageScope(); !pending {
+		t.Fatal("matching scoped stop should retain the runtime receipt until persistence acknowledgement")
 	}
-	manager.AcknowledgeInPageStoppedRecording(scope)
-	if manager.inPageRecordingStopped || manager.lastRecordingStorageScope != nil {
-		t.Fatal("matching scoped stop should clear the in-page stopped marker after acknowledgement")
+	receiptID, _, claimGeneration := manager.FinalRecordingReceiptInfo(scope)
+	if !manager.AcknowledgeFinalRecordingReceipt(scope, receiptID, runtimeStopOperationID(scope), claimGeneration) {
+		t.Fatal("matching scoped operation should acknowledge final receipt")
+	}
+	if _, pending := manager.PendingStoppedRecordingStorageScope(); pending {
+		t.Fatal("matching scoped stop should clear the runtime receipt after acknowledgement")
 	}
 
-	manager.inPageRecordingStopped = true
-	manager.lastRecordingStorageScope = &scope
-	manager.lastRecordedActions = []models.ScriptAction{{Type: "click", Selector: "#submit"}}
+	manager.recordingRegistry.finalBySession[scope.RecordingSessionID] = &recordingFinalReceipt{receiptID: "p47-final-next", scope: scope, actions: []models.ScriptAction{{Type: "click", Selector: "#submit"}}, state: recordingReceiptAvailable}
 	mismatch := scope
 	mismatch.RecordingSessionID = "session-b"
 	if _, _, err := manager.StopRecordingWithStorageScope(context.Background(), mismatch); err == nil {
 		t.Fatal("mismatched scope should not consume stale in-page stopped recording")
 	}
-	if !manager.inPageRecordingStopped {
-		t.Fatal("mismatched scoped stop should leave the in-page stopped marker intact")
+	if _, pending := manager.PendingStoppedRecordingStorageScope(); !pending {
+		t.Fatal("mismatched scoped stop should leave the runtime receipt intact")
 	}
 }
 
@@ -111,33 +109,35 @@ func TestP47RecordingStorageSnapshotKeepsScopeUntilAcknowledged(t *testing.T) {
 	scopeB := scopeA
 	scopeB.PageID = 31
 	scopeB.RecordingSessionID = "session-b"
-	recorder := &Recorder{
-		pendingStorageStates: map[RecordingStorageScope]map[string]any{
-			scopeA: {"cookies": []any{map[string]any{"name": "session-a"}}},
-			scopeB: {"cookies": []any{map[string]any{"name": "session-b"}}},
-		},
-	}
-
-	recorder.setActiveRecordingScopeLocked(scopeB)
-	if state := recorder.PeekLastStorageState(scopeA); state == nil || stringFromStorageState(state, "session-a") == "" {
+	manager := NewManager(&config.Config{}, nil, nil)
+	manager.mu.Lock()
+	manager.publishAuthSnapshotReceiptLocked(scopeA, map[string]any{"cookies": []any{map[string]any{"name": "session-a"}}})
+	manager.publishAuthSnapshotReceiptLocked(scopeB, map[string]any{"cookies": []any{map[string]any{"name": "session-b"}}})
+	manager.mu.Unlock()
+	if state := manager.PeekLastRecordingStorageState(scopeA); state == nil || stringFromStorageState(state, "session-a") == "" {
 		t.Fatal("starting another scoped recording cleared session A snapshot")
 	}
-	if state := recorder.PeekLastStorageState(scopeB); state == nil || stringFromStorageState(state, "session-b") == "" {
+	if state := manager.PeekLastRecordingStorageState(scopeB); state == nil || stringFromStorageState(state, "session-b") == "" {
 		t.Fatal("session B snapshot was not retained")
 	}
 
 	mismatch := scopeA
 	mismatch.RecordingSessionID = "session-c"
-	recorder.AcknowledgeLastStorageState(mismatch)
-	if state := recorder.PeekLastStorageState(scopeA); state == nil {
+	if _, receiptID, claimGeneration, err := manager.ClaimRecordingStorageState(scopeA, "snapshot-owner"); err != nil || manager.AcknowledgeClaimedRecordingStorageState(mismatch, receiptID, "snapshot-owner", claimGeneration) {
+		t.Fatalf("mismatched acknowledgement must not consume snapshot: err=%v", err)
+	}
+	if state := manager.PeekLastRecordingStorageState(scopeA); state == nil {
 		t.Fatal("mismatched acknowledgement cleared session A snapshot")
 	}
 
-	recorder.AcknowledgeLastStorageState(scopeA)
-	if state := recorder.PeekLastStorageState(scopeA); state != nil {
+	_, receiptID, claimGeneration, err := manager.ClaimRecordingStorageState(scopeA, "snapshot-owner")
+	if err != nil || !manager.AcknowledgeClaimedRecordingStorageState(scopeA, receiptID, "snapshot-owner", claimGeneration) {
+		t.Fatalf("matching acknowledgement failed: receipt=%q generation=%d err=%v", receiptID, claimGeneration, err)
+	}
+	if state := manager.PeekLastRecordingStorageState(scopeA); state != nil {
 		t.Fatalf("acknowledged session A snapshot remained available: %v", state)
 	}
-	if state := recorder.PeekLastStorageState(scopeB); state == nil {
+	if state := manager.PeekLastRecordingStorageState(scopeB); state == nil {
 		t.Fatal("acknowledging session A cleared session B snapshot")
 	}
 }
@@ -368,25 +368,18 @@ func stringFromStorageState(state map[string]any, wantName string) string {
 	return ""
 }
 
-func TestP47RecorderSyncLoopPersistsRecordingSessionDraft(t *testing.T) {
+func TestP476RecorderSyncLoopDoesNotWriteRecordingSession(t *testing.T) {
 	source, err := os.ReadFile("recorder.go")
 	if err != nil {
 		t.Fatalf("read production recorder.go: %v", err)
 	}
 	text := string(source)
-	required := []string{
-		"func (r *Recorder) syncActionsFromBrowser",
-		"r.persistRecordingDraft(ctx, actions",
-		"func (r *Recorder) persistRecordingDraft",
-		"models.RecordingSession{}",
-		`"actions_json"`,
-		`"action_count"`,
-		`"last_synced_at"`,
-		`"recording"`,
+	if !strings.Contains(text, "func (r *Recorder) syncActionsFromBrowser") {
+		t.Fatal("recorder.go is missing the action collection loop")
 	}
-	for _, want := range required {
-		if !strings.Contains(text, want) {
-			t.Fatalf("production recorder.go must persist P4.7 recording drafts through RecordingSession; missing %q", want)
+	for _, forbidden := range []string{"persistRecordingDraft", "models.RecordingSession{}", ".GormDB()"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("Recorder must not write recording business state; found %q", forbidden)
 		}
 	}
 }

@@ -36,6 +36,7 @@
 | P4.5 | 录制体验和项目登录态 | 已完成：页面列表、短录制流程、项目登录态、清洁会话和执行恢复 |
 | P4.6 | PostgreSQL 统一存储迁移 | 实现已完成：PostgreSQL Store、启动链路和调用方替换已完成；开发者本地验证通过，最终 review 需提供 `PlayBot` DSN 复跑 |
 | P4.7 | LLM 统一配置和录制数据管理 | 已完成：统一 AI 能力配置、录制会话和录制产物元数据 |
+| P4.7.6 | 录制生命周期收束 | 已完成：final draft identity 的动作 canonicalization、runtime receipt claim fencing、页面内 Stop 单一 runtime driver、Start runtime identity 必填、HTTP Stop 经 Coordinator `recording_stopped` event 统一收口与历史 PageScript 规范化均已收口；P4.7.6 定向、`go test ./api ./services/browser -count=1`、`go test ./... -count=1`、前端契约/类型/构建和 `git diff --check` 已通过。 |
 | P4.7.5 | Playbot Go Agent 与 Blueprint 质量边界重构 | 当前阶段：独立 Go agent 基于录制事实源生成 Go runner 可执行 Blueprint，拆清后端裁决、agent 编排、runner 执行边界 |
 | P4.8 | 录制到智能生成用例端到端收口 | 后续阶段：在 P4.7.5 输出标准稳定后，拉通页面录制、保存主流程、选择 LLM、生成 TestCase 的完整体验 |
 | P5 | 多用户和权限 | 后续阶段：项目数据归属、API 权限校验、用户隔离 |

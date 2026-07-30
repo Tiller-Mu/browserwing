@@ -70,7 +70,7 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 		}
 
 		// 项目管理相关 (Testing Platform)
-		projectHandlers := NewProjectHandlers(handler.db, handler.config, handler.ensureTestCaseRunnerHolder(), handler.ensureProjectAuthRuntimeHolder(), handler.ensurePlaybotAgentHolder(), handler.ensurePlaybotRunHub())
+		projectHandlers := NewProjectHandlers(handler.db, handler.config, handler.ensureTestCaseRunnerHolder(), handler.ensureProjectAuthRuntimeHolder(), handler.ensurePlaybotAgentHolder(), handler.ensurePlaybotRunHub(), handler.ensureRecordingLifecycleService(), handler.ensureRecordingRecoveryCoordinator())
 		projects := api.Group("/projects")
 		{
 			projects.GET("", projectHandlers.ListProjects)
@@ -125,12 +125,6 @@ func SetupRouter(handler *Handler, agentHandler interface{}, frontendFS fs.FS, e
 			browserAPI.POST("/cookies/import", handler.ImportBrowserCookies)
 			browserAPI.POST("/cookies/delete", handler.DeleteCookie)             // 删除单个cookie（使用name+domain+path标识）
 			browserAPI.POST("/cookies/batch/delete", handler.BatchDeleteCookies) // 批量删除cookies
-
-			// 录制相关
-			browserAPI.POST("/record/start", handler.StartRecording)
-			browserAPI.POST("/record/stop", handler.StopRecording)
-			browserAPI.GET("/record/status", handler.GetRecordingStatus)
-			browserAPI.POST("/record/clear-state", handler.ClearInPageRecordingState)
 
 			// 浏览器实例管理
 			browserAPI.POST("/instances", handler.CreateBrowserInstance)

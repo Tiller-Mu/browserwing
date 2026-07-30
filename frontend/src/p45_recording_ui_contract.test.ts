@@ -1,5 +1,5 @@
 import { projectApi, type StopPageRecordingSessionResponse, type TestPage } from './api/project';
-import BrowserManager, { p45BrowserManagerContract } from './pages/BrowserManager';
+import BrowserManager, { p45BrowserManagerContract, recordingOperationFailureIsTerminal, startRecordingOperationKey } from './pages/BrowserManager';
 import {
 	buildP45AuthStateSummary,
 	buildP45PageManagementView,
@@ -9,6 +9,7 @@ import {
 	resolveP45InPageStoppedRecordingAction,
 } from './pages/p45RecordingUiContract';
 import TestPageManager, { p45TestPageManagerContract } from './pages/TestPageManager';
+import { createRecordingOperationLedger } from './pages/recordingLifecycleOperationLedger';
 
 type P45RecordingKind = 'login_flow' | 'business_flow';
 type P45AuthContext = 'clean' | 'project_saved';
@@ -48,6 +49,10 @@ interface P45PageManagementRowView {
 interface P45PageManagementView {
 	layout: 'list' | 'table';
 	authState: P45AuthStateSummaryView | null;
+	authStateActions: Array<{
+		kind: 'delete_project_auth_state';
+		disabled?: boolean;
+	}>;
 	rows: P45PageManagementRowView[];
 }
 
@@ -56,9 +61,12 @@ interface P45StartRecordingCall {
 	versionId: number;
 	pageId: number;
   payload: {
+    operation_id: string;
     recording_kind: P45RecordingKind;
     auth_context: P45AuthContext;
     target_url?: string;
+		browser_instance_id?: string;
+		runtime_page_id?: string;
 	};
 }
 
@@ -112,6 +120,33 @@ assertSameReference(
 	pageManagerContract.buildAuthStateSummary,
 	buildP45AuthStateSummary,
 	'TestPageManager should consume the P4.5 auth-state summary helper',
+);
+
+assertEqual(
+	recordingOperationFailureIsTerminal({ response: { status: 409, data: { error: 'human detail', code: 'recording_operation_in_progress' } } }),
+	false,
+	'operation-in-progress must retain the ledger using response.data.code rather than detail',
+);
+assertEqual(
+	recordingOperationFailureIsTerminal({ response: { status: 409, data: { code: 'page_script_superseded' } } }),
+	true,
+	'known terminal lifecycle code must settle the ledger',
+);
+assertEqual(
+	recordingOperationFailureIsTerminal({ response: { status: 500, data: { code: 'runtime_lease_lost' } } }),
+	false,
+	'5xx lifecycle failures must preserve the operation ledger for retry',
+);
+assertEqual(
+	recordingOperationFailureIsTerminal({ response: { status: 409, data: { code: 'future_unknown_code' } } }),
+	false,
+	'unknown lifecycle code must retain the ledger until explicitly classified',
+);
+assertEqual(
+	startRecordingOperationKey({ projectId: '1', versionId: '2', pageId: '3', recordingKind: 'business_flow' }) ===
+		startRecordingOperationKey({ projectId: '1', versionId: '2', pageId: '3', recordingKind: 'business_flow' }),
+	true,
+	'pending Start must use a stable page-level key so runtime identity changes are blocked locally',
 );
 assertSameReference(
 	pageManagerContract.buildPageManagementView,
@@ -220,6 +255,11 @@ assertPresent(savedAuthRow, 'page manager should render a row for each page');
 assertHasAction(savedAuthRow.actions, 'login_flow', 'clean');
 assertHasAction(savedAuthRow.actions, 'business_flow', 'project_saved');
 assertHasAction(savedAuthRow.actions, 'business_flow', 'clean');
+assertEqual(
+  savedAuthView.authStateActions.some((action) => String(action.kind) === 'capture_project_auth_state'),
+  false,
+  'page management must not expose an unscoped direct auth-state Capture action',
+);
 assertOmitsSecrets(savedAuthView, 'page management view');
 assertFunction(
 	projectApi.getLatestPageRecording,
@@ -258,6 +298,7 @@ const navigations: string[] = [];
 const controller = createP45RecordingController({
 	projectId,
 	versionId,
+	operationLedger: createRecordingOperationLedger(),
 	api: {
 		startPageRecordingSession: async (
 			callProjectId: number,
@@ -295,20 +336,18 @@ await controller.startRecording({
   targetUrl: 'https://example.invalid/orders',
 });
 
-assertDeepEqual(
-  startCalls[0],
-  {
-    projectId,
-    versionId,
-    pageId: page.id,
-    payload: {
-      recording_kind: 'business_flow',
-      auth_context: 'project_saved',
-      target_url: 'https://example.invalid/orders',
-    },
-  },
-  'start recording should call API with recording_kind and auth_context',
-);
+const firstStartCall = startCalls[0];
+assertEqual(firstStartCall.projectId, projectId, 'start recording should retain project scope');
+assertEqual(firstStartCall.versionId, versionId, 'start recording should retain version scope');
+assertEqual(firstStartCall.pageId, page.id, 'start recording should retain page scope');
+assertEqual(firstStartCall.payload.recording_kind, 'business_flow', 'start recording should retain recording_kind');
+assertEqual(firstStartCall.payload.auth_context, 'project_saved', 'start recording should retain auth_context');
+assertEqual(firstStartCall.payload.target_url, 'https://example.invalid/orders', 'start recording should retain target_url');
+assertEqual(firstStartCall.payload.browser_instance_id, 'default', 'start recording should bind the browser instance');
+assertEqual(firstStartCall.payload.runtime_page_id, `project-page:${page.id}`, 'start recording should bind the runtime page identity');
+if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(firstStartCall.payload.operation_id || '')) {
+  throw new Error(`start recording operation_id is not a UUID: ${firstStartCall.payload.operation_id}`);
+}
 assertEqual(navigations.length, 1, 'start recording should navigate into the browser recording surface');
 const recordingNavigation = new URL(navigations[0], 'https://browserwing.local');
 assertEqual(
@@ -321,6 +360,47 @@ assertEqual(
   '42',
   'start recording navigation should prefer the recovered session auth_state_id over the current page value',
 );
+
+const responseLossCalls: P45StartRecordingCall[] = [];
+let responseLossAttempt = 0;
+const responseLossLedger = createRecordingOperationLedger();
+const responseLossAPI = {
+  startPageRecordingSession: async (callProjectId: number, callVersionId: number, callPageId: number, payload: P45StartRecordingCall['payload']) => {
+    responseLossCalls.push({ projectId: callProjectId, versionId: callVersionId, pageId: callPageId, payload });
+    responseLossAttempt += 1;
+    if (responseLossAttempt === 1) throw new Error('response lost after server commit');
+    return { data: { recording_session_id: 'response-loss-session', recording_meta: { recording_kind: 'login_flow' as const, auth_context: 'clean' as const } } };
+  },
+};
+const responseLossController = createP45RecordingController({
+  projectId,
+  versionId,
+  operationLedger: responseLossLedger,
+  api: responseLossAPI,
+  navigate: () => undefined,
+});
+try {
+  await responseLossController.startRecording({ pageId: page.id, recordingKind: 'login_flow', authContext: 'clean' });
+  throw new Error('response-loss first request should reject');
+} catch (error) {
+  if (!(error instanceof Error) || error.message !== 'response lost after server commit') throw error;
+}
+await assertRejects(
+  () => responseLossController.startRecording({ pageId: page.id, recordingKind: 'login_flow', authContext: 'clean', targetUrl: 'https://example.invalid/changed' }),
+  'a pending Start whose input changed locally must not reuse its operation id',
+);
+assertEqual(responseLossCalls.length, 1, 'changed pending input must not create an HTTP request');
+const responseLossRetryController = createP45RecordingController({
+  projectId,
+  versionId,
+  operationLedger: responseLossLedger,
+  api: responseLossAPI,
+  navigate: () => undefined,
+});
+await responseLossRetryController.startRecording({ pageId: page.id, recordingKind: 'login_flow', authContext: 'clean' });
+assertEqual(responseLossCalls.length, 2, 'response-loss retry should issue two HTTP requests');
+assertEqual(responseLossCalls[1].payload.operation_id, responseLossCalls[0].payload.operation_id, 'response-loss retry must reuse Start operation_id');
+assertDeepEqual(responseLossCalls[1].payload, responseLossCalls[0].payload, 'response-loss retry must replay the frozen Start payload');
 
 await controller.startRecording({
   pageId: page.id,
@@ -338,6 +418,7 @@ const resumedNavigations: string[] = [];
 const resumedController = createP45RecordingController({
   projectId,
   versionId,
+  operationLedger: createRecordingOperationLedger(),
   api: {
     startPageRecordingSession: async () => {
       throw {
@@ -380,6 +461,7 @@ const foreignSessionNavigations: string[] = [];
 const foreignSessionController = createP45RecordingController({
   projectId,
   versionId,
+  operationLedger: createRecordingOperationLedger(),
   api: {
     startPageRecordingSession: async () => {
       throw {

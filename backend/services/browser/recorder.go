@@ -20,7 +20,6 @@ import (
 	"github.com/browserwing/browserwing/storage"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
-	"gorm.io/gorm"
 )
 
 //go:embed scripts/recorder.js
@@ -41,15 +40,15 @@ type DBInterface interface {
 	ListLLMConfigs() ([]*models.LLMConfigModel, error)
 }
 
-type recordingDraftDB interface {
-	GormDB() *gorm.DB
-}
-
 type RecordingStorageScope struct {
 	ProjectID          uint
 	VersionID          uint
 	PageID             uint
 	RecordingSessionID string
+	BrowserInstanceID  string
+	RuntimePageID      string
+	RuntimeGeneration  string
+	LeaseGeneration    string
 }
 
 func (s RecordingStorageScope) isZero() bool {
@@ -64,7 +63,27 @@ func (s RecordingStorageScope) matches(other RecordingStorageScope) bool {
 		return false
 	}
 	if strings.TrimSpace(s.RecordingSessionID) != "" || strings.TrimSpace(other.RecordingSessionID) != "" {
-		return strings.TrimSpace(s.RecordingSessionID) == strings.TrimSpace(other.RecordingSessionID)
+		if strings.TrimSpace(s.RecordingSessionID) != strings.TrimSpace(other.RecordingSessionID) {
+			return false
+		}
+	}
+	if strings.TrimSpace(s.BrowserInstanceID) != "" || strings.TrimSpace(other.BrowserInstanceID) != "" {
+		if strings.TrimSpace(s.BrowserInstanceID) != strings.TrimSpace(other.BrowserInstanceID) {
+			return false
+		}
+	}
+	if strings.TrimSpace(s.RuntimePageID) != "" || strings.TrimSpace(other.RuntimePageID) != "" {
+		if strings.TrimSpace(s.RuntimePageID) != strings.TrimSpace(other.RuntimePageID) {
+			return false
+		}
+	}
+	if strings.TrimSpace(s.RuntimeGeneration) != "" || strings.TrimSpace(other.RuntimeGeneration) != "" {
+		if strings.TrimSpace(s.RuntimeGeneration) != strings.TrimSpace(other.RuntimeGeneration) {
+			return false
+		}
+	}
+	if strings.TrimSpace(s.LeaseGeneration) != "" || strings.TrimSpace(other.LeaseGeneration) != "" {
+		return strings.TrimSpace(s.LeaseGeneration) == strings.TrimSpace(other.LeaseGeneration)
 	}
 	return true
 }
@@ -81,6 +100,10 @@ type Recorder struct {
 	syncStopChan            chan bool
 	lastSyncedCount         int
 	lastSyncedDraft         string
+	lastSyncedFingerprint   string
+	lastDOMSnapshot         json.RawMessage
+	syncRevision            uint64
+	draftSink               func(RecordingStorageScope, uint64, []models.ScriptAction, json.RawMessage)
 	apiServerPort           string                                   // API 服务器端口
 	llmManager              *llm.Manager                             // LLM 管理器
 	db                      DBInterface                              // 数据库接口
@@ -91,8 +114,32 @@ type Recorder struct {
 	recordingCtx            context.Context                          // 录制生命周期上下文
 	recordingCancel         context.CancelFunc                       // 取消录制后台任务
 	storageScope            *RecordingStorageScope                   // 当前项目录制快照作用域
-	pendingStorageStates    map[RecordingStorageScope]map[string]any // 已停止项目录制等待确认的登录态快照
+	pendingStorageStates    map[RecordingStorageScope]map[string]any // stop 时仅供 Manager 一次性交接，不是业务 receipt
 	downloadAnalysisActions []models.ScriptAction                    // 项目录制中的无文件下载分析动作
+}
+
+// SetRecordingDraftSink installs a runtime-only observer. The callback runs
+// after Recorder releases its lock and must not make database decisions.
+func (r *Recorder) SetRecordingDraftSink(sink func(RecordingStorageScope, uint64, []models.ScriptAction, json.RawMessage)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.draftSink = sink
+}
+
+// TakeLastStorageState transfers a stopped snapshot exactly once to Manager.
+// Recorder never owns a post-stop business-consumable snapshot lifecycle.
+func (r *Recorder) TakeLastStorageState(scope RecordingStorageScope) map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if scope.isZero() || r.pendingStorageStates == nil {
+		return nil
+	}
+	state, ok := r.pendingStorageStates[scope]
+	if !ok {
+		return nil
+	}
+	delete(r.pendingStorageStates, scope)
+	return cloneStorageState(state)
 }
 
 // NewRecorder 创建录制器
@@ -375,6 +422,9 @@ func (r *Recorder) StartRecording(ctx context.Context, page *rod.Page, url strin
 	r.syncStopChan = syncStopChan
 	r.lastSyncedCount = 0
 	r.lastSyncedDraft = ""
+	r.lastSyncedFingerprint = ""
+	r.lastDOMSnapshot = nil
+	r.syncRevision = 0
 
 	go r.syncActionsFromBrowser(recordingCtx, syncTicker, syncStopChan)
 
@@ -389,6 +439,11 @@ func (r *Recorder) syncActionsFromBrowser(ctx context.Context, ticker *time.Tick
 	for {
 		select {
 		case <-ticker.C:
+			var draftSink func(RecordingStorageScope, uint64, []models.ScriptAction, json.RawMessage)
+			var draftScope RecordingStorageScope
+			var draftRevision uint64
+			var draftActions []models.ScriptAction
+			var draftDOM json.RawMessage
 			r.mu.Lock()
 			if !r.isRecording || r.page == nil {
 				r.mu.Unlock()
@@ -487,20 +542,36 @@ func (r *Recorder) syncActionsFromBrowser(ctx context.Context, ticker *time.Tick
 				})
 
 				draftJSON, marshalErr := json.Marshal(actions)
-				if marshalErr == nil && string(draftJSON) != r.lastSyncedDraft {
+				semanticDOM := captureRecordingSemanticDOMSnapshot(ctx, r.page)
+				fingerprint, fingerprintErr := models.RecordingDraftFingerprintV1(draftJSON, semanticDOM)
+				if marshalErr == nil && fingerprintErr == nil && fingerprint != r.lastSyncedFingerprint {
 					newCount := len(actions) - r.lastSyncedCount
 					r.actions = actions
 					r.lastSyncedCount = len(actions)
 					r.lastSyncedDraft = string(draftJSON)
+					r.lastSyncedFingerprint = fingerprint
+					r.lastDOMSnapshot = append(json.RawMessage(nil), semanticDOM...)
 					if newCount > 0 {
 						logger.Info(ctx, "Synced %d new actions, total %d actions", newCount, len(r.actions))
 					} else {
 						logger.Info(ctx, "Synced recording draft update, total %d actions", len(r.actions))
 					}
-					r.persistRecordingDraft(ctx, actions, r.lastSyncedDraft)
+					// Recorder keeps uncommitted data in runtime memory only. Sync is
+					// committed exclusively by RecordingLifecycleService.
+					if r.storageScope != nil && !r.storageScope.isZero() && r.draftSink != nil {
+						r.syncRevision++
+						draftSink = r.draftSink
+						draftScope = *r.storageScope
+						draftRevision = r.syncRevision
+						draftActions = append([]models.ScriptAction(nil), r.actions...)
+						draftDOM = append(json.RawMessage(nil), r.lastDOMSnapshot...)
+					}
 				}
 			}
 			r.mu.Unlock()
+			if draftSink != nil {
+				draftSink(draftScope, draftRevision, draftActions, draftDOM)
+			}
 
 		case <-stopChan:
 			return
@@ -511,41 +582,100 @@ func (r *Recorder) syncActionsFromBrowser(ctx context.Context, ticker *time.Tick
 	}
 }
 
-func (r *Recorder) persistRecordingDraft(ctx context.Context, actions []models.ScriptAction, actionsJSON string) {
-	if r.storageScope == nil || r.storageScope.isZero() || len(actions) == 0 {
-		return
+const recordingSemanticDOMSnapshotMaxBytes = 1 << 20
+
+// captureRecordingSemanticDOMSnapshot intentionally captures only page
+// semantics needed to replay a flow. It never reads input values, cookies,
+// storage or raw HTML. RecordingNormalizer remains the persistence/AI safety
+// seam, but the recorder must not create a second source of sensitive state.
+func captureRecordingSemanticDOMSnapshot(ctx context.Context, page *rod.Page) json.RawMessage {
+	if page == nil {
+		return json.RawMessage(`{"schema_version":1,"kind":"semantic_dom_snapshot","unavailable":true,"reason":"page_unavailable"}`)
 	}
-	draftDB, ok := any(r.db).(recordingDraftDB)
-	if !ok || draftDB.GormDB() == nil {
-		return
+	result, err := page.Timeout(2 * time.Second).Eval(`() => {
+		const trim = (value, max = 256) => String(value || '').trim().slice(0, max);
+		const selector = (element) => {
+			if (element.id) return '#' + CSS.escape(element.id);
+			const testID = element.getAttribute('data-testid');
+			if (testID) return '[data-testid="' + CSS.escape(testID) + '"]';
+			const name = element.getAttribute('name');
+			if (name) return element.tagName.toLowerCase() + '[name="' + CSS.escape(name) + '"]';
+			const role = element.getAttribute('role');
+			if (role) return '[role="' + CSS.escape(role) + '"]';
+			return element.tagName.toLowerCase();
+		};
+		const sensitive = /password|token|secret|authorization|cookie/i;
+		const elements = [];
+		for (const element of Array.from(document.querySelectorAll('a,button,input,textarea,select,[role],[aria-label],[data-testid]')).slice(0, 500)) {
+			const tag = element.tagName.toLowerCase();
+			const type = trim(element.getAttribute('type'));
+			const name = trim(element.getAttribute('name'));
+			const ariaLabel = trim(element.getAttribute('aria-label'));
+			const item = { tag, selector: selector(element) };
+			if (element.id) item.id = trim(element.id);
+			if (element.getAttribute('role')) item.role = trim(element.getAttribute('role'));
+			if (name) item.name = name;
+			if (type) item.type = type;
+			if (ariaLabel) item.aria_label = ariaLabel;
+			const placeholder = trim(element.getAttribute('placeholder'));
+			if (placeholder && !sensitive.test(name + ' ' + ariaLabel + ' ' + placeholder)) item.placeholder = placeholder;
+			if (tag !== 'input' && tag !== 'textarea' && !sensitive.test(name + ' ' + ariaLabel)) {
+				const text = trim(element.innerText || element.textContent);
+				if (text) item.text = text;
+			}
+			elements.push(item);
+		}
+		return { schema_version: 1, kind: 'semantic_dom_snapshot', url: location.href, title: trim(document.title), captured_at: new Date().toISOString(), elements };
+	}`)
+	if err != nil || result == nil {
+		logger.Warn(ctx, "Failed to capture recording semantic DOM snapshot: %v", err)
+		return json.RawMessage(`{"schema_version":1,"kind":"semantic_dom_snapshot","unavailable":true,"reason":"capture_failed"}`)
 	}
-	sessionID, err := strconv.ParseUint(strings.TrimSpace(r.storageScope.RecordingSessionID), 10, 32)
-	if err != nil || sessionID == 0 {
-		return
+	encoded, err := json.Marshal(result.Value)
+	if err != nil || len(encoded) > recordingSemanticDOMSnapshotMaxBytes {
+		return json.RawMessage(`{"schema_version":1,"kind":"semantic_dom_snapshot","unavailable":true,"reason":"snapshot_too_large"}`)
 	}
-	now := time.Now().UTC()
-	result := draftDB.GormDB().Model(&models.RecordingSession{}).
-		Where(
-			"id = ? AND project_id = ? AND version_id = ? AND page_id = ? AND status = ?",
-			uint(sessionID),
-			r.storageScope.ProjectID,
-			r.storageScope.VersionID,
-			r.storageScope.PageID,
-			"recording",
-		).
-		Updates(map[string]any{
-			"actions_json":   actionsJSON,
-			"action_count":   len(actions),
-			"last_synced_at": now,
-			"updated_at":     now,
-		})
-	if result.Error != nil {
-		logger.Warn(ctx, "Failed to persist recording draft actions: %v", result.Error)
-		return
+	return json.RawMessage(encoded)
+}
+
+// LastSemanticDOMSnapshot returns the runtime-only final semantic snapshot.
+// Manager attaches it to the session-bound final receipt before handing it to
+// the lifecycle coordinator.
+func (r *Recorder) LastSemanticDOMSnapshot() json.RawMessage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append(json.RawMessage(nil), r.lastDOMSnapshot...)
+}
+
+func (r *Recorder) SyncRevision() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.syncRevision
+}
+
+// finalizeRecordingDraftLocked places Stop's final action/DOM snapshot on the
+// same monotonic draft timeline used by periodic Sync. The caller holds r.mu.
+// A changing captured_at value alone is intentionally ignored by the shared
+// versioned fingerprint.
+func (r *Recorder) finalizeRecordingDraftLocked(actions []models.ScriptAction, dom json.RawMessage) (uint64, bool, error) {
+	actions = models.NormalizeRecordingActions(actions)
+	actionsJSON, err := json.Marshal(actions)
+	if err != nil {
+		return r.syncRevision, false, err
 	}
-	if result.RowsAffected == 0 {
-		logger.Warn(ctx, "Recording draft sync skipped because session scope is not recording")
+	fingerprint, err := models.RecordingDraftFingerprintV1(actionsJSON, dom)
+	if err != nil {
+		return r.syncRevision, false, err
 	}
+	if fingerprint == r.lastSyncedFingerprint {
+		return r.syncRevision, false, nil
+	}
+	r.syncRevision++
+	r.lastSyncedCount = len(actions)
+	r.lastSyncedDraft = string(actionsJSON)
+	r.lastSyncedFingerprint = fingerprint
+	r.lastDOMSnapshot = append(json.RawMessage(nil), dom...)
+	return r.syncRevision, true, nil
 }
 
 // checkAndProcessAIRequestOnPage 检查并处理 AI 提取请求（在指定页面）
@@ -972,6 +1102,12 @@ func (r *Recorder) stopRecordingLocked(ctx context.Context) ([]models.ScriptActi
 	// 发生在同一毫秒，不能再仅按时间戳去重。
 	r.actions = mergeRecordedActions(r.actions, allActions, r.downloadAnalysisActions)
 	logger.Info(ctx, "✓ Merged and sorted %d unique actions from all pages", len(r.actions))
+	// Keep the last restricted semantic snapshot with the final runtime
+	// receipt. This intentionally happens before page references are released.
+	r.lastDOMSnapshot = captureRecordingSemanticDOMSnapshot(stopCtx, r.page)
+	if _, _, err := r.finalizeRecordingDraftLocked(r.actions, r.lastDOMSnapshot); err != nil {
+		logger.Warn(ctx, "Failed to fingerprint final recording draft: %v", err)
+	}
 
 	logger.Info(ctx, "✓ CSP restrictions restored")
 

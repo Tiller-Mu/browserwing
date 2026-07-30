@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +31,7 @@ import (
 	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/go-rod/stealth"
+	"github.com/google/uuid"
 )
 
 //go:embed scripts/float_button.js
@@ -40,6 +43,11 @@ var xhrInterceptorScriptForManager string
 var callBrowserDownloadBehavior = func(browser *rod.Browser, request *proto.BrowserSetDownloadBehavior) error {
 	return request.Call(browser)
 }
+
+var errRecordingReceiptUnavailable = errors.New("recording runtime receipt is unavailable")
+var ErrRecordingStartReservationInProgress = errors.New("recording start target is already reserved")
+var errRecordingStartReservationInProgress = ErrRecordingStartReservationInProgress
+var ErrRecordingStopInProgress = errors.New("recording stop is already in progress")
 
 func commonChromiumBinaryPaths() []string {
 	paths := []string{
@@ -244,6 +252,110 @@ type startInstanceOptions struct {
 	openStartupPage bool
 }
 
+type recordingReceiptState string
+
+const (
+	recordingReceiptAvailable recordingReceiptState = "available"
+	recordingReceiptClaimed   recordingReceiptState = "claimed"
+	recordingReceiptAcked     recordingReceiptState = "acked"
+	recordingReceiptReleased  recordingReceiptState = "released"
+	recordingReceiptExpired   recordingReceiptState = "expired"
+)
+
+const (
+	recordingReceiptClaimTTL = 5 * time.Minute
+	recordingReceiptTTL      = 15 * time.Minute
+)
+
+// RecordingRuntimeEvent is a session-bound runtime observation. Manager emits
+// it but never interprets database lifecycle state; the application-level
+// lifecycle coordinator is the only consumer allowed to commit it.
+type RecordingRuntimeEvent struct {
+	ID              string
+	Kind            string // draft_sync | recording_stopped | recording_receipt_expired | runtime_lease_lost
+	Scope           RecordingStorageScope
+	ReceiptID       string
+	OperationID     string
+	ClaimGeneration uint64
+	SyncRevision    uint64
+	Actions         []models.ScriptAction
+	DOMSnapshot     json.RawMessage
+}
+
+type RecordingRuntimeEventSink func(RecordingRuntimeEvent)
+
+// recordingFinalReceipt is runtime-only state. It never decides a recording
+// session business status; PostgreSQL does that in RecordingLifecycleService.
+type recordingFinalReceipt struct {
+	receiptID        string
+	scope            RecordingStorageScope
+	startURL         string
+	actions          []models.ScriptAction
+	downloadedFiles  []models.DownloadedFile
+	domSnapshot      json.RawMessage
+	syncRevision     uint64
+	state            recordingReceiptState
+	claimOperationID string
+	claimedAt        time.Time
+	claimGeneration  uint64
+	frozenAt         time.Time
+}
+
+type recordingAuthSnapshotReceipt struct {
+	receiptID        string
+	scope            RecordingStorageScope
+	storageState     map[string]any
+	state            recordingReceiptState
+	claimOperationID string
+	claimedAt        time.Time
+	claimGeneration  uint64
+	frozenAt         time.Time
+}
+
+type recordingRuntimeRegistry struct {
+	activeByInstance   map[string]RecordingStorageScope
+	startBySession     map[string]*recordingStartReservation
+	stopBySession      map[string]*recordingStopReservation
+	draftBySession     map[string]*recordingDraftReceipt
+	finalBySession     map[string]*recordingFinalReceipt
+	authBySession      map[string]*recordingAuthSnapshotReceipt
+	expiredBySession   map[string]RecordingRuntimeEvent
+	leaseLostBySession map[string]RecordingRuntimeEvent
+}
+
+// recordingStopReservation prevents two callers from running a potentially
+// multi-second Recorder stop for the same scope while Manager's global mutex
+// is intentionally released for other browser instances.
+type recordingStopReservation struct {
+	scope       RecordingStorageScope
+	operationID string
+}
+
+// recordingStartReservation is runtime-only fencing state. PostgreSQL owns
+// the business operation, while this prevents two local goroutines from
+// driving the same browser target before an active recorder is registered.
+type recordingStartReservation struct {
+	scope      RecordingStorageScope
+	token      string
+	generation uint64
+	state      string // reserved | cancelling | running
+	ctx        context.Context
+	cancel     context.CancelFunc
+	done       chan struct{}
+	doneOnce   sync.Once
+	heartbeat  time.Time
+}
+
+// recordingDraftReceipt keeps only the latest complete draft per session.
+// It is a re-drive queue entry, not a second lifecycle fact source.
+type recordingDraftReceipt struct {
+	event RecordingRuntimeEvent
+}
+
+func newRecordingRuntimeRegistry() *recordingRuntimeRegistry {
+	return &recordingRuntimeRegistry{activeByInstance: make(map[string]RecordingStorageScope), startBySession: make(map[string]*recordingStartReservation), stopBySession: make(map[string]*recordingStopReservation), draftBySession: make(map[string]*recordingDraftReceipt), finalBySession: make(map[string]*recordingFinalReceipt), authBySession: make(map[string]*recordingAuthSnapshotReceipt), expiredBySession: make(map[string]RecordingRuntimeEvent), leaseLostBySession: make(map[string]RecordingRuntimeEvent)}
+}
+
 // Manager 浏览器管理器
 type Manager struct {
 	config       *config.Config
@@ -252,23 +364,23 @@ type Manager struct {
 	agentManager AgentManagerInterface // Agent 管理器接口（用于 AI 控制功能）
 	mu           sync.Mutex
 	recorder     *Recorder
+	recorders    map[string]*Recorder // browser instance ID -> recorder; runtime-only
 
 	// 多实例管理
 	instances         map[string]*BrowserInstanceRuntime // 实例 ID -> 运行时信息
 	currentInstanceID string                             // 当前活动实例 ID
 
 	// 共享配置
-	defaultBrowserConfig      *models.BrowserConfig   // 默认浏览器配置
-	siteConfigs               []*models.BrowserConfig // 网站特定配置列表
-	lastRecordedActions       []models.ScriptAction   // 最后一次录制的动作(用于页面内停止录制)
-	lastRecordedStartURL      string                  // 最后一次录制的起始URL(用于页面内停止录制)
-	lastDownloadedFiles       []models.DownloadedFile // 最后一次录制下载的文件(用于页面内停止录制)
-	lastRecordingStorageScope *RecordingStorageScope  // 页面内停止结果绑定的项目录制作用域
-	inPageRecordingStopped    bool                    // 标记是否是页面内停止的录制
-	projectDownloadsDenied    bool                    // 项目录制期间拒绝真实下载
-	projectDownloadBrowser    *rod.Browser            // 需要恢复下载策略的浏览器
-	currentLanguage           string                  // 当前前端语言设置
-	downloadPath              string                  // 下载目录路径
+	defaultBrowserConfig    *models.BrowserConfig   // 默认浏览器配置
+	siteConfigs             []*models.BrowserConfig // 网站特定配置列表
+	recordingRegistry       *recordingRuntimeRegistry
+	runtimeEventSink        RecordingRuntimeEventSink
+	receiptJanitorOnce      sync.Once
+	projectDownloadsDenied  bool         // 项目录制期间拒绝真实下载
+	projectDownloadBrowser  *rod.Browser // 需要恢复下载策略的浏览器
+	projectDownloadBrowsers map[*rod.Browser]struct{}
+	currentLanguage         string // 当前前端语言设置
+	downloadPath            string // 下载目录路径
 
 	// 向后兼容（废弃）
 	browser    *rod.Browser
@@ -296,18 +408,316 @@ func NewManager(cfg *config.Config, db storage.Store, llmManager *llm.Manager) *
 		recorder.SetDB(db)
 	}
 
-	return &Manager{
-		config:     cfg,
-		db:         db,
-		llmManager: llmManager,
-		recorder:   recorder,
-		instances:  make(map[string]*BrowserInstanceRuntime),
+	manager := &Manager{
+		config:            cfg,
+		db:                db,
+		llmManager:        llmManager,
+		recorder:          recorder,
+		recorders:         map[string]*Recorder{"default": recorder},
+		instances:         make(map[string]*BrowserInstanceRuntime),
+		recordingRegistry: newRecordingRuntimeRegistry(),
 	}
+	recorder.SetRecordingDraftSink(manager.publishRecorderDraft)
+	return manager
+}
+
+func (m *Manager) configuredRecorderLocked() *Recorder {
+	recorder := NewRecorder()
+	if m.config != nil && m.config.Server != nil && m.config.Server.Port != "" {
+		recorder.SetAPIServerPort(m.config.Server.Port)
+	}
+	if m.llmManager != nil {
+		recorder.SetLLMManager(m.llmManager)
+	}
+	if m.db != nil {
+		recorder.SetDB(m.db)
+	}
+	if m.downloadPath != "" {
+		recorder.SetDownloadPath(m.downloadPath)
+	}
+	return recorder
+}
+
+func (m *Manager) recordingInstanceIDLocked(instanceID string) string {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		instanceID = strings.TrimSpace(m.currentInstanceID)
+	}
+	if instanceID == "" {
+		return "default"
+	}
+	return instanceID
+}
+
+func (m *Manager) recorderForInstanceLocked(instanceID string) *Recorder {
+	instanceID = m.recordingInstanceIDLocked(instanceID)
+	if m.recorders == nil {
+		m.recorders = make(map[string]*Recorder)
+	}
+	if recorder := m.recorders[instanceID]; recorder != nil {
+		return recorder
+	}
+	if instanceID == "default" && m.recorder != nil {
+		m.recorders[instanceID] = m.recorder
+		return m.recorder
+	}
+	recorder := m.configuredRecorderLocked()
+	recorder.SetRecordingDraftSink(m.publishRecorderDraft)
+	m.recorders[instanceID] = recorder
+	return recorder
+}
+
+func (m *Manager) recorderForScopeLocked(scope RecordingStorageScope) *Recorder {
+	for instanceID, activeScope := range m.recordingRuntimeRegistryLocked().activeByInstance {
+		if activeScope.matches(scope) {
+			return m.recorderForInstanceLocked(instanceID)
+		}
+	}
+	for _, recorder := range m.recorders {
+		if recorder != nil && recorder.PeekLastStorageState(scope) != nil {
+			return recorder
+		}
+	}
+	return m.recorderForInstanceLocked("")
 }
 
 // SetAgentManager 设置 Agent 管理器
 func (m *Manager) SetAgentManager(agentManager AgentManagerInterface) {
 	m.agentManager = agentManager
+}
+
+// SetRecordingRuntimeEventSink connects runtime observations to the
+// application-owned coordinator. Manager only emits scoped data/receipt IDs;
+// it never reads a RecordingSession or chooses a business terminal state.
+func (m *Manager) SetRecordingRuntimeEventSink(sink RecordingRuntimeEventSink) {
+	m.mu.Lock()
+	m.runtimeEventSink = sink
+	m.mu.Unlock()
+}
+
+// StartRecordingReceiptJanitor expires unclaimed stopped receipts/snapshots.
+// Active claims are intentionally preserved until their shorter claim timeout
+// has elapsed, so a transient DB failure can retry with the same operation.
+func (m *Manager) StartRecordingReceiptJanitor(ctx context.Context) {
+	m.receiptJanitorOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					m.mu.Lock()
+					m.cleanupRuntimeReceiptsLocked(time.Now().UTC())
+					m.mu.Unlock()
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	})
+}
+
+func (m *Manager) publishRecorderDraft(scope RecordingStorageScope, revision uint64, actions []models.ScriptAction, domSnapshot json.RawMessage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if scope.isZero() || !m.scopeIsActiveLocked(scope) {
+		return
+	}
+	event := RecordingRuntimeEvent{
+		ID:           deterministicRuntimeEventID("draft_sync", scope, revision, ""),
+		Kind:         "draft_sync",
+		Scope:        scope,
+		SyncRevision: revision,
+		Actions:      append([]models.ScriptAction(nil), actions...),
+		DOMSnapshot:  append(json.RawMessage(nil), domSnapshot...),
+	}
+	m.recordingRuntimeRegistryLocked().draftBySession[scope.RecordingSessionID] = &recordingDraftReceipt{event: cloneRecordingRuntimeEvent(event)}
+	m.emitRuntimeEventLocked(event)
+}
+
+func (m *Manager) scopeIsActiveLocked(scope RecordingStorageScope) bool {
+	for _, active := range m.recordingRuntimeRegistryLocked().activeByInstance {
+		if active.matches(scope) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) emitRuntimeEventLocked(event RecordingRuntimeEvent) {
+	sink := m.runtimeEventSink
+	if sink == nil {
+		return
+	}
+	// Runtime event delivery must not block the browser manager. The receipt
+	// stays in the registry until the lifecycle path ACKs/releases it, so a
+	// retry can safely re-drive the same deterministic operation.
+	go sink(event)
+}
+
+func cloneRecordingRuntimeEvent(event RecordingRuntimeEvent) RecordingRuntimeEvent {
+	event.Actions = append([]models.ScriptAction(nil), event.Actions...)
+	event.DOMSnapshot = append(json.RawMessage(nil), event.DOMSnapshot...)
+	return event
+}
+
+// PendingRecordingRuntimeEvents exposes unacknowledged runtime observations to
+// the application coordinator. The registry remains the only runtime fact
+// source; this method deliberately makes no lifecycle/database decisions.
+func (m *Manager) PendingRecordingRuntimeEvents() []RecordingRuntimeEvent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupRuntimeReceiptsLocked(time.Now().UTC())
+	registry := m.recordingRuntimeRegistryLocked()
+	events := make([]RecordingRuntimeEvent, 0, len(registry.draftBySession)+len(registry.finalBySession)+len(registry.expiredBySession)+len(registry.leaseLostBySession))
+	for _, draft := range registry.draftBySession {
+		if draft != nil {
+			events = append(events, cloneRecordingRuntimeEvent(draft.event))
+		}
+	}
+	for _, receipt := range registry.finalBySession {
+		if receipt == nil || (receipt.state != recordingReceiptAvailable && receipt.state != recordingReceiptClaimed) {
+			continue
+		}
+		events = append(events, RecordingRuntimeEvent{
+			// Event identity belongs to the immutable final receipt, not to the
+			// temporary claim owner.  Claim handoff must retain retry/backoff state.
+			ID:              deterministicRuntimeEventID("recording_stopped", receipt.scope, receipt.syncRevision, receipt.receiptID),
+			Kind:            "recording_stopped",
+			Scope:           receipt.scope,
+			ReceiptID:       receipt.receiptID,
+			OperationID:     receipt.claimOperationID,
+			ClaimGeneration: receipt.claimGeneration,
+			SyncRevision:    receipt.syncRevision,
+			Actions:         append([]models.ScriptAction(nil), receipt.actions...),
+			DOMSnapshot:     append(json.RawMessage(nil), receipt.domSnapshot...),
+		})
+	}
+	for _, event := range registry.expiredBySession {
+		events = append(events, cloneRecordingRuntimeEvent(event))
+	}
+	for _, event := range registry.leaseLostBySession {
+		events = append(events, cloneRecordingRuntimeEvent(event))
+	}
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].Scope.RecordingSessionID != events[j].Scope.RecordingSessionID {
+			return events[i].Scope.RecordingSessionID < events[j].Scope.RecordingSessionID
+		}
+		if events[i].Kind != events[j].Kind {
+			return events[i].Kind == "draft_sync"
+		}
+		return events[i].ID < events[j].ID
+	})
+	return events
+}
+
+// AcknowledgeRecordingRuntimeEvent removes only a successfully persisted
+// observation. Final receipts are acknowledged through their dedicated ACK
+// after Stop commits; expired tombstones are acknowledged here after the
+// lifecycle has converged the session.
+func (m *Manager) AcknowledgeRecordingRuntimeEvent(event RecordingRuntimeEvent) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	registry := m.recordingRuntimeRegistryLocked()
+	if draft := registry.draftBySession[event.Scope.RecordingSessionID]; draft != nil && draft.event.ID == event.ID {
+		delete(registry.draftBySession, event.Scope.RecordingSessionID)
+	}
+	if lost, ok := registry.leaseLostBySession[event.Scope.RecordingSessionID]; ok && lost.ID == event.ID {
+		delete(registry.leaseLostBySession, event.Scope.RecordingSessionID)
+	}
+	if expired, ok := registry.expiredBySession[event.Scope.RecordingSessionID]; ok && expired.ID == event.ID {
+		delete(registry.expiredBySession, event.Scope.RecordingSessionID)
+	}
+}
+
+// ReleaseRecordingRuntimeEvent consumes only the event that reached a durable
+// event-local discard outcome. It must never discard another receipt merely
+// because the two observations share a recording session; final/auth/start
+// cleanup is a separate session-level operation after LifecycleService has
+// committed an incompatible terminal state.
+func (m *Manager) ReleaseRecordingRuntimeEvent(event RecordingRuntimeEvent) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	registry := m.recordingRuntimeRegistryLocked()
+	switch event.Kind {
+	case "draft_sync":
+		if draft := registry.draftBySession[event.Scope.RecordingSessionID]; draft != nil && draft.event.ID == event.ID {
+			delete(registry.draftBySession, event.Scope.RecordingSessionID)
+		}
+	case "recording_stopped":
+		if receipt := registry.finalBySession[event.Scope.RecordingSessionID]; receipt != nil && receipt.scope.matches(event.Scope) && receipt.receiptID == event.ReceiptID && strings.TrimSpace(event.OperationID) != "" && receipt.claimOperationID == strings.TrimSpace(event.OperationID) && event.ClaimGeneration != 0 && receipt.claimGeneration == event.ClaimGeneration {
+			receipt.state = recordingReceiptReleased
+			delete(registry.finalBySession, event.Scope.RecordingSessionID)
+		}
+	case "recording_receipt_expired":
+		if expired, ok := registry.expiredBySession[event.Scope.RecordingSessionID]; ok && expired.ID == event.ID {
+			delete(registry.expiredBySession, event.Scope.RecordingSessionID)
+		}
+	case "runtime_lease_lost":
+		if lost, ok := registry.leaseLostBySession[event.Scope.RecordingSessionID]; ok && lost.ID == event.ID {
+			delete(registry.leaseLostBySession, event.Scope.RecordingSessionID)
+		}
+	}
+}
+
+// ReleaseRecordingSessionResources discards every runtime-only observation for
+// one exact scope after LifecycleService has durably chosen an incompatible
+// business terminal state. Manager never makes that decision itself.
+func (m *Manager) ReleaseRecordingSessionResources(scope RecordingStorageScope) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.releaseRecordingSessionResourcesLocked(scope)
+}
+
+func (m *Manager) releaseRecordingSessionResourcesLocked(scope RecordingStorageScope) {
+	registry := m.recordingRuntimeRegistryLocked()
+	for instanceID, active := range registry.activeByInstance {
+		if active.matches(scope) {
+			delete(registry.activeByInstance, instanceID)
+		}
+	}
+	if reservation := registry.startBySession[scope.RecordingSessionID]; reservation != nil && reservation.scope.matches(scope) {
+		if reservation.cancel != nil {
+			reservation.cancel()
+		}
+		delete(registry.startBySession, scope.RecordingSessionID)
+		if reservation.done != nil {
+			reservation.doneOnce.Do(func() { close(reservation.done) })
+		}
+	}
+	if stopping := registry.stopBySession[scope.RecordingSessionID]; stopping != nil && stopping.scope.matches(scope) {
+		delete(registry.stopBySession, scope.RecordingSessionID)
+	}
+	if draft := registry.draftBySession[scope.RecordingSessionID]; draft != nil && draft.event.Scope.matches(scope) {
+		delete(registry.draftBySession, scope.RecordingSessionID)
+	}
+	if receipt := registry.finalBySession[scope.RecordingSessionID]; receipt != nil && receipt.scope.matches(scope) {
+		receipt.state = recordingReceiptReleased
+		delete(registry.finalBySession, scope.RecordingSessionID)
+	}
+	if receipt := registry.authBySession[scope.RecordingSessionID]; receipt != nil && receipt.scope.matches(scope) {
+		receipt.state = recordingReceiptReleased
+		delete(registry.authBySession, scope.RecordingSessionID)
+	}
+	if expired, ok := registry.expiredBySession[scope.RecordingSessionID]; ok && expired.Scope.matches(scope) {
+		delete(registry.expiredBySession, scope.RecordingSessionID)
+	}
+	if lost, ok := registry.leaseLostBySession[scope.RecordingSessionID]; ok && lost.Scope.matches(scope) {
+		delete(registry.leaseLostBySession, scope.RecordingSessionID)
+	}
+}
+
+func deterministicRuntimeEventID(kind string, scope RecordingStorageScope, revision uint64, receiptID string) string {
+	name := fmt.Sprintf("%s|%d|%d|%d|%s|%s|%s|%d|%s", kind, scope.ProjectID, scope.VersionID, scope.PageID, scope.RecordingSessionID, scope.RuntimeGeneration, scope.RuntimePageID, revision, receiptID)
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
+}
+
+// runtimeStopOperationID is the stable runtime-driver identity for an
+// in-page Stop. It is not another database lifecycle path: Coordinator uses
+// this exact UUID when it asks RecordingLifecycleService to commit the receipt.
+func runtimeStopOperationID(scope RecordingStorageScope) string {
+	name := fmt.Sprintf("runtime-stop|%d|%d|%d|%s|%s|%s|%s", scope.ProjectID, scope.VersionID, scope.PageID, scope.RecordingSessionID, scope.BrowserInstanceID, scope.RuntimePageID, scope.RuntimeGeneration)
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
 }
 
 // GetConfig returns the manager's Config reference (read-only, for path inspection).
@@ -677,7 +1087,14 @@ func (m *Manager) start(ctx context.Context, loadGlobalCookieStore bool) error {
 
 	// 保存下载路径到 Manager 和 Recorder
 	m.downloadPath = downloadPath
-	m.recorder.SetDownloadPath(downloadPath)
+	for _, recorder := range m.recorders {
+		if recorder != nil {
+			recorder.SetDownloadPath(downloadPath)
+		}
+	}
+	if m.recorder != nil {
+		m.recorder.SetDownloadPath(downloadPath)
+	}
 
 	// 授予剪贴板权限，避免粘贴时弹出权限请求
 	grantPermissions := &proto.BrowserGrantPermissions{
@@ -910,6 +1327,18 @@ func (m *Manager) GetActivePage() *rod.Page {
 	return m.activePage
 }
 
+// GetActivePageForInstance returns the page selected for one browser instance
+// without treating the Manager-wide compatibility pointer as runtime truth.
+func (m *Manager) GetActivePageForInstance(instanceID string) *rod.Page {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	instanceID = m.recordingInstanceIDLocked(instanceID)
+	if runtime := m.instances[instanceID]; runtime != nil && runtime.activePage != nil {
+		return runtime.activePage
+	}
+	return m.activePage
+}
+
 // SetActivePage 设置当前活动页面（用于脚本回放等场景）
 func (m *Manager) SetActivePage(page *rod.Page) {
 	m.mu.Lock()
@@ -941,13 +1370,25 @@ func (m *Manager) OpenIsolatedPage(ctx context.Context, targetURL string, langua
 	if err != nil {
 		return fmt.Errorf("failed to create isolated page: %w", err)
 	}
+	closePage := true
+	defer func() {
+		if closePage {
+			_ = page.Close()
+		}
+	}()
 	m.setPageWindow(page)
 
-	if err := page.Timeout(60 * time.Second).Navigate(targetURL); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := page.Context(ctx).Timeout(60 * time.Second).Navigate(targetURL); err != nil {
 		return fmt.Errorf("failed to navigate isolated page: %w", err)
 	}
-	if err := page.Timeout(60 * time.Second).WaitLoad(); err != nil {
-		logger.Warn(ctx, "Failed to wait for isolated page load: %v", err)
+	if err := page.Context(ctx).Timeout(60 * time.Second).WaitLoad(); err != nil {
+		return fmt.Errorf("failed to wait for isolated page load: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	m.mu.Lock()
@@ -956,7 +1397,28 @@ func (m *Manager) OpenIsolatedPage(ctx context.Context, targetURL string, langua
 		return err
 	}
 	m.activePage = page
+	closePage = false
 	return nil
+}
+
+// CloseIsolatedRecordingPage removes a page created for a fenced Start when
+// it never became an active recorder. It only clears the exact page pointer,
+// so a newer driver cannot lose its own active target to an old driver's
+// deferred cleanup.
+func (m *Manager) CloseIsolatedRecordingPage(_ context.Context, instanceID string, page *rod.Page) {
+	if page == nil {
+		return
+	}
+	_ = page.Close()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	instanceID = m.recordingInstanceIDLocked(instanceID)
+	if runtime := m.instances[instanceID]; runtime != nil && runtime.activePage == page {
+		runtime.activePage = nil
+	}
+	if m.activePage == page {
+		m.activePage = nil
+	}
 }
 
 // CloseActivePage 关闭当前活动页面
@@ -1270,7 +1732,10 @@ func (m *Manager) OpenPage(url string, language string, instanceID string, norec
 			}
 		}
 		// 启动轮询检查页面内的录制请求
-		go m.checkInPageRecordingRequests(ctx, page)
+		m.mu.Lock()
+		recorder := m.recorderForInstanceLocked(instanceID)
+		m.mu.Unlock()
+		go m.checkInPageRecordingRequests(ctx, page, recorder, instanceID, RecordingStorageScope{})
 	}
 
 	// 保存当前活动页面到指定实例（需要锁保护）
@@ -1363,10 +1828,136 @@ func (m *Manager) StartRecording(ctx context.Context, instanceID string) error {
 }
 
 func (m *Manager) StartRecordingWithStorageScope(ctx context.Context, instanceID string, scope RecordingStorageScope) error {
-	return m.startRecording(ctx, instanceID, &scope)
+	return m.startRecordingWithReservation(ctx, instanceID, &scope, "", 0)
+}
+
+// AcquireRecordingStartTarget grants the sole local driver context for a
+// pending Start. A higher DB fencing generation never starts beside a slow
+// predecessor: it cancels the predecessor and waits for its done signal to
+// remove the reservation before a later retry may acquire a new target.
+//
+// The returned running value means an already-created recorder was rebound to
+// the caller's current database fence and must be reused rather than started
+// again. A non-running successful result owns driverCtx and may run browser
+// side effects exactly once.
+func (m *Manager) AcquireRecordingStartTarget(parent context.Context, scope RecordingStorageScope, token string, generation uint64) (driverCtx context.Context, running bool, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if scope.isZero() || strings.TrimSpace(token) == "" || generation == 0 {
+		return nil, false, fmt.Errorf("recording start reservation identity is required")
+	}
+	registry := m.recordingRuntimeRegistryLocked()
+	existing := registry.startBySession[scope.RecordingSessionID]
+	if existing == nil {
+		ctx, cancel := context.WithCancel(parent)
+		registry.startBySession[scope.RecordingSessionID] = &recordingStartReservation{
+			scope: scope, token: token, generation: generation, state: "reserved", ctx: ctx, cancel: cancel,
+			done: make(chan struct{}), heartbeat: time.Now().UTC(),
+		}
+		return ctx, false, nil
+	}
+	if !existing.scope.matches(scope) {
+		return nil, false, errRecordingStartReservationInProgress
+	}
+	if existing.token == token && existing.generation == generation {
+		if existing.state == "running" {
+			return nil, true, nil
+		}
+		return nil, false, errRecordingStartReservationInProgress
+	}
+	if generation <= existing.generation {
+		return nil, false, errRecordingStartReservationInProgress
+	}
+	if existing.state == "running" {
+		// A recorder is already running for the same persisted target. Rebind
+		// the local fence so only the newer DB claimant may complete Start;
+		// no page navigation or Recorder.Start call is repeated.
+		existing.token = token
+		existing.generation = generation
+		existing.heartbeat = time.Now().UTC()
+		return nil, true, nil
+	}
+	if existing.state != "cancelling" {
+		existing.state = "cancelling"
+		if existing.cancel != nil {
+			existing.cancel()
+		}
+	}
+	return nil, false, errRecordingStartReservationInProgress
+}
+
+// ReserveRecordingStartTarget remains for callers that only need the legacy
+// running/in-progress shape. New runtime drivers must use
+// AcquireRecordingStartTarget so their browser work receives the cancellation
+// context and cannot race a fenced predecessor.
+func (m *Manager) ReserveRecordingStartTarget(scope RecordingStorageScope, token string, generation uint64) (running bool, err error) {
+	_, running, err = m.AcquireRecordingStartTarget(context.Background(), scope, token, generation)
+	return running, err
+}
+
+// HeartbeatRecordingStartTarget keeps the Manager half of a Start fence alive
+// while navigation or auth restoration is in progress. A fenced or cancelled
+// driver receives an in-progress error and must stop using its context.
+func (m *Manager) HeartbeatRecordingStartTarget(scope RecordingStorageScope, token string, generation uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	reservation := m.recordingRuntimeRegistryLocked().startBySession[scope.RecordingSessionID]
+	if reservation == nil || !reservation.scope.matches(scope) || reservation.token != token || reservation.generation != generation || reservation.state == "cancelling" {
+		return errRecordingStartReservationInProgress
+	}
+	reservation.heartbeat = time.Now().UTC()
+	return nil
+}
+
+func (m *Manager) finishRecordingStartTargetLocked(scope RecordingStorageScope, token string, generation uint64, running bool) error {
+	registry := m.recordingRuntimeRegistryLocked()
+	reservation := registry.startBySession[scope.RecordingSessionID]
+	if reservation == nil || !reservation.scope.matches(scope) || reservation.token != token || reservation.generation != generation {
+		return errRecordingStartReservationInProgress
+	}
+	if reservation.state == "cancelling" {
+		delete(registry.startBySession, scope.RecordingSessionID)
+		if reservation.done != nil {
+			reservation.doneOnce.Do(func() { close(reservation.done) })
+		}
+		return errRecordingStartReservationInProgress
+	}
+	if running {
+		reservation.state = "running"
+		reservation.heartbeat = time.Now().UTC()
+	} else {
+		delete(registry.startBySession, scope.RecordingSessionID)
+	}
+	if reservation.done != nil {
+		reservation.doneOnce.Do(func() { close(reservation.done) })
+	}
+	return nil
+}
+
+func (m *Manager) ReleaseRecordingStartTarget(scope RecordingStorageScope, token string, generation uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	reservation := m.recordingRuntimeRegistryLocked().startBySession[scope.RecordingSessionID]
+	if reservation != nil && reservation.scope.matches(scope) && reservation.token == token && reservation.generation == generation {
+		if reservation.cancel != nil {
+			reservation.cancel()
+		}
+		delete(m.recordingRuntimeRegistryLocked().startBySession, scope.RecordingSessionID)
+		if reservation.done != nil {
+			reservation.doneOnce.Do(func() { close(reservation.done) })
+		}
+	}
+}
+
+func (m *Manager) StartRecordingWithStorageScopeReservation(ctx context.Context, instanceID string, scope RecordingStorageScope, token string, generation uint64) error {
+	return m.startRecordingWithReservation(ctx, instanceID, &scope, token, generation)
 }
 
 func (m *Manager) startRecording(ctx context.Context, instanceID string, scope *RecordingStorageScope) error {
+	return m.startRecordingWithReservation(ctx, instanceID, scope, "", 0)
+}
+
+func (m *Manager) startRecordingWithReservation(ctx context.Context, instanceID string, scope *RecordingStorageScope, token string, generation uint64) error {
 	m.mu.Lock()
 	currentLang := m.currentLanguage
 	if currentLang == "" {
@@ -1376,6 +1967,15 @@ func (m *Manager) startRecording(ctx context.Context, instanceID string, scope *
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if scope != nil && strings.TrimSpace(token) != "" {
+		reservation := m.recordingRuntimeRegistryLocked().startBySession[scope.RecordingSessionID]
+		if reservation == nil || !reservation.scope.matches(*scope) || reservation.token != token || reservation.generation != generation {
+			return errRecordingStartReservationInProgress
+		}
+		if reservation.state == "running" {
+			return nil
+		}
+	}
 
 	// 获取指定实例的浏览器和活动页面
 	instanceBrowser, activePage, _, err := m.getInstanceBrowser(instanceID)
@@ -1399,6 +1999,8 @@ func (m *Manager) startRecording(ctx context.Context, instanceID string, scope *
 		return fmt.Errorf("failed to get page info: %w", err)
 	}
 
+	instanceID = m.recordingInstanceIDLocked(instanceID)
+	recorder := m.recorderForInstanceLocked(instanceID)
 	scopes := []RecordingStorageScope{}
 	if scope != nil {
 		scopes = append(scopes, *scope)
@@ -1406,23 +2008,43 @@ func (m *Manager) startRecording(ctx context.Context, instanceID string, scope *
 			return err
 		}
 	}
-	err = m.recorder.StartRecording(ctx, activePage, info.URL, currentLang, scopes...)
+	err = recorder.StartRecording(ctx, activePage, info.URL, currentLang, scopes...)
 	if err != nil {
 		if scope != nil {
-			m.restoreProjectDownloadBehaviorLocked(ctx)
+			m.restoreProjectDownloadBehaviorLocked(ctx, instanceBrowser)
 		}
 		return err
 	}
-	m.clearInPageRecordingStateLocked()
+	if scope != nil {
+		if instanceID == "" {
+			instanceID = m.currentInstanceID
+		}
+		if strings.TrimSpace(token) != "" {
+			if err := m.finishRecordingStartTargetLocked(*scope, token, generation, true); err != nil {
+				// The driver was fenced while Recorder.Start completed. Undo the
+				// local runtime state before reporting in-progress so an old
+				// completion cannot leave a hidden active recorder behind.
+				_, _, _ = recorder.StopRecordingWithStorageScope(context.Background(), *scope)
+				m.restoreProjectDownloadBehaviorLocked(context.Background(), instanceBrowser)
+				return err
+			}
+		}
+		m.recordingRuntimeRegistryLocked().activeByInstance[instanceID] = *scope
+		delete(m.recordingRuntimeRegistryLocked().finalBySession, scope.RecordingSessionID)
+	}
 
 	// StartRecording may be called without OpenPage, for example project-scoped
 	// isolated recording. Bind in-page controls to the recording lifecycle, not
 	// to the short-lived HTTP request that starts recording.
-	recordingCtx := m.recorder.RecordingContext()
+	recordingCtx := recorder.RecordingContext()
 	if recordingCtx == nil {
 		recordingCtx = context.WithoutCancel(ctx)
 	}
-	go m.checkInPageRecordingRequests(recordingCtx, activePage)
+	loopScope := RecordingStorageScope{}
+	if scope != nil {
+		loopScope = *scope
+	}
+	go m.checkInPageRecordingRequests(recordingCtx, activePage, recorder, instanceID, loopScope)
 
 	// 启动录制后,显示录制UI面板
 	_, _ = activePage.Eval(`() => {
@@ -1439,10 +2061,13 @@ func (m *Manager) StopRecording(ctx context.Context) ([]models.ScriptAction, []m
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	_, projectScoped := m.recorder.CurrentStorageScope()
-	actions, downloadedFiles, err := m.recorder.StopRecording(ctx)
+	recorder := m.recorderForInstanceLocked("")
+	scope, projectScoped := recorder.CurrentStorageScope()
+	actions, downloadedFiles, err := recorder.StopRecording(ctx)
 	if projectScoped {
 		m.restoreProjectDownloadBehaviorLocked(ctx)
+		m.publishFinalRecordingReceiptLocked(scope, recorder.GetStartURL(), actions, downloadedFiles, recorder.LastSemanticDOMSnapshot(), recorder.SyncRevision(), "")
+		m.publishAuthSnapshotReceiptLocked(scope, recorder.TakeLastStorageState(scope))
 	}
 	return actions, downloadedFiles, err
 }
@@ -1450,31 +2075,113 @@ func (m *Manager) StopRecording(ctx context.Context) ([]models.ScriptAction, []m
 // StopRecordingWithStorageScope stops recording only when the active browser recorder
 // belongs to the requested persisted recording session scope.
 func (m *Manager) StopRecordingWithStorageScope(ctx context.Context, scope RecordingStorageScope) ([]models.ScriptAction, []models.DownloadedFile, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	return m.stopRecordingWithStorageScope(ctx, scope, runtimeStopOperationID(scope))
+}
 
-	if actions, downloadedFiles, ok := m.peekInPageStoppedRecordingLocked(scope); ok {
+// StopRecordingWithClaim returns a stopped runtime receipt only to its owning
+// lifecycle operation. A different pending operation must not drive the same
+// recorder a second time or consume the same final receipt.
+func (m *Manager) StopRecordingWithClaim(ctx context.Context, scope RecordingStorageScope, operationID string) ([]models.ScriptAction, []models.DownloadedFile, error) {
+	return m.stopRecordingWithStorageScope(ctx, scope, operationID)
+}
+
+func (m *Manager) stopRecordingWithStorageScope(ctx context.Context, scope RecordingStorageScope, operationID string) ([]models.ScriptAction, []models.DownloadedFile, error) {
+	m.mu.Lock()
+	m.cleanupRuntimeReceiptsLocked(time.Now().UTC())
+
+	if actions, downloadedFiles, _, _, ok, err := m.claimFinalRecordingReceiptLocked(scope, operationID); err != nil {
+		m.mu.Unlock()
+		return nil, nil, err
+	} else if ok {
+		m.mu.Unlock()
 		return actions, downloadedFiles, nil
 	}
+	registry := m.recordingRuntimeRegistryLocked()
+	if stopping := registry.stopBySession[scope.RecordingSessionID]; stopping != nil && stopping.scope.matches(scope) {
+		m.mu.Unlock()
+		return nil, nil, ErrRecordingStopInProgress
+	}
 
-	startURL := m.recorder.GetStartURL()
-	actions, downloadedFiles, err := m.recorder.StopRecordingWithStorageScope(ctx, scope)
+	recorder := m.recorderForScopeLocked(scope)
+	startURL := recorder.GetStartURL()
+	registry.stopBySession[scope.RecordingSessionID] = &recordingStopReservation{scope: scope, operationID: operationID}
+	m.mu.Unlock()
+
+	// Recorder stop can inspect DOM/storage and wait on browser operations. It
+	// must not hold the Manager-wide registry lock, otherwise an instance A
+	// stop serializes unrelated instance B Start/Stop and coordinator claims.
+	actions, downloadedFiles, err := recorder.StopRecordingWithStorageScope(ctx, scope)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	registry = m.recordingRuntimeRegistryLocked()
+	ownedStop := false
+	if stopping := registry.stopBySession[scope.RecordingSessionID]; stopping != nil && stopping.scope.matches(scope) && stopping.operationID == operationID {
+		delete(registry.stopBySession, scope.RecordingSessionID)
+		ownedStop = true
+	}
+	// A terminal lifecycle cleanup may have fenced this in-flight browser stop
+	// while the Manager mutex was deliberately released.  Never publish its
+	// late result into a session whose runtime resources have already been
+	// released; the lifecycle/recovery path owns the subsequent convergence.
+	if !ownedStop {
+		return nil, nil, ErrRecordingStopInProgress
+	}
 	if err != nil {
 		return nil, nil, err
 	}
-	m.restoreProjectDownloadBehaviorLocked(ctx)
-	m.publishStoppedRecordingResultLocked(scope, startURL, actions, downloadedFiles)
+	m.restoreProjectDownloadBehaviorLocked(ctx, m.browserForScopeLocked(scope))
+	m.publishFinalRecordingReceiptLocked(scope, startURL, actions, downloadedFiles, recorder.LastSemanticDOMSnapshot(), recorder.SyncRevision(), operationID)
+	m.publishAuthSnapshotReceiptLocked(scope, recorder.TakeLastStorageState(scope))
+	if actions, downloadedFiles, _, _, ok, err := m.claimFinalRecordingReceiptLocked(scope, operationID); err != nil {
+		return nil, nil, err
+	} else if ok {
+		for instanceID, activeScope := range m.recordingRuntimeRegistryLocked().activeByInstance {
+			if activeScope.matches(scope) {
+				delete(m.recordingRuntimeRegistryLocked().activeByInstance, instanceID)
+			}
+		}
+		return actions, downloadedFiles, nil
+	}
+	for instanceID, activeScope := range m.recordingRuntimeRegistryLocked().activeByInstance {
+		if activeScope.matches(scope) {
+			delete(m.recordingRuntimeRegistryLocked().activeByInstance, instanceID)
+		}
+	}
 	return actions, downloadedFiles, nil
 }
 
-// AcknowledgeInPageStoppedRecording clears a page-local stopped recording only
-// after the matching RecordingSession terminal state has been stored durably.
-func (m *Manager) AcknowledgeInPageStoppedRecording(scope RecordingStorageScope) {
+// AcknowledgeFinalRecordingReceipt consumes exactly the final receipt adopted
+// by the database. Scope, operation owner and claim generation are all
+// required: a delayed claimant must not delete a receipt taken over after TTL.
+func (m *Manager) AcknowledgeFinalRecordingReceipt(scope RecordingStorageScope, receiptID, operationID string, claimGeneration uint64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.inPageRecordingStopped && m.lastRecordingStorageScope != nil && m.lastRecordingStorageScope.matches(scope) {
-		m.clearInPageRecordingStateLocked()
+	receipt, ok := m.recordingRuntimeRegistryLocked().finalBySession[scope.RecordingSessionID]
+	if !ok || !receipt.scope.matches(scope) || strings.TrimSpace(receiptID) == "" || receipt.receiptID != strings.TrimSpace(receiptID) || strings.TrimSpace(operationID) == "" || receipt.claimOperationID != strings.TrimSpace(operationID) || claimGeneration == 0 || receipt.claimGeneration != claimGeneration {
+		return false
 	}
+	receipt.state = recordingReceiptAcked
+	delete(m.recordingRuntimeRegistryLocked().finalBySession, scope.RecordingSessionID)
+	delete(m.recordingRuntimeRegistryLocked().draftBySession, scope.RecordingSessionID)
+	delete(m.recordingRuntimeRegistryLocked().startBySession, scope.RecordingSessionID)
+	return true
+}
+
+// ReleaseFinalRecordingReceipt relinquishes exactly one runtime claim after a
+// durable lifecycle outcome. It preserves the receipt for a new owner rather
+// than deleting another operation's claim by session ID alone.
+func (m *Manager) ReleaseFinalRecordingReceipt(scope RecordingStorageScope, receiptID, operationID string, claimGeneration uint64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	receipt, ok := m.recordingRuntimeRegistryLocked().finalBySession[scope.RecordingSessionID]
+	if !ok || !receipt.scope.matches(scope) || strings.TrimSpace(receiptID) == "" || receipt.receiptID != strings.TrimSpace(receiptID) || strings.TrimSpace(operationID) == "" || receipt.claimOperationID != strings.TrimSpace(operationID) || claimGeneration == 0 || receipt.claimGeneration != claimGeneration {
+		return false
+	}
+	receipt.state = recordingReceiptAvailable
+	receipt.claimOperationID = ""
+	receipt.claimedAt = time.Time{}
+	return true
 }
 
 // RecordingArtifactStorageKey converts a browser download path into a storage key
@@ -1526,20 +2233,37 @@ func (m *Manager) setProjectDownloadBehaviorLocked(browser *rod.Browser, deny bo
 	}); err != nil {
 		return fmt.Errorf("set project recording download behavior: %w", err)
 	}
-	m.projectDownloadsDenied = deny
+	if m.projectDownloadBrowsers == nil {
+		m.projectDownloadBrowsers = make(map[*rod.Browser]struct{})
+	}
 	if deny {
+		m.projectDownloadBrowsers[browser] = struct{}{}
 		m.projectDownloadBrowser = browser
 	} else {
-		m.projectDownloadBrowser = nil
+		delete(m.projectDownloadBrowsers, browser)
+		if m.projectDownloadBrowser == browser {
+			m.projectDownloadBrowser = nil
+			for remaining := range m.projectDownloadBrowsers {
+				m.projectDownloadBrowser = remaining
+				break
+			}
+		}
 	}
+	m.projectDownloadsDenied = len(m.projectDownloadBrowsers) > 0
 	return nil
 }
 
-func (m *Manager) restoreProjectDownloadBehaviorLocked(ctx context.Context) {
-	if !m.projectDownloadsDenied {
+func (m *Manager) restoreProjectDownloadBehaviorLocked(ctx context.Context, targets ...*rod.Browser) {
+	if !m.projectDownloadsDenied && len(targets) == 0 {
 		return
 	}
-	browser := m.projectDownloadBrowser
+	var browser *rod.Browser
+	if len(targets) > 0 {
+		browser = targets[0]
+	}
+	if browser == nil {
+		browser = m.projectDownloadBrowser
+	}
 	if browser == nil {
 		browser = m.browser
 	}
@@ -1548,21 +2272,72 @@ func (m *Manager) restoreProjectDownloadBehaviorLocked(ctx context.Context) {
 	}
 }
 
+func (m *Manager) browserForScopeLocked(scope RecordingStorageScope) *rod.Browser {
+	for instanceID, activeScope := range m.recordingRuntimeRegistryLocked().activeByInstance {
+		if activeScope.matches(scope) {
+			if runtime := m.instances[instanceID]; runtime != nil {
+				return runtime.browser
+			}
+		}
+	}
+	return m.projectDownloadBrowser
+}
+
 // IsRecording 检查是否正在录制
 func (m *Manager) IsRecording() bool {
-	return m.recorder.IsRecording()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, recorder := range m.recorders {
+		if recorder != nil && recorder.IsRecording() {
+			return true
+		}
+	}
+	return m.recorder != nil && m.recorder.IsRecording()
 }
 
 // CurrentRecordingStorageScope reports the active project recording scope only
 // while this manager still owns the recorder lifecycle.
 func (m *Manager) CurrentRecordingStorageScope() (RecordingStorageScope, bool) {
-	return m.recorder.CurrentStorageScope()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, recorder := range m.recorders {
+		if recorder != nil {
+			if scope, ok := recorder.CurrentStorageScope(); ok {
+				return scope, true
+			}
+		}
+	}
+	return RecordingStorageScope{}, false
 }
 
 // ActiveRecordingStorageScope reports the current recorder lifecycle and its
 // project scope when the recorder belongs to a persisted recording session.
 func (m *Manager) ActiveRecordingStorageScope() (RecordingStorageScope, bool) {
-	return m.recorder.ActiveStorageScope()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, recorder := range m.recorders {
+		if recorder != nil {
+			if scope, ok := recorder.ActiveStorageScope(); ok {
+				return scope, true
+			}
+		}
+	}
+	return RecordingStorageScope{}, false
+}
+
+// IsRecordingStorageScopeActive reports whether this process still owns the
+// exact persisted runtime scope. Lifecycle retries use it to finish the same
+// Start operation without opening a second isolated page when another browser
+// instance happens to be the manager's current active recorder.
+func (m *Manager) IsRecordingStorageScopeActive(scope RecordingStorageScope) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, activeScope := range m.recordingRuntimeRegistryLocked().activeByInstance {
+		if activeScope.matches(scope) {
+			return true
+		}
+	}
+	return false
 }
 
 // PendingStoppedRecordingStorageScope reports a page-local stop whose actions
@@ -1570,87 +2345,291 @@ func (m *Manager) ActiveRecordingStorageScope() (RecordingStorageScope, bool) {
 func (m *Manager) PendingStoppedRecordingStorageScope() (RecordingStorageScope, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.inPageRecordingStopped || m.lastRecordingStorageScope == nil || m.lastRecordingStorageScope.isZero() {
-		return RecordingStorageScope{}, false
+	for _, receipt := range m.recordingRuntimeRegistryLocked().finalBySession {
+		if receipt.state == recordingReceiptAvailable || receipt.state == recordingReceiptClaimed {
+			return receipt.scope, true
+		}
 	}
-	return *m.lastRecordingStorageScope, true
+	return RecordingStorageScope{}, false
 }
 
 // GetRecordingInfo 获取录制信息
 func (m *Manager) GetRecordingInfo() map[string]interface{} {
-	info := m.recorder.GetRecordingInfo()
-
-	// 如果是页面内停止的录制,添加标记和actions
 	m.mu.Lock()
-	if m.inPageRecordingStopped {
-		info["in_page_stopped"] = true
-		info["actions"] = m.lastRecordedActions
-		info["count"] = len(m.lastRecordedActions)
-		info["downloaded_files"] = m.lastDownloadedFiles
-		// 使用持久化的start_url
-		if m.lastRecordedStartURL != "" {
-			info["start_url"] = m.lastRecordedStartURL
+	info := m.recorderForInstanceLocked("").GetRecordingInfo()
+	for _, receipt := range m.recordingRuntimeRegistryLocked().finalBySession {
+		if receipt.state == recordingReceiptAvailable || receipt.state == recordingReceiptClaimed {
+			info["in_page_stopped"] = true
+			info["actions"] = append([]models.ScriptAction(nil), receipt.actions...)
+			info["count"] = len(receipt.actions)
+			info["downloaded_files"] = append([]models.DownloadedFile(nil), receipt.downloadedFiles...)
+			if receipt.startURL != "" {
+				info["start_url"] = receipt.startURL
+			}
+			break
 		}
-		// 不要清除标记,让前端显示完保存对话框后主动调用清除
 	}
 	m.mu.Unlock()
 
 	return info
 }
 
-// PeekLastRecordingStorageState returns the latest storage snapshot when it matches scope.
-// The caller must acknowledge it after any dependent durable write succeeds.
+// PeekLastRecordingStorageState is a read-only compatibility view. New
+// lifecycle capture uses ClaimRecordingStorageState so an auth snapshot has a
+// concrete operation owner before any database work starts.
 func (m *Manager) PeekLastRecordingStorageState(scope RecordingStorageScope) map[string]any {
-	return m.recorder.PeekLastStorageState(scope)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupRuntimeReceiptsLocked(time.Now().UTC())
+	receipt, ok := m.recordingRuntimeRegistryLocked().authBySession[scope.RecordingSessionID]
+	if !ok || !receipt.scope.matches(scope) || (receipt.state != recordingReceiptAvailable && receipt.state != recordingReceiptClaimed) {
+		return nil
+	}
+	return cloneStorageState(receipt.storageState)
 }
 
-// AcknowledgeLastRecordingStorageState clears the latest storage snapshot only
-// when it still belongs to scope.
-func (m *Manager) AcknowledgeLastRecordingStorageState(scope RecordingStorageScope) {
-	m.recorder.AcknowledgeLastStorageState(scope)
+// ClaimRecordingStorageState gives one Capture operation exclusive temporary
+// ownership. A database failure leaves the claim intact so the same operation
+// can retry; a stale claim is safely reclaimable after its bounded TTL.
+func (m *Manager) ClaimRecordingStorageState(scope RecordingStorageScope, operationID string) (map[string]any, string, uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupRuntimeReceiptsLocked(time.Now().UTC())
+	if strings.TrimSpace(operationID) == "" {
+		return nil, "", 0, errRecordingReceiptUnavailable
+	}
+	receipt, ok := m.recordingRuntimeRegistryLocked().authBySession[scope.RecordingSessionID]
+	if !ok || !receipt.scope.matches(scope) {
+		return nil, "", 0, errRecordingReceiptUnavailable
+	}
+	now := time.Now().UTC()
+	if receipt.state == recordingReceiptClaimed && now.Sub(receipt.claimedAt) >= recordingReceiptClaimTTL {
+		receipt.state = recordingReceiptAvailable
+		receipt.claimOperationID = ""
+		receipt.claimedAt = time.Time{}
+	}
+	switch receipt.state {
+	case recordingReceiptAvailable:
+		receipt.state = recordingReceiptClaimed
+		receipt.claimOperationID = operationID
+		receipt.claimedAt = now
+		receipt.claimGeneration++
+	case recordingReceiptClaimed:
+		if receipt.claimOperationID != operationID {
+			return nil, "", 0, fmt.Errorf("recording auth snapshot is claimed by another operation")
+		}
+	case recordingReceiptAcked, recordingReceiptReleased, recordingReceiptExpired:
+		return nil, "", 0, errRecordingReceiptUnavailable
+	}
+	return cloneStorageState(receipt.storageState), receipt.receiptID, receipt.claimGeneration, nil
 }
 
-// DiscardLastRecordingStorageState abandons the matching snapshot after an
-// explicit recording-session cancellation.
-func (m *Manager) DiscardLastRecordingStorageState(scope RecordingStorageScope) {
-	m.recorder.DiscardLastStorageState(scope)
+func (m *Manager) AcknowledgeClaimedRecordingStorageState(scope RecordingStorageScope, receiptID, operationID string, claimGeneration uint64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	receipt, ok := m.recordingRuntimeRegistryLocked().authBySession[scope.RecordingSessionID]
+	if !ok || !receipt.scope.matches(scope) || strings.TrimSpace(receiptID) == "" || receipt.receiptID != strings.TrimSpace(receiptID) || strings.TrimSpace(operationID) == "" || receipt.claimOperationID != strings.TrimSpace(operationID) || claimGeneration == 0 || receipt.claimGeneration != claimGeneration {
+		return false
+	}
+	receipt.state = recordingReceiptAcked
+	delete(m.recordingRuntimeRegistryLocked().authBySession, scope.RecordingSessionID)
+	return true
+}
+
+// ReleaseClaimedRecordingStorageState abandons only the matching Capture
+// claim. The snapshot becomes available for a later operation; an old owner
+// cannot affect a receipt that has been reclaimed with a new generation.
+func (m *Manager) ReleaseClaimedRecordingStorageState(scope RecordingStorageScope, receiptID, operationID string, claimGeneration uint64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	receipt, ok := m.recordingRuntimeRegistryLocked().authBySession[scope.RecordingSessionID]
+	if !ok || !receipt.scope.matches(scope) || strings.TrimSpace(receiptID) == "" || receipt.receiptID != strings.TrimSpace(receiptID) || strings.TrimSpace(operationID) == "" || receipt.claimOperationID != strings.TrimSpace(operationID) || claimGeneration == 0 || receipt.claimGeneration != claimGeneration {
+		return false
+	}
+	receipt.state = recordingReceiptAvailable
+	receipt.claimOperationID = ""
+	receipt.claimedAt = time.Time{}
+	return true
 }
 
 // ClearInPageRecordingState 清除页面内录制状态(供前端保存或取消后调用)
 func (m *Manager) ClearInPageRecordingState() {
 	m.mu.Lock()
-	m.clearInPageRecordingStateLocked()
+	m.clearFinalRecordingReceiptsLocked()
 	m.mu.Unlock()
 }
 
-func (m *Manager) peekInPageStoppedRecordingLocked(scope RecordingStorageScope) ([]models.ScriptAction, []models.DownloadedFile, bool) {
-	if !m.inPageRecordingStopped || m.lastRecordingStorageScope == nil || !m.lastRecordingStorageScope.matches(scope) {
+func (m *Manager) peekFinalRecordingReceiptLocked(scope RecordingStorageScope) ([]models.ScriptAction, []models.DownloadedFile, bool) {
+	receipt, ok := m.recordingRuntimeRegistryLocked().finalBySession[scope.RecordingSessionID]
+	if !ok || !receipt.scope.matches(scope) || (receipt.state != recordingReceiptAvailable && receipt.state != recordingReceiptClaimed) {
 		return nil, nil, false
 	}
-	actions := make([]models.ScriptAction, len(m.lastRecordedActions))
-	copy(actions, m.lastRecordedActions)
-	downloadedFiles := make([]models.DownloadedFile, len(m.lastDownloadedFiles))
-	copy(downloadedFiles, m.lastDownloadedFiles)
+	actions := append([]models.ScriptAction(nil), receipt.actions...)
+	downloadedFiles := append([]models.DownloadedFile(nil), receipt.downloadedFiles...)
 	return actions, downloadedFiles, true
 }
 
-func (m *Manager) publishStoppedRecordingResultLocked(scope RecordingStorageScope, startURL string, actions []models.ScriptAction, downloadedFiles []models.DownloadedFile) {
-	storedScope := scope
-	m.inPageRecordingStopped = true
-	m.lastRecordingStorageScope = &storedScope
-	m.lastRecordedActions = make([]models.ScriptAction, len(actions))
-	copy(m.lastRecordedActions, actions)
-	m.lastDownloadedFiles = make([]models.DownloadedFile, len(downloadedFiles))
-	copy(m.lastDownloadedFiles, downloadedFiles)
-	m.lastRecordedStartURL = startURL
+// FinalRecordingDOMSnapshot returns the semantic DOM bundled with an
+// unacknowledged final receipt. It is used only by the runtime adapter to pass
+// the receipt to LifecycleService; callers cannot obtain storage/cookie data.
+func (m *Manager) FinalRecordingDOMSnapshot(scope RecordingStorageScope) json.RawMessage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupRuntimeReceiptsLocked(time.Now().UTC())
+	receipt, ok := m.recordingRuntimeRegistryLocked().finalBySession[scope.RecordingSessionID]
+	if !ok || !receipt.scope.matches(scope) || (receipt.state != recordingReceiptAvailable && receipt.state != recordingReceiptClaimed) {
+		return nil
+	}
+	return append(json.RawMessage(nil), receipt.domSnapshot...)
 }
 
-func (m *Manager) clearInPageRecordingStateLocked() {
-	m.inPageRecordingStopped = false
-	m.lastRecordedActions = nil
-	m.lastRecordedStartURL = ""
-	m.lastDownloadedFiles = nil
-	m.lastRecordingStorageScope = nil
+// FinalRecordingReceiptInfo exposes only durable receipt identity/version to
+// the lifecycle adapter. The receipt payload itself remains Manager-owned
+// until LifecycleService commits and ACKs it.
+func (m *Manager) FinalRecordingReceiptInfo(scope RecordingStorageScope) (string, uint64, uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupRuntimeReceiptsLocked(time.Now().UTC())
+	receipt, ok := m.recordingRuntimeRegistryLocked().finalBySession[scope.RecordingSessionID]
+	if !ok || !receipt.scope.matches(scope) || (receipt.state != recordingReceiptAvailable && receipt.state != recordingReceiptClaimed) {
+		return "", 0, 0
+	}
+	return receipt.receiptID, receipt.syncRevision, receipt.claimGeneration
+}
+
+// HasPendingFinalRecordingReceipt is a full-scope lookup used by lifecycle
+// recovery. It intentionally does not expose the old global stopped-recorder
+// mirror, which may point at another browser instance.
+func (m *Manager) HasPendingFinalRecordingReceipt(scope RecordingStorageScope) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupRuntimeReceiptsLocked(time.Now().UTC())
+	receipt := m.recordingRuntimeRegistryLocked().finalBySession[scope.RecordingSessionID]
+	return receipt != nil && receipt.scope.matches(scope) && (receipt.state == recordingReceiptAvailable || receipt.state == recordingReceiptClaimed)
+}
+
+func (m *Manager) claimFinalRecordingReceiptLocked(scope RecordingStorageScope, operationID string) ([]models.ScriptAction, []models.DownloadedFile, string, uint64, bool, error) {
+	receipt, ok := m.recordingRuntimeRegistryLocked().finalBySession[scope.RecordingSessionID]
+	if !ok || !receipt.scope.matches(scope) {
+		return nil, nil, "", 0, false, nil
+	}
+	now := time.Now().UTC()
+	if receipt.state == recordingReceiptClaimed && !receipt.claimedAt.IsZero() && now.Sub(receipt.claimedAt) >= recordingReceiptClaimTTL {
+		receipt.state = recordingReceiptAvailable
+		receipt.claimOperationID = ""
+		receipt.claimedAt = time.Time{}
+	}
+	switch receipt.state {
+	case recordingReceiptAvailable:
+		if operationID != "" {
+			receipt.state = recordingReceiptClaimed
+			receipt.claimOperationID = operationID
+			receipt.claimedAt = now
+			receipt.claimGeneration++
+		}
+	case recordingReceiptClaimed:
+		if operationID == "" || receipt.claimOperationID != operationID {
+			return nil, nil, "", 0, false, fmt.Errorf("%w: final receipt is claimed by another operation", ErrRecordingStopInProgress)
+		}
+	case recordingReceiptReleased, recordingReceiptExpired, recordingReceiptAcked:
+		return nil, nil, "", 0, false, fmt.Errorf("recording receipt is no longer available")
+	}
+	return append([]models.ScriptAction(nil), receipt.actions...), append([]models.DownloadedFile(nil), receipt.downloadedFiles...), receipt.receiptID, receipt.claimGeneration, true, nil
+}
+
+func (m *Manager) publishFinalRecordingReceiptLocked(scope RecordingStorageScope, startURL string, actions []models.ScriptAction, downloadedFiles []models.DownloadedFile, domSnapshot json.RawMessage, syncRevision uint64, operationIDs ...string) {
+	operationID := ""
+	if len(operationIDs) > 0 {
+		operationID = operationIDs[0]
+	}
+	receiptID := uuid.NewString()
+	receipt := &recordingFinalReceipt{receiptID: receiptID, scope: scope, startURL: startURL, actions: append([]models.ScriptAction(nil), actions...), downloadedFiles: append([]models.DownloadedFile(nil), downloadedFiles...), domSnapshot: append(json.RawMessage(nil), domSnapshot...), syncRevision: syncRevision, state: recordingReceiptAvailable, frozenAt: time.Now().UTC()}
+	if strings.TrimSpace(operationID) != "" {
+		receipt.state = recordingReceiptClaimed
+		receipt.claimOperationID = strings.TrimSpace(operationID)
+		receipt.claimedAt = time.Now().UTC()
+		receipt.claimGeneration = 1
+	}
+	m.recordingRuntimeRegistryLocked().finalBySession[scope.RecordingSessionID] = receipt
+	m.emitRuntimeEventLocked(RecordingRuntimeEvent{ID: deterministicRuntimeEventID("recording_stopped", scope, receipt.syncRevision, receiptID), Kind: "recording_stopped", Scope: scope, ReceiptID: receiptID, OperationID: receipt.claimOperationID, ClaimGeneration: receipt.claimGeneration, SyncRevision: receipt.syncRevision, Actions: append([]models.ScriptAction(nil), actions...), DOMSnapshot: append(json.RawMessage(nil), domSnapshot...)})
+}
+
+func (m *Manager) publishAuthSnapshotReceiptLocked(scope RecordingStorageScope, state map[string]any) {
+	if len(state) == 0 || scope.isZero() {
+		return
+	}
+	m.recordingRuntimeRegistryLocked().authBySession[scope.RecordingSessionID] = &recordingAuthSnapshotReceipt{receiptID: uuid.NewString(), scope: scope, storageState: cloneStorageState(state), state: recordingReceiptAvailable, frozenAt: time.Now().UTC()}
+}
+
+func (m *Manager) cleanupRuntimeReceiptsLocked(now time.Time) {
+	registry := m.recordingRuntimeRegistryLocked()
+	for sessionID, receipt := range registry.finalBySession {
+		if receipt.state == recordingReceiptClaimed && now.Sub(receipt.claimedAt) < recordingReceiptClaimTTL {
+			continue
+		}
+		if !receipt.frozenAt.IsZero() && now.Sub(receipt.frozenAt) >= recordingReceiptTTL {
+			receipt.state = recordingReceiptExpired
+			registry.expiredBySession[sessionID] = RecordingRuntimeEvent{
+				ID:           deterministicRuntimeEventID("recording_receipt_expired", receipt.scope, receipt.syncRevision, receipt.receiptID),
+				Kind:         "recording_receipt_expired",
+				Scope:        receipt.scope,
+				ReceiptID:    receipt.receiptID,
+				SyncRevision: receipt.syncRevision,
+			}
+			delete(registry.finalBySession, sessionID)
+		}
+	}
+	for sessionID, receipt := range registry.authBySession {
+		if receipt.state == recordingReceiptClaimed && now.Sub(receipt.claimedAt) < recordingReceiptClaimTTL {
+			continue
+		}
+		if !receipt.frozenAt.IsZero() && now.Sub(receipt.frozenAt) >= recordingReceiptTTL {
+			receipt.state = recordingReceiptExpired
+			delete(registry.authBySession, sessionID)
+		}
+	}
+}
+
+func (m *Manager) clearFinalRecordingReceiptsLocked() {
+	m.recordingRuntimeRegistryLocked().activeByInstance = make(map[string]RecordingStorageScope)
+	m.recordingRuntimeRegistryLocked().startBySession = make(map[string]*recordingStartReservation)
+	m.recordingRuntimeRegistryLocked().stopBySession = make(map[string]*recordingStopReservation)
+	m.recordingRuntimeRegistryLocked().draftBySession = make(map[string]*recordingDraftReceipt)
+	m.recordingRuntimeRegistryLocked().finalBySession = make(map[string]*recordingFinalReceipt)
+	m.recordingRuntimeRegistryLocked().authBySession = make(map[string]*recordingAuthSnapshotReceipt)
+	m.recordingRuntimeRegistryLocked().expiredBySession = make(map[string]RecordingRuntimeEvent)
+	m.recordingRuntimeRegistryLocked().leaseLostBySession = make(map[string]RecordingRuntimeEvent)
+}
+
+func (m *Manager) recordingRuntimeRegistryLocked() *recordingRuntimeRegistry {
+	if m.recordingRegistry == nil {
+		m.recordingRegistry = newRecordingRuntimeRegistry()
+	}
+	if m.recordingRegistry.activeByInstance == nil {
+		m.recordingRegistry.activeByInstance = make(map[string]RecordingStorageScope)
+	}
+	if m.recordingRegistry.startBySession == nil {
+		m.recordingRegistry.startBySession = make(map[string]*recordingStartReservation)
+	}
+	if m.recordingRegistry.stopBySession == nil {
+		m.recordingRegistry.stopBySession = make(map[string]*recordingStopReservation)
+	}
+	if m.recordingRegistry.draftBySession == nil {
+		m.recordingRegistry.draftBySession = make(map[string]*recordingDraftReceipt)
+	}
+	if m.recordingRegistry.finalBySession == nil {
+		m.recordingRegistry.finalBySession = make(map[string]*recordingFinalReceipt)
+	}
+	if m.recordingRegistry.authBySession == nil {
+		m.recordingRegistry.authBySession = make(map[string]*recordingAuthSnapshotReceipt)
+	}
+	if m.recordingRegistry.expiredBySession == nil {
+		m.recordingRegistry.expiredBySession = make(map[string]RecordingRuntimeEvent)
+	}
+	if m.recordingRegistry.leaseLostBySession == nil {
+		m.recordingRegistry.leaseLostBySession = make(map[string]RecordingRuntimeEvent)
+	}
+	return m.recordingRegistry
 }
 
 // PlayScript 回放脚本
@@ -1890,7 +2869,12 @@ func (m *Manager) PlayScript(ctx context.Context, script *models.Script, instanc
 }
 
 // checkInPageRecordingRequests 检查页面内的录制控制请求
-func (m *Manager) checkInPageRecordingRequests(ctx context.Context, page *rod.Page) {
+func (m *Manager) checkInPageRecordingRequests(ctx context.Context, page *rod.Page, recorder *Recorder, instanceID string, scope RecordingStorageScope) {
+	if recorder == nil {
+		m.mu.Lock()
+		recorder = m.recorderForInstanceLocked("")
+		m.mu.Unlock()
+	}
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -1936,7 +2920,7 @@ func (m *Manager) checkInPageRecordingRequests(ctx context.Context, page *rod.Pa
 							currentLang = "zh-CN"
 						}
 						// 开始录制
-						if err := m.recorder.StartRecording(ctx, page, info.URL, currentLang); err != nil {
+						if err := recorder.StartRecording(ctx, page, info.URL, currentLang); err != nil {
 							logger.Error(ctx, "Failed to start recording from in-page request: %v", err)
 						} else {
 							logger.Info(ctx, "✓ Recording started from in-page button")
@@ -1981,37 +2965,24 @@ func (m *Manager) checkInPageRecordingRequests(ctx context.Context, page *rod.Pa
 			if err == nil && stopResult != nil && !stopResult.Value.Nil() {
 				logger.Info(ctx, "Detected in-page recording stop request")
 
-				// Publish the pending owner and stop the recorder under the same
-				// mutex. A concurrent project start then sees either an active
-				// recorder or this pending scope, never an ownerless gap.
-				m.mu.Lock()
-				recInfo := m.recorder.GetRecordingInfo()
-				stoppedScope, hasStoppedScope := m.recorder.CurrentStorageScope()
-				m.inPageRecordingStopped = true
-				m.lastRecordingStorageScope = nil
-				if hasStoppedScope {
-					scope := stoppedScope
-					m.lastRecordingStorageScope = &scope
-				}
-				actions, downloadedFiles, err := m.recorder.StopRecording(ctx)
-				if err != nil {
-					m.clearInPageRecordingStateLocked()
-					m.mu.Unlock()
-					logger.Error(ctx, "Failed to stop recording from in-page request: %v", err)
+				actions, downloadedFiles, driven, err := m.driveInPageRecordingStop(ctx, scope)
+				if !driven {
+					// P4.7.6 has no unscoped page Stop driver. Consuming this legacy
+					// signal must not bypass stopBySession or tell the page it stopped.
+					logger.Warn(ctx, "Ignoring unscoped in-page recording Stop request")
 					continue
 				}
-				if hasStoppedScope {
-					m.restoreProjectDownloadBehaviorLocked(ctx)
+				if err != nil {
+					if errors.Is(err, ErrRecordingStopInProgress) {
+						logger.Info(ctx, "In-page Stop waits for the existing scoped stop driver")
+						continue
+					}
+					logger.Error(ctx, "Failed to stop project recording from in-page request: %v", err)
+					continue
 				}
-				m.lastRecordedActions = actions
-				m.lastDownloadedFiles = downloadedFiles
-				if startURL, ok := recInfo["start_url"].(string); ok && startURL != "" {
-					m.lastRecordedStartURL = startURL
-					logger.Info(ctx, "Saved start URL: %s", startURL)
-				}
-				m.mu.Unlock()
+				logger.Info(ctx, "Project recording Stop request completed in runtime, operation=%s actions=%d downloads=%d", runtimeStopOperationID(scope), len(actions), len(downloadedFiles))
 
-				logger.Info(ctx, "✓ Recording stopped from in-page button, %d actions recorded, %d files downloaded", len(actions), len(downloadedFiles))
+				logger.Info(ctx, "✓ Recording stopped from in-page button")
 				// 通知页面:录制已停止
 				_, _ = page.Eval(`() => {
 					window.__recordingStoppedByInPage__ = true;
@@ -2022,14 +2993,37 @@ func (m *Manager) checkInPageRecordingRequests(ctx context.Context, page *rod.Pa
 			return
 		}
 
-		// 如果页面不再是活动页面,停止轮询
+		// Project recording is owned by its scoped instance lease, not by the
+		// legacy global activePage mirror. A different browser instance must
+		// never stop this page's in-page Stop bridge.
 		m.mu.Lock()
-		isActive := m.activePage == page
+		isActive := m.recordingLoopOwnsScopeLocked(instanceID, page, scope)
 		m.mu.Unlock()
 		if !isActive {
 			return
 		}
 	}
+}
+
+// driveInPageRecordingStop is deliberately scoped: page UI may request a Stop
+// but only a RecordingSession owner can drive Recorder through stopBySession.
+// Returning driven=false for legacy zero scope prevents a second direct
+// Recorder.StopRecording path from reappearing in the polling loop.
+func (m *Manager) driveInPageRecordingStop(ctx context.Context, scope RecordingStorageScope) ([]models.ScriptAction, []models.DownloadedFile, bool, error) {
+	if scope.isZero() {
+		return nil, nil, false, nil
+	}
+	actions, downloadedFiles, err := m.StopRecordingWithClaim(ctx, scope, runtimeStopOperationID(scope))
+	return actions, downloadedFiles, true, err
+}
+
+func (m *Manager) recordingLoopOwnsScopeLocked(instanceID string, page *rod.Page, scope RecordingStorageScope) bool {
+	if !scope.isZero() {
+		active, ok := m.recordingRuntimeRegistryLocked().activeByInstance[instanceID]
+		return ok && active.matches(scope)
+	}
+	runtime := m.instances[instanceID]
+	return runtime != nil && runtime.activePage == page
 }
 
 // isHeadlessEnvironment 检测当前环境是否为无GUI环境
@@ -2664,6 +3658,7 @@ func (m *Manager) clearInstanceRuntimeLocked(ctx context.Context, instanceID str
 	if !exists || runtime == nil {
 		return
 	}
+	m.releaseRuntimeReceiptsForInstanceLocked(instanceID)
 
 	if runtime.launcher != nil {
 		runtime.launcher.Kill()
@@ -2691,6 +3686,7 @@ func (m *Manager) clearInstanceRuntimeLocked(ctx context.Context, instanceID str
 // process has already stopped and keeps the legacy current-instance mirror in
 // sync. The caller must hold m.mu.
 func (m *Manager) finalizeStoppedCurrentInstanceRuntimeLocked(ctx context.Context, instanceID string) {
+	m.releaseRuntimeReceiptsForInstanceLocked(instanceID)
 	runtime := m.instances[instanceID]
 	if runtime != nil {
 		if runtime.instance != nil {
@@ -2727,6 +3723,96 @@ func (m *Manager) finalizeStoppedCurrentInstanceRuntimeLocked(ctx context.Contex
 		m.activePage = candidate.activePage
 		m.startTime = candidate.startTime
 		return
+	}
+}
+
+func (m *Manager) releaseRuntimeReceiptsForInstanceLocked(instanceID string) {
+	registry := m.recordingRuntimeRegistryLocked()
+	// Create the lease-lost tombstone before deleting any active runtime facts.
+	// The Coordinator owns the later DB decision; this registry only preserves
+	// the exact runtime observation long enough for it to be acknowledged.
+	for activeInstanceID, scope := range registry.activeByInstance {
+		if activeInstanceID != instanceID {
+			continue
+		}
+		event := RecordingRuntimeEvent{
+			ID:        deterministicRuntimeEventID("runtime_lease_lost", scope, 0, scope.LeaseGeneration),
+			Kind:      "runtime_lease_lost",
+			Scope:     scope,
+			ReceiptID: scope.LeaseGeneration,
+		}
+		if draft := registry.draftBySession[scope.RecordingSessionID]; draft != nil {
+			event.SyncRevision = draft.event.SyncRevision
+			event.Actions = append([]models.ScriptAction(nil), draft.event.Actions...)
+			event.DOMSnapshot = append(json.RawMessage(nil), draft.event.DOMSnapshot...)
+		}
+		registry.leaseLostBySession[scope.RecordingSessionID] = cloneRecordingRuntimeEvent(event)
+		delete(registry.activeByInstance, activeInstanceID)
+		delete(registry.draftBySession, scope.RecordingSessionID)
+		if reservation := registry.startBySession[scope.RecordingSessionID]; reservation != nil {
+			if reservation.cancel != nil {
+				reservation.cancel()
+			}
+			if reservation.done != nil {
+				reservation.doneOnce.Do(func() { close(reservation.done) })
+			}
+			delete(registry.startBySession, scope.RecordingSessionID)
+		}
+		m.emitRuntimeEventLocked(event)
+	}
+	for sessionID, reservation := range registry.startBySession {
+		if reservation != nil && reservation.scope.BrowserInstanceID == instanceID {
+			if _, exists := registry.leaseLostBySession[sessionID]; !exists {
+				event := RecordingRuntimeEvent{ID: deterministicRuntimeEventID("runtime_lease_lost", reservation.scope, 0, reservation.scope.LeaseGeneration), Kind: "runtime_lease_lost", Scope: reservation.scope, ReceiptID: reservation.scope.LeaseGeneration}
+				registry.leaseLostBySession[sessionID] = cloneRecordingRuntimeEvent(event)
+				m.emitRuntimeEventLocked(event)
+			}
+			if reservation.cancel != nil {
+				reservation.cancel()
+			}
+			if reservation.done != nil {
+				reservation.doneOnce.Do(func() { close(reservation.done) })
+			}
+			delete(registry.startBySession, sessionID)
+		}
+	}
+	for sessionID, receipt := range registry.finalBySession {
+		if receipt.scope.BrowserInstanceID == instanceID {
+			// A page-level Stop removes the active lease before the coordinator
+			// commits its final receipt.  Instance shutdown must preserve that
+			// final draft as a lease-lost tombstone instead of deleting the only
+			// recovery evidence.
+			if _, exists := registry.leaseLostBySession[sessionID]; !exists {
+				event := RecordingRuntimeEvent{
+					ID:           deterministicRuntimeEventID("runtime_lease_lost", receipt.scope, receipt.syncRevision, receipt.receiptID),
+					Kind:         "runtime_lease_lost",
+					Scope:        receipt.scope,
+					ReceiptID:    receipt.receiptID,
+					SyncRevision: receipt.syncRevision,
+					Actions:      append([]models.ScriptAction(nil), receipt.actions...),
+					DOMSnapshot:  append(json.RawMessage(nil), receipt.domSnapshot...),
+				}
+				registry.leaseLostBySession[sessionID] = cloneRecordingRuntimeEvent(event)
+				m.emitRuntimeEventLocked(event)
+			}
+			receipt.state = recordingReceiptReleased
+			delete(registry.finalBySession, sessionID)
+		}
+	}
+	for sessionID, receipt := range registry.authBySession {
+		if receipt.scope.BrowserInstanceID == instanceID {
+			receipt.state = recordingReceiptReleased
+			delete(registry.authBySession, sessionID)
+		}
+	}
+	if recorder := m.recorders[instanceID]; recorder != nil {
+		if recorder.IsRecording() {
+			_, _, _ = recorder.StopRecording(context.Background())
+		}
+		delete(m.recorders, instanceID)
+		if instanceID == "default" && m.recorder == recorder {
+			m.recorder = nil
+		}
 	}
 }
 
@@ -3052,7 +4138,14 @@ func (m *Manager) startInstanceInternalWithOptions(ctx context.Context, instance
 		}
 		os.MkdirAll(downloadPath, 0o755)
 		m.downloadPath = downloadPath
-		m.recorder.SetDownloadPath(downloadPath)
+		for _, recorder := range m.recorders {
+			if recorder != nil {
+				recorder.SetDownloadPath(downloadPath)
+			}
+		}
+		if m.recorder != nil {
+			m.recorder.SetDownloadPath(downloadPath)
+		}
 	}
 
 	downloadBehavior := &proto.BrowserSetDownloadBehavior{

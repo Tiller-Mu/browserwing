@@ -43,6 +43,80 @@ func TestGenerateTestCasesRejectsPageWithoutMainFlow(t *testing.T) {
 	env.requireTestCaseCount(t, page.ID, 0)
 }
 
+func TestCloneVersionNormalizesHistoricalPageScript(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	source := models.PageScript{
+		PageID:            page.ID,
+		Name:              "historical flow",
+		ActionTrace:       `[{"type":"input","value":"clone-password","attrs":{"type":"password","name":"login_password"},"accessibility":{"value":"clone-password"}},{"type":"download","url":"data:text/plain,discard"}]`,
+		DOMSnapshot:       `{"elements":[{"role":"textbox","recorded_selector":"#password"}]}`,
+		RecordingMetaJSON: defaultRecordingMetaJSON(),
+	}
+	if err := env.db.Create(&source).Error; err != nil {
+		t.Fatalf("seed historical PageScript: %v", err)
+	}
+
+	data := []byte(`{"new_version_name":"normalized clone"}`)
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/projects/%d/versions/%d/clone", project.ID, version.ID), bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	env.router.ServeHTTP(res, req)
+	env.requireStatus(t, res, http.StatusOK)
+	cloned := env.decodeObject(t, res)
+	clonedVersionID := uint(cloned["id"].(float64))
+
+	var clonedPage models.TestPage
+	if err := env.db.Where("version_id = ?", clonedVersionID).First(&clonedPage).Error; err != nil {
+		t.Fatalf("load cloned page: %v", err)
+	}
+	var script models.PageScript
+	if err := env.db.Where("page_id = ?", clonedPage.ID).First(&script).Error; err != nil {
+		t.Fatalf("load cloned PageScript: %v", err)
+	}
+	if script.SourceRecordingSessionID != nil || script.PageScriptContentHash == "" || script.NormalizerVersion == "" {
+		t.Fatalf("cloned PageScript provenance = %+v", script)
+	}
+	if strings.Contains(script.ActionTrace, "clone-password") || strings.Contains(script.ActionTrace, "data:") || !strings.Contains(script.ActionTrace, "{{REDACTED_SECRET}}") {
+		t.Fatalf("cloned PageScript was not normalized: %s", script.ActionTrace)
+	}
+}
+
+func TestCloneVersionRejectsInvalidHistoricalRecordingAtomically(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	if err := env.db.Create(&models.PageScript{
+		PageID:            page.ID,
+		Name:              "invalid historical flow",
+		ActionTrace:       `[{"type":"click","selector":"#submit"}]`,
+		DOMSnapshot:       `{"elements":[]}`,
+		RecordingMetaJSON: `{"schema_version":1,"recording_kind":"business_flow","auth_context":"auto","target_url":"https://example.invalid"}`,
+	}).Error; err != nil {
+		t.Fatalf("seed invalid PageScript: %v", err)
+	}
+	var beforeVersions int64
+	if err := env.db.Model(&models.ProjectVersion{}).Where("project_id = ?", project.ID).Count(&beforeVersions).Error; err != nil {
+		t.Fatalf("count source versions: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/projects/%d/versions/%d/clone", project.ID, version.ID), bytes.NewBufferString(`{"new_version_name":"must rollback"}`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	env.router.ServeHTTP(res, req)
+	env.requireStatus(t, res, http.StatusUnprocessableEntity)
+	body := env.decodeObject(t, res)
+	if body["code"] != "recording_source_invalid" || strings.Contains(res.Body.String(), "auto") {
+		t.Fatalf("invalid clone response leaked source or wrong code: %s", res.Body.String())
+	}
+	var afterVersions int64
+	if err := env.db.Model(&models.ProjectVersion{}).Where("project_id = ?", project.ID).Count(&afterVersions).Error; err != nil {
+		t.Fatalf("count versions after failed clone: %v", err)
+	}
+	if afterVersions != beforeVersions {
+		t.Fatalf("invalid clone created partial version: before=%d after=%d", beforeVersions, afterVersions)
+	}
+}
+
 func TestGenerateTestCasesPreviewReturnsCasesWithoutPersisting(t *testing.T) {
 	env := newGenerateContractEnv(t)
 	project, version, page := env.seedProjectVersionPage(t)
@@ -456,7 +530,11 @@ func newGenerateContractGormDB(t *testing.T) *gorm.DB {
 		t.Skipf("generate contract tests require %s or backend/config.local.toml [database].dsn targeting PostgreSQL database PlayBot", testsupport.PostgresDSNEnv)
 	}
 
-	schema := fmt.Sprintf("generate_contract_%d", atomic.AddUint64(&generateContractSequence, 1))
+	// Include a process-unique component.  The test process can be interrupted
+	// before t.Cleanup runs; a later `go test` invocation must not collide with
+	// that orphaned, test-owned schema merely because its in-process sequence
+	// starts at one again.
+	schema := fmt.Sprintf("generate_contract_%d_%d", time.Now().UTC().UnixNano(), atomic.AddUint64(&generateContractSequence, 1))
 	adminDB, err := gorm.Open(postgres.Open(baseDSN), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
 	})
@@ -544,6 +622,10 @@ func newGenerateContractEnv(t *testing.T) *generateContractEnv {
 		db:        store,
 		mcpServer: newNoopMCPServer(),
 		config: &config.Config{
+			Security: &config.SecurityConfig{
+				ProjectAuthStateEncryptionKey:   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+				ProjectAuthStateEncryptionKeyID: "contract-test-key",
+			},
 			Auth: &config.AuthConfig{
 				Enabled: false,
 				AppKey:  "test-secret",

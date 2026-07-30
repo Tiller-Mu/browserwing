@@ -1390,12 +1390,15 @@ func (p *Player) executeClick(ctx context.Context, page *rod.Page, action models
 
 // executeInput 执行输入操作
 func (p *Player) executeInput(ctx context.Context, page *rod.Page, action models.ScriptAction) error {
+	if action.Value == "{{REDACTED_SECRET}}" {
+		return fmt.Errorf("recording_sensitive_input_unresolved")
+	}
 	selector := action.Selector
 	if action.XPath != "" {
 		selector = action.XPath
-		logger.Info(ctx, "Input text (XPath): %s -> %s", selector, action.Value)
+		logger.Info(ctx, "Input text (XPath): %s", selector)
 	} else {
-		logger.Info(ctx, "Input text (CSS): %s -> %s", selector, action.Value)
+		logger.Info(ctx, "Input text (CSS): %s", selector)
 	}
 
 	// 使用新的 findElement 方法（支持 iframe）

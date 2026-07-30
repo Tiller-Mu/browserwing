@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Bot, ExternalLink, Eye, FilePlus, FileText, Plus, RefreshCw, ShieldCheck, Trash2, Video } from 'lucide-react';
+import { ArrowLeft, Bot, ExternalLink, Eye, FilePlus, FileText, Plus, ShieldCheck, Trash2, Video } from 'lucide-react';
 import { api, type LLMConfig } from '../api/client';
 import { projectApi, streamPlaybotRun, type GenerateTestCasesResponse, type P45AuthContext, type P45RecordingKind, type PlaybotRunEvent, type ProjectAuthStateSummary, type TestCase, type TestPage } from '../api/project';
 import { Modal } from '../components/Modal';
@@ -14,6 +14,7 @@ import {
   createP45RecordingController,
   type P45AuthStateSummaryView,
 } from './p45RecordingUiContract';
+import { createRecordingOperationLedger, recordingOperationInputChanged } from './recordingLifecycleOperationLedger';
 
 type GenerateMode = 'append' | 'replace' | 'preview';
 
@@ -31,7 +32,6 @@ export default function TestPageManager() {
   const [authState, setAuthState] = useState<P45AuthStateSummaryView | null>(null);
   const [llmConfigs, setLlmConfigs] = useState<LLMConfig[]>([]);
   const [loading, setLoading] = useState(true);
-  const [authStateUpdating, setAuthStateUpdating] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
@@ -50,6 +50,7 @@ export default function TestPageManager() {
   const [previewCases, setPreviewCases] = useState<TestCase[]>([]);
   const [generateEvents, setGenerateEvents] = useState<PlaybotRunEvent[]>([]);
   const generateStreamAbortRef = useRef<AbortController | null>(null);
+  const recordingOperationLedgerRef = useRef(createRecordingOperationLedger());
 
   useEffect(() => {
     if (projectId && versionId) {
@@ -133,6 +134,7 @@ export default function TestPageManager() {
   const recordingController = projectId && versionId ? createP45RecordingController({
     projectId: Number(projectId),
     versionId: Number(versionId),
+    operationLedger: recordingOperationLedgerRef.current,
     api: projectApi,
     navigate,
   }) : null;
@@ -143,33 +145,16 @@ export default function TestPageManager() {
     api: projectApi,
   }) : null;
 
-  const handleCaptureProjectAuthState = async () => {
-    if (!authStateController) return;
-    try {
-      setAuthStateUpdating(true);
-      const nextAuthState = await authStateController.capture();
-      setAuthState(nextAuthState);
-      showToast('项目登录态已更新', 'success');
-    } catch (error: any) {
-      showToast(error.response?.data?.error || '更新项目登录态失败，请先在浏览器中完成登录', 'error');
-    } finally {
-      setAuthStateUpdating(false);
-    }
-  };
-
   const handleDeleteProjectAuthState = async () => {
     if (!authStateController || !authState) return;
     if (!window.confirm('确定要删除当前版本保存的项目登录态吗？')) return;
 
     try {
-      setAuthStateUpdating(true);
       await authStateController.remove();
       setAuthState(null);
       showToast('项目登录态已删除', 'success');
     } catch (error: any) {
       showToast(error.response?.data?.error || '删除项目登录态失败', 'error');
-    } finally {
-      setAuthStateUpdating(false);
     }
   };
 
@@ -184,6 +169,10 @@ export default function TestPageManager() {
         targetUrl: page.path,
       });
     } catch (error: any) {
+	  if (recordingOperationInputChanged(error)) {
+		showToast(error.message || '上一次开始录制仍在处理中，请等待其完成后再试。', 'info');
+		return;
+	  }
       const detail = error.response?.data?.detail;
       const message = error.response?.data?.error || '启动页面录制失败';
       showToast(detail ? `${message}: ${detail}` : message, 'error');
@@ -415,18 +404,13 @@ export default function TestPageManager() {
               )}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={handleCaptureProjectAuthState}
-                disabled={authStateUpdating || pageManagementView.authStateActions.find((action) => action.kind === 'capture_project_auth_state')?.disabled}
-                className="px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-md hover:border-indigo-300 dark:hover:border-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5 text-sm"
-                title="从当前浏览器页面更新项目登录态摘要"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${authStateUpdating ? 'animate-spin' : ''}`} /> 更新登录态
-              </button>
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                请完成并停止登录流程录制后，在录制页捕获登录态。
+              </span>
               {pageManagementView.authState && (
                 <button
                   onClick={handleDeleteProjectAuthState}
-                  disabled={authStateUpdating || pageManagementView.authStateActions.find((action) => action.kind === 'delete_project_auth_state')?.disabled}
+                  disabled={pageManagementView.authStateActions.find((action) => action.kind === 'delete_project_auth_state')?.disabled}
                   className="px-3 py-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-md hover:border-red-300 hover:text-red-700 dark:hover:border-red-800 dark:hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5 text-sm"
                   title="删除当前版本保存的项目登录态"
                 >
@@ -510,7 +494,7 @@ export default function TestPageManager() {
                           <button
                             onClick={() => navigateToRecord(page, 'business_flow', 'project_saved')}
                             disabled={projectSavedAction?.disabled}
-                            title={projectSavedAction?.disabled ? '请先更新项目登录态，或选择干净会话录制业务流程' : undefined}
+                            title={projectSavedAction?.disabled ? '请先完成并停止登录流程录制，再在录制页捕获登录态；或选择干净会话录制业务流程' : undefined}
                             className="px-3 py-1.5 bg-gray-900 dark:bg-gray-700 text-white rounded-md hover:bg-gray-800 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
                           >
                             <Video className="w-3.5 h-3.5" /> 业务流程
@@ -524,7 +508,7 @@ export default function TestPageManager() {
                         </div>
                         {projectSavedAction?.disabled && (
                           <div className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                            无登录态时，请先更新登录态或选择干净业务录制。
+                            无登录态时，请先完成并停止登录流程录制，再在录制页捕获登录态；或选择干净业务录制。
                           </div>
                         )}
                       </td>

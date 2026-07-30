@@ -175,6 +175,10 @@ func main() {
 
 	// 创建HTTP处理器
 	handler := api.NewHandler(db, browserManager, cfg, llmManager)
+	// Install the lifecycle bridge only after both the database and Manager are
+	// ready. Recovery is best effort and records per-operation failures without
+	// blocking server startup.
+	handler.StartRecordingLifecycle(context.Background())
 
 	// 注入版本信息
 	handler.SetVersionInfo(Version, BuildTime, GoVersion)

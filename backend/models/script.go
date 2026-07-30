@@ -20,18 +20,23 @@ type ScriptAction struct {
 	// =========================
 	// 原有字段（保持不变）
 	// =========================
-	Type      string            `json:"type"`      // click, input, select, navigate, wait, sleep, extract_text, extract_attribute, extract_html, execute_js, evaluate, upload_file, scroll, keyboard, open_tab, switch_tab, switch_active_tab, ai_control
-	Timestamp int64             `json:"timestamp"` // 时间戳（毫秒）
-	Selector  string            `json:"selector"`  // CSS选择器
-	XPath     string            `json:"xpath"`     // XPath选择器（更可靠）
-	Value     string            `json:"value"`     // 输入值或选择值
-	URL       string            `json:"url"`       // 导航URL
-	Duration  int               `json:"duration"`  // 延迟时长（毫秒，用于 sleep 类型）
-	X         int               `json:"x"`         // 鼠标X坐标
-	Y         int               `json:"y"`         // 鼠标Y坐标
-	Text      string            `json:"text"`      // 元素文本内容
-	TagName   string            `json:"tag_name"`  // 元素标签名
-	Attrs     map[string]string `json:"attrs"`     // 元素属性
+	Type      string `json:"type"`      // click, input, select, navigate, wait, sleep, extract_text, extract_attribute, extract_html, execute_js, evaluate, upload_file, scroll, keyboard, open_tab, switch_tab, switch_active_tab, ai_control
+	Timestamp int64  `json:"timestamp"` // 时间戳（毫秒）
+	Selector  string `json:"selector"`  // CSS选择器
+	XPath     string `json:"xpath"`     // XPath选择器（更可靠）
+	Value     string `json:"value"`     // 输入值或选择值
+	// SensitiveInput marks an input whose original value was deliberately
+	// replaced before it left the Recorder boundary. Replayers must resolve it
+	// from an authorized secret source and must never type the redaction marker.
+	SensitiveInput              bool              `json:"sensitive_input,omitempty"`
+	SensitiveInputPolicyVersion int               `json:"sensitive_input_policy_version,omitempty"`
+	URL                         string            `json:"url"`      // 导航URL
+	Duration                    int               `json:"duration"` // 延迟时长（毫秒，用于 sleep 类型）
+	X                           int               `json:"x"`        // 鼠标X坐标
+	Y                           int               `json:"y"`        // 鼠标Y坐标
+	Text                        string            `json:"text"`     // 元素文本内容
+	TagName                     string            `json:"tag_name"` // 元素标签名
+	Attrs                       map[string]string `json:"attrs"`    // 元素属性
 
 	// 键盘事件相关字段
 	Key string `json:"key,omitempty"` // 键盘按键（用于 keyboard 类型，如 "ctrl+c", "enter"）
@@ -91,42 +96,44 @@ type ScriptAction struct {
 
 func (a *ScriptAction) CopyWithoutSemanticInfo() *ScriptAction {
 	return &ScriptAction{
-		Type:                 a.Type,
-		Timestamp:            a.Timestamp,
-		Selector:             a.Selector,
-		XPath:                a.XPath,
-		Value:                a.Value,
-		URL:                  a.URL,
-		Duration:             a.Duration,
-		X:                    a.X,
-		Y:                    a.Y,
-		Text:                 a.Text,
-		TagName:              a.TagName,
-		Attrs:                a.Attrs,
-		Key:                  a.Key,
-		ExtractType:          a.ExtractType,
-		AttributeName:        a.AttributeName,
-		JSCode:               a.JSCode,
-		VariableName:         a.VariableName,
-		ExtractedData:        a.ExtractedData,
-		FilePaths:            a.FilePaths,
-		FileNames:            a.FileNames,
-		Description:          a.Description,
-		Multiple:             a.Multiple,
-		Accept:               a.Accept,
-		Remark:               a.Remark,
-		ScrollX:              a.ScrollX,
-		ScrollY:              a.ScrollY,
-		Method:               a.Method,
-		Status:               a.Status,
-		XHRID:                a.XHRID,
-		ScreenshotMode:       a.ScreenshotMode,
-		ScreenshotWidth:      a.ScreenshotWidth,
-		ScreenshotHeight:     a.ScreenshotHeight,
-		AIControlPrompt:      a.AIControlPrompt,
-		AIControlXPath:       a.AIControlXPath,
-		AIControlLLMConfigID: a.AIControlLLMConfigID,
-		Condition:            a.Condition,
+		Type:                        a.Type,
+		Timestamp:                   a.Timestamp,
+		Selector:                    a.Selector,
+		XPath:                       a.XPath,
+		Value:                       a.Value,
+		SensitiveInput:              a.SensitiveInput,
+		SensitiveInputPolicyVersion: a.SensitiveInputPolicyVersion,
+		URL:                         a.URL,
+		Duration:                    a.Duration,
+		X:                           a.X,
+		Y:                           a.Y,
+		Text:                        a.Text,
+		TagName:                     a.TagName,
+		Attrs:                       a.Attrs,
+		Key:                         a.Key,
+		ExtractType:                 a.ExtractType,
+		AttributeName:               a.AttributeName,
+		JSCode:                      a.JSCode,
+		VariableName:                a.VariableName,
+		ExtractedData:               a.ExtractedData,
+		FilePaths:                   a.FilePaths,
+		FileNames:                   a.FileNames,
+		Description:                 a.Description,
+		Multiple:                    a.Multiple,
+		Accept:                      a.Accept,
+		Remark:                      a.Remark,
+		ScrollX:                     a.ScrollX,
+		ScrollY:                     a.ScrollY,
+		Method:                      a.Method,
+		Status:                      a.Status,
+		XHRID:                       a.XHRID,
+		ScreenshotMode:              a.ScreenshotMode,
+		ScreenshotWidth:             a.ScreenshotWidth,
+		ScreenshotHeight:            a.ScreenshotHeight,
+		AIControlPrompt:             a.AIControlPrompt,
+		AIControlXPath:              a.AIControlXPath,
+		AIControlLLMConfigID:        a.AIControlLLMConfigID,
+		Condition:                   a.Condition,
 	}
 }
 
