@@ -137,6 +137,35 @@ func TestStopRecordingWithStorageScopeKeepsPendingResultUntilAcknowledged(t *tes
 	}
 }
 
+func TestFinalReceiptFreezesOnlyItsScopedRecordingPage(t *testing.T) {
+	scope := RecordingStorageScope{ProjectID: 1, VersionID: 2, PageID: 3, RecordingSessionID: "page-receipt", BrowserInstanceID: "instance-a"}
+	frozenPage := &rod.Page{}
+	newerPage := &rod.Page{}
+	manager := NewManager(&config.Config{}, nil, nil)
+	manager.instances[scope.BrowserInstanceID] = &BrowserInstanceRuntime{activePage: frozenPage}
+
+	manager.mu.Lock()
+	manager.recordingRuntimeRegistryLocked().activeByInstance[scope.BrowserInstanceID] = scope
+	manager.publishFinalRecordingReceiptLocked(scope, "https://example.invalid/login", nil, nil, nil, 1)
+	receipt := manager.recordingRuntimeRegistryLocked().finalBySession[scope.RecordingSessionID]
+	manager.instances[scope.BrowserInstanceID].activePage = newerPage
+	manager.mu.Unlock()
+
+	if receipt == nil {
+		t.Fatal("frozen final receipt is missing")
+	}
+	if receipt.page != frozenPage {
+		t.Fatalf("frozen final receipt page = %p, want original scoped page %p", receipt.page, frozenPage)
+	}
+	manager.mu.Lock()
+	manager.clearAcknowledgedRecordingPageLocked(frozenPage)
+	got := manager.instances[scope.BrowserInstanceID].activePage
+	manager.mu.Unlock()
+	if got != newerPage {
+		t.Fatalf("old receipt cleanup changed newer page = %p, want %p", got, newerPage)
+	}
+}
+
 func TestStoppedRecordingReceiptClaimBindsToOneOperationUntilReleased(t *testing.T) {
 	scope := RecordingStorageScope{ProjectID: 1, VersionID: 2, PageID: 3, RecordingSessionID: "42"}
 	manager := &Manager{recordingRegistry: &recordingRuntimeRegistry{finalBySession: map[string]*recordingFinalReceipt{

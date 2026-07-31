@@ -43,20 +43,22 @@ go test ./pkg/downloader/ -v
 
 ### P4.7.6 录制生命周期回归
 
-当前状态：已完成。本节时序回归（含 HTTP Stop 的 Coordinator `recording_stopped` event 收口）、后端包级/全量回归、前端契约/类型/构建和 `git diff --check` 均已复验通过。
+当前状态：修复中。除时序回归外，还必须验证部署迁移能够修复历史 AutoMigrate 留下的可空 runtime 字段；本节全部命令重新通过前不得标记完成。
 
 ```bash
 cd backend
 go test ./api -run TestP476 -count=1 -v
 go test ./services/browser -run "Test.*(Recording|Receipt|Snapshot)" -count=1 -v
+go test ./storage -run TestP476MigrationRepairsNullableRuntimeIdentityUpgrade -count=1 -v
 go test ./... -count=1
 
 cd ../frontend
+pnpm run test:p45-contract
 pnpm run type-check
 pnpm run build
 ```
 
-覆盖范围：六个生命周期动作的 `operation_id` 重放、`starting`/Cancel、pending runtime effect 去重、Stop/Capture 重启收口、页面 flow CAS、saved superseded、完整 scope + operation + claim generation 的 receipt claim/释放、等 revision 下仅 `captured_at` 变化的 final identity、页面内 Stop/HTTP 共享 runtime driver、AES-GCM 登录态密文、旧录制路由删除及 `recording_source` 脱敏。
+覆盖范围：六个生命周期动作的 `operation_id` 重放、`starting`/Cancel、锁定行仍过期的 Start fence 持久化失败和完整 runtime scope 释放、初读过期但 heartbeat 续租或新 generation 接管时的 in-progress 保留、启动恢复对有效 Start fence 的延后处理及 lease 到期重扫、pending runtime effect 去重、Stop/Capture 重启收口、页面 flow CAS、saved superseded、完整 scope + operation + claim generation 的 receipt claim/释放、等 revision 下仅 `captured_at` 变化的 final identity、历史 partial unique index 下两条 active NULL-browser 会话的 PostgreSQL 升级、页面内 Stop/HTTP 共享 runtime driver、AES-GCM 登录态密文、旧录制路由删除及 `recording_source` 脱敏。
 
 ### 测试覆盖范围
 

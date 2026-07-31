@@ -100,6 +100,11 @@ export function recordingOperationFailureIsTerminal(error: unknown): boolean {
 	return terminalRecordingLifecycleCodes.has(code);
 }
 
+export function recordingOperationIsInProgress(error: unknown): boolean {
+	const response = (error as { response?: { status?: unknown; data?: { code?: unknown } } })?.response;
+	return Number(response?.status || 0) === 409 && String(response?.data?.code || '') === 'recording_operation_in_progress';
+}
+
 export function recordingOperationInputChanged(error: unknown): boolean {
   return String((error as { code?: unknown })?.code || '') === 'recording_operation_input_changed';
 }

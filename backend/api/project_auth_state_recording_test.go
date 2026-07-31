@@ -1568,6 +1568,7 @@ type contractP45Runtime struct {
 	pendingStoppedScope         map[string]string
 	acknowledgedStoppedSessions []string
 	discardedStoppedSessions    []string
+	releasedRecordingScopes     []map[string]string
 	pendingAuthStorageState     map[string]any
 	pendingAuthStorageSessionID string
 	unavailableAuthSessions     map[string]struct{}
@@ -1869,6 +1870,21 @@ func (r *contractP45Runtime) DiscardStoppedPageRecording(_ context.Context, inpu
 func (r *contractP45Runtime) ReleaseRecordingSessionResources(ctx context.Context, input map[string]any) {
 	r.DiscardStoppedPageRecording(ctx, input)
 	r.DiscardProjectAuthStateCapture(ctx, input)
+	r.mu.Lock()
+	r.releasedRecordingScopes = append(r.releasedRecordingScopes, contractRuntimeScope(input))
+	r.mu.Unlock()
+}
+
+func (r *contractP45Runtime) requireReleasedRecordingScope(t *testing.T, input map[string]any) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, scope := range r.releasedRecordingScopes {
+		if contractRuntimeScopeMatches(scope, input) {
+			return
+		}
+	}
+	t.Fatalf("released recording scopes = %v, want %v", r.releasedRecordingScopes, contractRuntimeScope(input))
 }
 
 func (r *contractP45Runtime) AcknowledgeProjectAuthStateCapture(_ context.Context, input map[string]any) {

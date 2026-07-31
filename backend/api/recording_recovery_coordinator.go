@@ -20,6 +20,8 @@ import (
 
 var recordingRuntimeOperationNamespace = uuid.MustParse("61b09bb2-ae4f-5cc6-a5f3-9e2f66a4b0bb")
 
+const expiredPendingStartRecoveryInterval = time.Second
+
 // RecordingRecoveryCoordinator is the application-level bridge from
 // Manager's runtime-only observations to RecordingLifecycleService. Manager
 // retains a re-drivable latest-draft/final-receipt queue until this coordinator
@@ -29,11 +31,12 @@ type RecordingRecoveryCoordinator struct {
 	service *RecordingLifecycleService
 	manager *browser.Manager
 
-	mu           sync.Mutex
-	sessionLocks map[string]*sync.Mutex
-	retries      map[string]runtimeEventRetry
-	wake         chan struct{}
-	startOnce    sync.Once
+	mu                              sync.Mutex
+	sessionLocks                    map[string]*sync.Mutex
+	retries                         map[string]runtimeEventRetry
+	wake                            chan struct{}
+	startOnce                       sync.Once
+	nextExpiredPendingStartRecovery time.Time
 }
 
 type runtimeEventRetry struct {
@@ -115,6 +118,7 @@ func (c *RecordingRecoveryCoordinator) run(ctx context.Context) {
 }
 
 func (c *RecordingRecoveryCoordinator) reconcile(ctx context.Context) {
+	c.recoverExpiredPendingStarts(ctx, time.Now().UTC())
 	if c.manager == nil {
 		return
 	}
@@ -141,6 +145,22 @@ func (c *RecordingRecoveryCoordinator) reconcile(ctx context.Context) {
 			c.deferRetry(event.ID)
 			logger.Warn(ctx, "Recording runtime event %s (%s) will be retried: %v", event.ID, event.Kind, outcome.err)
 		}
+	}
+}
+
+func (c *RecordingRecoveryCoordinator) recoverExpiredPendingStarts(ctx context.Context, now time.Time) {
+	if c == nil || c.service == nil {
+		return
+	}
+	c.mu.Lock()
+	if !c.nextExpiredPendingStartRecovery.IsZero() && now.Before(c.nextExpiredPendingStartRecovery) {
+		c.mu.Unlock()
+		return
+	}
+	c.nextExpiredPendingStartRecovery = now.Add(expiredPendingStartRecoveryInterval)
+	c.mu.Unlock()
+	if err := c.service.RecoverExpiredPendingStarts(ctx, now); err != nil {
+		logger.Warn(ctx, "Recording expired Start recovery infrastructure error: %v", err)
 	}
 }
 

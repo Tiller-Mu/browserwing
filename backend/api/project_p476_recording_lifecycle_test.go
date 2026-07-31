@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -84,6 +85,26 @@ func TestP476RecordingActionsRequireOperationID(t *testing.T) {
 	})
 	env.requireStatus(t, conflicting, http.StatusConflict)
 	requireP476ErrorCode(t, conflicting, "operation_id_payload_conflict")
+}
+
+func TestP476BrowserRuntimeStartScopeUsesLifecyclePageID(t *testing.T) {
+	scope := recordingLifecycleRuntimeScope(map[string]any{
+		"project_id":           uint(101),
+		"version_id":           uint(102),
+		"page_id":              uint(103),
+		"captured_page_id":     uint(999),
+		"recording_session_id": "p476-start-scope-session",
+		"browser_instance_id":  "p476-start-scope-instance",
+		"runtime_page_id":      "p476-start-scope-page",
+		"runtime_generation":   "p476-start-scope-runtime",
+		"lease_generation":     "p476-start-scope-lease",
+	})
+	if scope.PageID != 103 {
+		t.Fatalf("Start runtime scope PageID = %d, want lifecycle page_id 103", scope.PageID)
+	}
+	if scope.ProjectID != 101 || scope.VersionID != 102 || scope.RecordingSessionID != "p476-start-scope-session" || scope.BrowserInstanceID != "p476-start-scope-instance" || scope.RuntimePageID != "p476-start-scope-page" || scope.RuntimeGeneration != "p476-start-scope-runtime" || scope.LeaseGeneration != "p476-start-scope-lease" {
+		t.Fatalf("Start runtime scope = %+v, want the complete lifecycle identity", scope)
+	}
 }
 
 // HTTP Stop must not call RecordingLifecycleService as an alternate stopped
@@ -334,6 +355,256 @@ func TestP476StartupRecoveryClosesPendingStartWithoutDeletingItsOperation(t *tes
 	if err := env.db.Where("operation_id = ?", operationID).First(&recoveredOperation).Error; err != nil || recoveredOperation.Status != "failed" || recoveredOperation.ErrorCode != "runtime_lease_lost" {
 		t.Fatalf("pending Start operation after recovery = %+v, err=%v", recoveredOperation, err)
 	}
+}
+
+func TestP476StartupRecoveryDefersLiveStartFenceThenCoordinatorRetriesAtExpiry(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	session := p476RecordingSession(t, env, project.ID, version.ID, page.ID, "starting", "startup-live-start")
+	operationID := "79165a9c-b090-4f26-b042-6d0bf1dcf5d8"
+	p476PendingOperation(t, env, operationID, recordingActionStart, session, "start:"+session.BrowserInstanceID)
+	now := time.Now().UTC()
+	if err := env.db.Model(&models.RecordingOperation{}).Where("operation_id = ?", operationID).Updates(map[string]any{
+		"runtime_driver_token":            "live-start-fence",
+		"runtime_driver_claim_generation": 1,
+		"runtime_driver_claimed_at":       now,
+		"runtime_driver_lease_expires_at": now.Add(startDriverClaimTTL),
+	}).Error; err != nil {
+		t.Fatalf("set live Start fence: %v", err)
+	}
+
+	runtime := newContractP45Runtime()
+	runtime.setActiveRuntimeScope(recordingSessionRuntimeScope(session))
+	service := NewRecordingLifecycleService(env.db, runtime, env.handler.config)
+	if err := service.RecoverPendingOperations(t.Context()); err != nil {
+		t.Fatalf("startup recovery with live Start fence: %v", err)
+	}
+	var currentSession models.RecordingSession
+	if err := env.db.First(&currentSession, session.ID).Error; err != nil || currentSession.Status != "starting" {
+		t.Fatalf("startup recovery changed live Start session = %+v err=%v, want starting", currentSession, err)
+	}
+	var currentOperation models.RecordingOperation
+	if err := env.db.Where("operation_id = ?", operationID).First(&currentOperation).Error; err != nil || currentOperation.Status != "pending" {
+		t.Fatalf("startup recovery changed live Start operation = %+v err=%v, want pending", currentOperation, err)
+	}
+	if err := env.db.Model(&models.RecordingOperation{}).Where("id = ?", currentOperation.ID).Update("runtime_driver_lease_expires_at", time.Now().UTC().Add(-time.Second)).Error; err != nil {
+		t.Fatalf("expire deferred Start fence: %v", err)
+	}
+	coordinator := NewRecordingRecoveryCoordinator(service, nil)
+	coordinator.reconcile(t.Context())
+	var failedSession models.RecordingSession
+	if err := env.db.First(&failedSession, session.ID).Error; err != nil || failedSession.Status != "failed" || failedSession.FailureCode != "runtime_lease_lost" {
+		t.Fatalf("expired deferred Start session = %+v err=%v, want failed/runtime_lease_lost", failedSession, err)
+	}
+	var failedOperation models.RecordingOperation
+	if err := env.db.Where("operation_id = ?", operationID).First(&failedOperation).Error; err != nil || failedOperation.Status != "failed" || failedOperation.ErrorCode != "runtime_lease_lost" {
+		t.Fatalf("expired deferred Start operation = %+v err=%v, want failed/runtime_lease_lost", failedOperation, err)
+	}
+	runtime.requireEvents(t, "stop_recording")
+	runtime.requireReleasedRecordingScope(t, recordingSessionRuntimeScope(session))
+}
+
+func TestP476ExpiredStartRetryFailsDurablyReleasesRuntimeAndAllowsNewStart(t *testing.T) {
+	env := newGenerateContractEnv(t)
+	project, version, page := env.seedProjectVersionPage(t)
+	runtime := newContractP45Runtime()
+	service := NewRecordingLifecycleService(env.db, runtime, env.handler.config)
+	input := startRecordingLifecycleInput{
+		OperationID:       "283acd00-2d44-4bc6-bd11-c2b348bd7965",
+		ProjectID:         project.ID,
+		VersionID:         version.ID,
+		PageID:            page.ID,
+		RecordingKind:     recordingKindLoginFlow,
+		AuthContext:       authContextClean,
+		TargetURL:         "https://example.invalid/app/expired-start",
+		BrowserInstanceID: "p476-instance-expired-start",
+		RuntimePageID:     "p476-page-expired-start",
+	}
+	stale := p476RecordingSession(t, env, project.ID, version.ID, page.ID, "starting", "expired-start")
+	stale.BrowserInstanceID = input.BrowserInstanceID
+	stale.RuntimePageID = input.RuntimePageID
+	if err := env.db.Save(&stale).Error; err != nil {
+		t.Fatalf("align stale Start runtime scope: %v", err)
+	}
+	p476PendingOperation(t, env, input.OperationID, recordingActionStart, stale, "start:"+input.BrowserInstanceID)
+	expiredAt := time.Now().UTC().Add(-time.Second)
+	requestHash := canonicalRequestHash(map[string]any{
+		"recording_kind":      input.RecordingKind,
+		"auth_context":        input.AuthContext,
+		"target_url":          input.TargetURL,
+		"browser_instance_id": input.BrowserInstanceID,
+		"runtime_page_id":     input.RuntimePageID,
+	})
+	if err := env.db.Model(&models.RecordingOperation{}).Where("operation_id = ?", input.OperationID).Updates(map[string]any{
+		"scope":                           recordingStartScope(input),
+		"request_payload_hash":            requestHash,
+		"runtime_driver_token":            "expired-start-token",
+		"runtime_driver_claim_generation": 1,
+		"runtime_driver_claimed_at":       expiredAt,
+		"runtime_driver_lease_expires_at": expiredAt,
+	}).Error; err != nil {
+		t.Fatalf("expire pending Start claim: %v", err)
+	}
+	runtime.setActiveRuntimeScope(recordingSessionRuntimeScope(stale))
+
+	_, err := service.Start(t.Context(), input)
+	requireP476LifecycleError(t, err, http.StatusConflict, "runtime_lease_lost")
+
+	var failedSession models.RecordingSession
+	if err := env.db.First(&failedSession, stale.ID).Error; err != nil || failedSession.Status != "failed" || failedSession.FailureCode != "runtime_lease_lost" {
+		t.Fatalf("expired Start session = %+v err=%v, want durable runtime_lease_lost", failedSession, err)
+	}
+	var failedOperation models.RecordingOperation
+	if err := env.db.Where("operation_id = ?", input.OperationID).First(&failedOperation).Error; err != nil || failedOperation.Status != "failed" || failedOperation.ErrorCode != "runtime_lease_lost" {
+		t.Fatalf("expired Start operation = %+v err=%v, want durable runtime_lease_lost", failedOperation, err)
+	}
+	runtime.requireEvents(t, "stop_recording")
+	runtime.requireReleasedRecordingScope(t, recordingSessionRuntimeScope(stale))
+
+	retry := input
+	retry.OperationID = "d0cd3826-9638-4b10-aea4-4f9cd1c7d898"
+	result, err := service.Start(t.Context(), retry)
+	if err != nil || result.Status != http.StatusOK {
+		t.Fatalf("new Start after expired claim cleanup = %+v err=%v", result, err)
+	}
+}
+
+func TestP476StartRecoveryDoesNotFailFenceRenewedBeforeLockedRecovery(t *testing.T) {
+	for _, scenario := range []struct {
+		name  string
+		renew func(*RecordingLifecycleService, *generateContractEnv, models.RecordingOperation) error
+	}{
+		{
+			name: "same fence heartbeat renewal",
+			renew: func(service *RecordingLifecycleService, _ *generateContractEnv, operation models.RecordingOperation) error {
+				return service.renewStartRuntimeDriver(operation.ID, startDriverToken(operation), operation.RuntimeDriverClaimGeneration)
+			},
+		},
+		{
+			name: "replacement fence",
+			renew: func(_ *RecordingLifecycleService, env *generateContractEnv, operation models.RecordingOperation) error {
+				now := time.Now().UTC()
+				expires := now.Add(startDriverClaimTTL)
+				return env.db.Model(&models.RecordingOperation{}).Where("id = ?", operation.ID).Updates(map[string]any{
+					"runtime_driver_token":            "replacement-start-fence",
+					"runtime_driver_claim_generation": operation.RuntimeDriverClaimGeneration + 1,
+					"runtime_driver_claimed_at":       now,
+					"runtime_driver_lease_expires_at": expires,
+					"updated_at":                      now,
+				}).Error
+			},
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			env := newGenerateContractEnv(t)
+			project, version, page := env.seedProjectVersionPage(t)
+			runtime := newContractP45Runtime()
+			service := NewRecordingLifecycleService(env.db, runtime, env.handler.config)
+			input := startRecordingLifecycleInput{
+				OperationID:       "427a6d42-6f88-4ad2-b2af-593b6dd3f91e",
+				ProjectID:         project.ID,
+				VersionID:         version.ID,
+				PageID:            page.ID,
+				RecordingKind:     recordingKindLoginFlow,
+				AuthContext:       authContextClean,
+				TargetURL:         "https://example.invalid/app/renewed-start",
+				BrowserInstanceID: "p476-instance-renewed-start",
+				RuntimePageID:     "p476-page-renewed-start",
+			}
+			stale := p476RecordingSession(t, env, project.ID, version.ID, page.ID, "starting", "renewed-start")
+			stale.BrowserInstanceID = input.BrowserInstanceID
+			stale.RuntimePageID = input.RuntimePageID
+			if err := env.db.Save(&stale).Error; err != nil {
+				t.Fatalf("align stale Start runtime scope: %v", err)
+			}
+			p476PendingOperation(t, env, input.OperationID, recordingActionStart, stale, "start:"+input.BrowserInstanceID)
+			expiredAt := time.Now().UTC().Add(-time.Second)
+			requestHash := canonicalRequestHash(map[string]any{
+				"recording_kind":      input.RecordingKind,
+				"auth_context":        input.AuthContext,
+				"target_url":          input.TargetURL,
+				"browser_instance_id": input.BrowserInstanceID,
+				"runtime_page_id":     input.RuntimePageID,
+			})
+			if err := env.db.Model(&models.RecordingOperation{}).Where("operation_id = ?", input.OperationID).Updates(map[string]any{
+				"scope":                           recordingStartScope(input),
+				"request_payload_hash":            requestHash,
+				"runtime_driver_token":            "expired-start-fence",
+				"runtime_driver_claim_generation": 1,
+				"runtime_driver_claimed_at":       expiredAt,
+				"runtime_driver_lease_expires_at": expiredAt,
+			}).Error; err != nil {
+				t.Fatalf("expire pending Start claim: %v", err)
+			}
+			var initial models.RecordingOperation
+			if err := env.db.Where("operation_id = ?", input.OperationID).First(&initial).Error; err != nil {
+				t.Fatalf("load expired Start operation: %v", err)
+			}
+			p476RenewStartFenceBetweenBeginAndRecovery(t, env, func() error {
+				return scenario.renew(service, env, initial)
+			})
+
+			_, err := service.Start(t.Context(), input)
+			requireP476LifecycleError(t, err, http.StatusConflict, "recording_operation_in_progress")
+			if retry, ok := err.(*recordingLifecycleError); !ok || retry.RetryAfter != 1 {
+				t.Fatalf("Start fence renewal result = %#v, want Retry-After 1", err)
+			}
+			var currentSession models.RecordingSession
+			if err := env.db.First(&currentSession, stale.ID).Error; err != nil || currentSession.Status != "starting" {
+				t.Fatalf("renewed Start changed session = %+v err=%v, want starting", currentSession, err)
+			}
+			var currentOperation models.RecordingOperation
+			if err := env.db.Where("operation_id = ?", input.OperationID).First(&currentOperation).Error; err != nil || currentOperation.Status != "pending" {
+				t.Fatalf("renewed Start changed operation = %+v err=%v, want pending", currentOperation, err)
+			}
+			runtime.requireEvents(t)
+			runtime.mu.Lock()
+			releaseCount := len(runtime.releasedRecordingScopes)
+			runtime.mu.Unlock()
+			if releaseCount != 0 {
+				t.Fatalf("renewed Start released runtime scope %d times, want 0", releaseCount)
+			}
+		})
+	}
+}
+
+// p476RenewStartFenceBetweenBeginAndRecovery makes the request's first
+// beginStart read observe the expired row, then completes renewal before the
+// recovery transaction runs its locking read. The callbacks are test-only and
+// removed during cleanup, so production code has no scheduling hook.
+func p476RenewStartFenceBetweenBeginAndRecovery(t *testing.T, env *generateContractEnv, renew func() error) {
+	t.Helper()
+	callbackPrefix := fmt.Sprintf("p476_start_fence_renewal_%d", time.Now().UnixNano())
+	renewed := make(chan error, 1)
+	var operationReads int32
+	var waitedForRenewal int32
+	if err := env.db.Callback().Query().After("gorm:query").Register(callbackPrefix+"_schedule", func(tx *gorm.DB) {
+		if tx.Statement == nil || tx.Statement.Schema == nil || tx.Statement.Schema.Name != "RecordingOperation" || atomic.AddInt32(&operationReads, 1) != 1 {
+			return
+		}
+		go func() { renewed <- renew() }()
+	}); err != nil {
+		t.Fatalf("register Start fence renewal schedule callback: %v", err)
+	}
+	if err := env.db.Callback().Query().Before("gorm:query").Register(callbackPrefix+"_wait", func(tx *gorm.DB) {
+		if tx.Statement == nil || tx.Statement.Schema == nil || tx.Statement.Schema.Name != "RecordingOperation" || atomic.LoadInt32(&operationReads) != 1 || !atomic.CompareAndSwapInt32(&waitedForRenewal, 0, 1) {
+			return
+		}
+		select {
+		case err := <-renewed:
+			if err != nil {
+				tx.AddError(fmt.Errorf("renew Start fence before recovery lock: %w", err))
+			}
+		case <-time.After(5 * time.Second):
+			tx.AddError(fmt.Errorf("timed out renewing Start fence before recovery lock"))
+		}
+	}); err != nil {
+		t.Fatalf("register Start fence renewal wait callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = env.db.Callback().Query().Remove(callbackPrefix + "_wait")
+		_ = env.db.Callback().Query().Remove(callbackPrefix + "_schedule")
+	})
 }
 
 func TestP476StartDriverClaimFencesLateCompletion(t *testing.T) {

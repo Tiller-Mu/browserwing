@@ -1,5 +1,6 @@
 import { projectApi, type StopPageRecordingSessionResponse, type TestPage } from './api/project';
 import BrowserManager, { p45BrowserManagerContract, recordingOperationFailureIsTerminal, startRecordingOperationKey } from './pages/BrowserManager';
+import { toastAutoDismissDuration } from './components/Toast';
 import {
 	buildP45AuthStateSummary,
 	buildP45PageManagementView,
@@ -8,7 +9,7 @@ import {
 	createP45RecordingController,
 	resolveP45InPageStoppedRecordingAction,
 } from './pages/p45RecordingUiContract';
-import TestPageManager, { p45TestPageManagerContract } from './pages/TestPageManager';
+import TestPageManager, { formatRecordingOperationInProgressMessage, p45TestPageManagerContract } from './pages/TestPageManager';
 import { createRecordingOperationLedger } from './pages/recordingLifecycleOperationLedger';
 
 type P45RecordingKind = 'login_flow' | 'business_flow';
@@ -126,6 +127,21 @@ assertEqual(
 	recordingOperationFailureIsTerminal({ response: { status: 409, data: { error: 'human detail', code: 'recording_operation_in_progress' } } }),
 	false,
 	'operation-in-progress must retain the ledger using response.data.code rather than detail',
+);
+assertEqual(
+	formatRecordingOperationInProgressMessage({ response: { data: { error: 'recording start target is already reserved' } } }),
+	'运行时录制操作仍在进行中（recording_operation_in_progress）。请等待当前启动完成后再试；若持续出现，请保留此提示并检查浏览器录制页。 后端原因：recording start target is already reserved',
+	'in-progress guidance must retain the backend reason for runtime diagnosis',
+);
+assertEqual(
+	toastAutoDismissDuration('error'),
+	undefined,
+	'error notifications must remain visible until the user dismisses them',
+);
+assertEqual(
+	toastAutoDismissDuration('success'),
+	3000,
+	'success notifications may retain the normal transient duration',
 );
 assertEqual(
 	recordingOperationFailureIsTerminal({ response: { status: 409, data: { code: 'page_script_superseded' } } }),

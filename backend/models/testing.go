@@ -143,23 +143,23 @@ type RecordingSession struct {
 	SourceAuthStateID        *uint      `gorm:"index" json:"source_auth_state_id,omitempty"`
 	TargetURL                string     `gorm:"type:text" json:"target_url"`
 	Status                   string     `gorm:"size:50;index;not null" json:"status"`
-	BrowserInstanceID        string     `gorm:"size:255;not null;uniqueIndex:recording_sessions_active_instance_uniq,where:status = 'starting' OR status = 'recording'" json:"browser_instance_id"`
-	RuntimePageID            string     `gorm:"size:255;not null" json:"runtime_page_id"`
-	RuntimeInstanceID        string     `gorm:"size:255" json:"runtime_instance_id"`
-	RuntimeGeneration        string     `gorm:"size:255;not null" json:"runtime_generation"`
-	LeaseGeneration          string     `gorm:"size:255;not null" json:"lease_generation"`
+	BrowserInstanceID        string     `gorm:"size:255;not null;default:'';uniqueIndex:recording_sessions_active_instance_uniq,where:status = 'starting' OR status = 'recording'" json:"browser_instance_id"`
+	RuntimePageID            string     `gorm:"size:255;not null;default:''" json:"runtime_page_id"`
+	RuntimeInstanceID        string     `gorm:"size:255;not null;default:''" json:"runtime_instance_id"`
+	RuntimeGeneration        string     `gorm:"size:255;not null;default:''" json:"runtime_generation"`
+	LeaseGeneration          string     `gorm:"size:255;not null;default:''" json:"lease_generation"`
 	LifecycleRevision        uint64     `gorm:"not null;default:1" json:"lifecycle_revision"`
 	SyncRevision             uint64     `gorm:"not null;default:0" json:"sync_revision"`
-	SyncPayloadHash          string     `gorm:"size:128" json:"sync_payload_hash"`
-	DraftHash                string     `gorm:"size:128" json:"draft_hash"`
+	SyncPayloadHash          string     `gorm:"size:128;not null;default:''" json:"sync_payload_hash"`
+	DraftHash                string     `gorm:"size:128;not null;default:''" json:"draft_hash"`
 	DraftCompletenessVersion int        `gorm:"not null;default:1" json:"draft_completeness_version"`
 	BasePageFlowRevision     uint64     `gorm:"not null;default:0" json:"base_page_flow_revision"`
 	ActionsJSON              string     `gorm:"type:text" json:"actions_json"`
 	ActionCount              int        `json:"action_count"`
 	DOMSnapshot              string     `gorm:"type:text" json:"dom_snapshot"`
 	RecordingMetaJSON        string     `gorm:"type:text" json:"recording_meta_json"`
-	FailureCode              string     `gorm:"size:128" json:"failure_code"`
-	FailureDetailSanitized   string     `gorm:"type:text" json:"failure_detail_sanitized"`
+	FailureCode              string     `gorm:"size:128;not null;default:''" json:"failure_code"`
+	FailureDetailSanitized   string     `gorm:"type:text;not null;default:''" json:"failure_detail_sanitized"`
 	FailedAt                 *time.Time `json:"failed_at"`
 	ErrorMessage             string     `gorm:"type:text" json:"error_message"`
 	StartedAt                time.Time  `json:"started_at"`

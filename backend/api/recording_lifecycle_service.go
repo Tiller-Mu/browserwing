@@ -177,6 +177,20 @@ func (s *RecordingLifecycleService) Start(ctx context.Context, input startRecord
 		if op.Status == "completed" || op.Status == "failed" {
 			return replayRecordingOperation(op)
 		}
+		if startRuntimeClaimExpired(op, time.Now().UTC()) {
+			// An expired database fence cannot prove that the original browser
+			// driver still owns its side effect. Do not hand the same pending
+			// session to a new Manager generation: first converge it through the
+			// durable Start recovery path, which releases the exact runtime scope
+			// only after the failed session/operation commit.
+			recovered, handled, recoverErr := s.RecoverPendingOperationForRequest(ctx, pendingOperationExpectation{
+				OperationID: input.OperationID, Action: recordingActionStart, Scope: scope, RequestPayloadHash: requestHash,
+				StartRuntimeDriverToken: startDriverToken(op), StartRuntimeDriverClaimGeneration: op.RuntimeDriverClaimGeneration,
+			})
+			if handled || recoverErr != nil {
+				return recovered, recoverErr
+			}
+		}
 		if session.Status == "cancelled" {
 			if err := s.failOperation(ctx, op.ID, "start_cancelled", "start was cancelled"); err != nil {
 				return recordingLifecycleResult{}, translateRecordingDBError(err)
@@ -407,6 +421,17 @@ func startDriverToken(op models.RecordingOperation) string {
 		return ""
 	}
 	return strings.TrimSpace(*op.RuntimeDriverToken)
+}
+
+func startRuntimeClaimExpired(op models.RecordingOperation, now time.Time) bool {
+	if op.Status != "pending" || startDriverToken(op) == "" {
+		return false
+	}
+	return op.RuntimeDriverLeaseExpiresAt == nil || !now.Before(*op.RuntimeDriverLeaseExpiresAt)
+}
+
+func startRuntimeClaimActive(op models.RecordingOperation, now time.Time) bool {
+	return op.Status == "pending" && startDriverToken(op) != "" && op.RuntimeDriverLeaseExpiresAt != nil && now.Before(*op.RuntimeDriverLeaseExpiresAt)
 }
 
 // claimStartRuntimeDriver serializes the runtime half of Start independently
@@ -1599,10 +1624,12 @@ func (s *RecordingLifecycleService) loadSession(id uint) (models.RecordingSessio
 }
 
 type pendingOperationExpectation struct {
-	OperationID        string
-	Action             string
-	Scope              string
-	RequestPayloadHash string
+	OperationID                       string
+	Action                            string
+	Scope                             string
+	RequestPayloadHash                string
+	StartRuntimeDriverToken           string
+	StartRuntimeDriverClaimGeneration uint64
 }
 
 // RecoverPendingOperationForRequest validates the request's complete idempotent
@@ -1622,6 +1649,7 @@ func (s *RecordingLifecycleService) RecoverPendingOperation(ctx context.Context,
 func (s *RecordingLifecycleService) recoverPendingOperation(ctx context.Context, operationID string, expected *pendingOperationExpectation) (recordingLifecycleResult, bool, error) {
 	var response map[string]any
 	var terminal *recordingLifecycleError
+	var releaseStartingSession *models.RecordingSession
 	handled := false
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var op models.RecordingOperation
@@ -1638,6 +1666,29 @@ func (s *RecordingLifecycleService) recoverPendingOperation(ctx context.Context,
 			return nil
 		}
 		handled = true
+		if op.Action == recordingActionStart {
+			now := time.Now().UTC()
+			if expected != nil && expected.Action == recordingActionStart && expected.StartRuntimeDriverToken != "" &&
+				(startDriverToken(op) != expected.StartRuntimeDriverToken || op.RuntimeDriverClaimGeneration != expected.StartRuntimeDriverClaimGeneration) {
+				// The retry first observed an expired fence, but a different driver
+				// took ownership before this transaction acquired the operation row.
+				// It must not terminalize or release the new driver's runtime scope.
+				terminal = lifecycleRetryError(http.StatusConflict, "recording_operation_in_progress", "recording start driver changed while recovery was acquiring its fence", 1)
+				return nil
+			}
+			if startRuntimeClaimActive(op, now) {
+				if expected != nil && expected.Action == recordingActionStart {
+					// A heartbeat renewed the same fence after beginStart read it. The
+					// current HTTP retry must leave the still-live driver untouched.
+					terminal = lifecycleRetryError(http.StatusConflict, "recording_operation_in_progress", "recording start is already being driven", 1)
+					return nil
+				}
+				// Startup recovery has no HTTP response to settle. Keep a live Start
+				// fence pending for its owner instead of manufacturing lease loss.
+				handled = false
+				return nil
+			}
+		}
 		if op.RecordingSessionID == nil {
 			terminal = lifecycleError(http.StatusConflict, "recording_lifecycle_conflict", "pending operation has no recording session")
 			return s.markOperationFailed(tx, op.ID, terminal.Status, terminal.Code, terminal.Detail)
@@ -1657,6 +1708,8 @@ func (s *RecordingLifecycleService) recoverPendingOperation(ctx context.Context,
 				if result.RowsAffected != 1 {
 					return lifecycleError(http.StatusConflict, "recording_lifecycle_conflict", "starting recording changed concurrently")
 				}
+				release := session
+				releaseStartingSession = &release
 			}
 			terminal = lifecycleError(http.StatusConflict, "runtime_lease_lost", "runtime lease was lost before start completed")
 			return s.markOperationFailed(tx, op.ID, terminal.Status, terminal.Code, terminal.Detail)
@@ -1722,6 +1775,12 @@ func (s *RecordingLifecycleService) recoverPendingOperation(ctx context.Context,
 		return recordingLifecycleResult{}, handled, translateRecordingDBError(err)
 	}
 	if terminal != nil {
+		if releaseStartingSession != nil {
+			// The failed Start is now durable, so it is safe to cancel and release
+			// the matching Manager reservation. This prevents an expired database
+			// claim from stranding a later user retry behind an old browser driver.
+			s.releaseRuntimeRecording(ctx, *releaseStartingSession)
+		}
 		return recordingLifecycleResult{}, true, terminal
 	}
 	if handled {
@@ -1735,6 +1794,23 @@ func (s *RecordingLifecycleService) RecoverPendingOperations(ctx context.Context
 	if err := s.db.Where("status = ? AND action IN ?", "pending", []string{recordingActionStart, recordingActionStop, recordingActionCapture}).Find(&operations).Error; err != nil {
 		return err
 	}
+	return s.recoverPendingOperationList(ctx, operations)
+}
+
+// RecoverExpiredPendingStarts is the periodic counterpart to startup recovery.
+// It only revisits Start operations whose durable fence reached expiry; Stop
+// and Capture remain driven by their runtime receipts. recoverPendingOperation
+// takes the row lock and rechecks the fence, so a heartbeat that won after this
+// candidate scan keeps the operation pending.
+func (s *RecordingLifecycleService) RecoverExpiredPendingStarts(ctx context.Context, now time.Time) error {
+	var operations []models.RecordingOperation
+	if err := s.db.Where("status = ? AND action = ? AND runtime_driver_token IS NOT NULL AND runtime_driver_token <> '' AND (runtime_driver_lease_expires_at IS NULL OR runtime_driver_lease_expires_at <= ?)", "pending", recordingActionStart, now).Find(&operations).Error; err != nil {
+		return err
+	}
+	return s.recoverPendingOperationList(ctx, operations)
+}
+
+func (s *RecordingLifecycleService) recoverPendingOperationList(ctx context.Context, operations []models.RecordingOperation) error {
 	var firstErr error
 	for _, operation := range operations {
 		if _, _, err := s.RecoverPendingOperation(ctx, operation.OperationID); err != nil {

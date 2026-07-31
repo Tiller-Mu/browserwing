@@ -1051,22 +1051,29 @@ func (r *browserProjectAuthRuntime) PrepareTestExecution(ctx context.Context, in
 	return r.manager.OpenIsolatedPage(ctx, "about:blank", "", instanceID)
 }
 
-func (r *browserProjectAuthRuntime) StartPageRecording(ctx context.Context, input map[string]any) (map[string]any, error) {
-	targetURL := strings.TrimSpace(stringFromAny(input["target_url"]))
-	if targetURL == "" {
-		return nil, fmt.Errorf("target_url is required")
-	}
-	instanceID := stringFromAny(input["browser_instance_id"])
-	scope := browser.RecordingStorageScope{
+// recordingLifecycleRuntimeScope translates the persisted lifecycle scope into
+// the Manager identity. Lifecycle inputs use page_id; captured_page_id belongs
+// only to the standalone auth-capture request shape.
+func recordingLifecycleRuntimeScope(input map[string]any) browser.RecordingStorageScope {
+	return browser.RecordingStorageScope{
 		ProjectID:          uintFromAny(input["project_id"]),
 		VersionID:          uintFromAny(input["version_id"]),
-		PageID:             uintFromAny(input["captured_page_id"]),
+		PageID:             uintFromAny(input["page_id"]),
 		RecordingSessionID: stringFromAny(input["recording_session_id"]),
 		BrowserInstanceID:  stringFromAny(input["browser_instance_id"]),
 		RuntimePageID:      stringFromAny(input["runtime_page_id"]),
 		RuntimeGeneration:  stringFromAny(input["runtime_generation"]),
 		LeaseGeneration:    stringFromAny(input["lease_generation"]),
 	}
+}
+
+func (r *browserProjectAuthRuntime) StartPageRecording(ctx context.Context, input map[string]any) (map[string]any, error) {
+	targetURL := strings.TrimSpace(stringFromAny(input["target_url"]))
+	if targetURL == "" {
+		return nil, fmt.Errorf("target_url is required")
+	}
+	instanceID := stringFromAny(input["browser_instance_id"])
+	scope := recordingLifecycleRuntimeScope(input)
 	driverToken := strings.TrimSpace(stringFromAny(input["runtime_driver_token"]))
 	driverGeneration := uint64(uintFromAny(input["runtime_driver_claim_generation"]))
 	if r.manager == nil {

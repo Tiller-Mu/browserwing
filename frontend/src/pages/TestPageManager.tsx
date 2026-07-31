@@ -14,7 +14,13 @@ import {
   createP45RecordingController,
   type P45AuthStateSummaryView,
 } from './p45RecordingUiContract';
-import { createRecordingOperationLedger, recordingOperationInputChanged } from './recordingLifecycleOperationLedger';
+import { createRecordingOperationLedger, recordingOperationInputChanged, recordingOperationIsInProgress } from './recordingLifecycleOperationLedger';
+
+export function formatRecordingOperationInProgressMessage(error: unknown): string {
+  const reason = String((error as { response?: { data?: { error?: unknown } } })?.response?.data?.error || '').trim();
+  const guidance = '运行时录制操作仍在进行中（recording_operation_in_progress）。请等待当前启动完成后再试；若持续出现，请保留此提示并检查浏览器录制页。';
+  return reason ? `${guidance} 后端原因：${reason}` : guidance;
+}
 
 type GenerateMode = 'append' | 'replace' | 'preview';
 
@@ -169,10 +175,14 @@ export default function TestPageManager() {
         targetUrl: page.path,
       });
     } catch (error: any) {
-	  if (recordingOperationInputChanged(error)) {
-		showToast(error.message || '上一次开始录制仍在处理中，请等待其完成后再试。', 'info');
-		return;
-	  }
+      if (recordingOperationInputChanged(error)) {
+        showToast(error.message || '上一次开始录制仍在处理中，请等待其完成后再试。', 'info');
+        return;
+      }
+      if (recordingOperationIsInProgress(error)) {
+        showToast(formatRecordingOperationInProgressMessage(error), 'error');
+        return;
+      }
       const detail = error.response?.data?.detail;
       const message = error.response?.data?.error || '启动页面录制失败';
       showToast(detail ? `${message}: ${detail}` : message, 'error');

@@ -37,17 +37,86 @@ ALTER TABLE recording_sessions
     ADD COLUMN IF NOT EXISTS failure_detail_sanitized TEXT NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS failed_at TIMESTAMPTZ;
 
--- A pre-P4.7.6 active session cannot prove runtime identity. Do not allow it
--- to bypass the new partial uniqueness/receipt protocol after deployment.
+-- A pre-P4.7.6 AutoMigrate can have created these columns without the
+-- database defaults and NOT NULL constraints. It may also already have the
+-- active-instance partial unique index, which permits several NULL browser
+-- identities but would reject normalizing all of them to ''. Move incomplete
+-- active rows out of that index before any NULL normalization.
 UPDATE recording_sessions
 SET status = 'failed',
     failure_code = 'runtime_lease_lost',
     failure_detail_sanitized = 'legacy active recording lacks P4.7.6 runtime identity',
     failed_at = NOW(),
-    lifecycle_revision = lifecycle_revision + 1,
+    lifecycle_revision = COALESCE(lifecycle_revision, 1) + 1,
     updated_at = NOW()
 WHERE status IN ('starting', 'recording')
-  AND (browser_instance_id = '' OR runtime_page_id = '' OR runtime_generation = '');
+  AND (
+      browser_instance_id IS NULL
+      OR browser_instance_id = ''
+      OR runtime_page_id IS NULL
+      OR runtime_page_id = ''
+      OR runtime_generation IS NULL
+      OR runtime_generation = ''
+      OR lease_generation IS NULL
+      OR lease_generation = ''
+  );
+
+-- Normalize the remaining nullable fields before tightening the schema below.
+UPDATE recording_sessions
+SET browser_instance_id = COALESCE(browser_instance_id, ''),
+    runtime_page_id = COALESCE(runtime_page_id, ''),
+    runtime_instance_id = COALESCE(runtime_instance_id, ''),
+    runtime_generation = COALESCE(runtime_generation, ''),
+    lease_generation = COALESCE(lease_generation, ''),
+    lifecycle_revision = COALESCE(lifecycle_revision, 1),
+    sync_revision = COALESCE(sync_revision, 0),
+    sync_payload_hash = COALESCE(sync_payload_hash, ''),
+    draft_hash = COALESCE(draft_hash, ''),
+    draft_completeness_version = COALESCE(draft_completeness_version, 1),
+    base_page_flow_revision = COALESCE(base_page_flow_revision, 0),
+    failure_code = COALESCE(failure_code, ''),
+    failure_detail_sanitized = COALESCE(failure_detail_sanitized, '')
+WHERE browser_instance_id IS NULL
+   OR runtime_page_id IS NULL
+   OR runtime_instance_id IS NULL
+   OR runtime_generation IS NULL
+   OR lease_generation IS NULL
+   OR lifecycle_revision IS NULL
+   OR sync_revision IS NULL
+   OR sync_payload_hash IS NULL
+   OR draft_hash IS NULL
+   OR draft_completeness_version IS NULL
+   OR base_page_flow_revision IS NULL
+   OR failure_code IS NULL
+   OR failure_detail_sanitized IS NULL;
+
+ALTER TABLE recording_sessions
+    ALTER COLUMN browser_instance_id SET DEFAULT '',
+    ALTER COLUMN browser_instance_id SET NOT NULL,
+    ALTER COLUMN runtime_page_id SET DEFAULT '',
+    ALTER COLUMN runtime_page_id SET NOT NULL,
+    ALTER COLUMN runtime_instance_id SET DEFAULT '',
+    ALTER COLUMN runtime_instance_id SET NOT NULL,
+    ALTER COLUMN runtime_generation SET DEFAULT '',
+    ALTER COLUMN runtime_generation SET NOT NULL,
+    ALTER COLUMN lease_generation SET DEFAULT '',
+    ALTER COLUMN lease_generation SET NOT NULL,
+    ALTER COLUMN lifecycle_revision SET DEFAULT 1,
+    ALTER COLUMN lifecycle_revision SET NOT NULL,
+    ALTER COLUMN sync_revision SET DEFAULT 0,
+    ALTER COLUMN sync_revision SET NOT NULL,
+    ALTER COLUMN sync_payload_hash SET DEFAULT '',
+    ALTER COLUMN sync_payload_hash SET NOT NULL,
+    ALTER COLUMN draft_hash SET DEFAULT '',
+    ALTER COLUMN draft_hash SET NOT NULL,
+    ALTER COLUMN draft_completeness_version SET DEFAULT 1,
+    ALTER COLUMN draft_completeness_version SET NOT NULL,
+    ALTER COLUMN base_page_flow_revision SET DEFAULT 0,
+    ALTER COLUMN base_page_flow_revision SET NOT NULL,
+    ALTER COLUMN failure_code SET DEFAULT '',
+    ALTER COLUMN failure_code SET NOT NULL,
+    ALTER COLUMN failure_detail_sanitized SET DEFAULT '',
+    ALTER COLUMN failure_detail_sanitized SET NOT NULL;
 
 ALTER TABLE recording_sessions
     DROP CONSTRAINT IF EXISTS recording_sessions_active_runtime_identity_check;
@@ -59,6 +128,7 @@ ALTER TABLE recording_sessions
             browser_instance_id <> ''
             AND runtime_page_id <> ''
             AND runtime_generation <> ''
+            AND lease_generation <> ''
         )
     );
 

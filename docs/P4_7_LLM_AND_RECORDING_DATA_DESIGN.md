@@ -4,7 +4,7 @@
 
 P4.7 不直接做最终体验拉通，不做 P5 多用户成员权限。它解决的是底座问题：后续“页面录制 -> 智能生成用例”和 P5 权限隔离不能继续依赖分散的 LLM 入口、页面 `sessionStorage` 草稿或裸磁盘路径。
 
-> P4.7.6 已完成。本文早期 RecordingSession 描述如与下文 P4.7.6 收束条款冲突，以 P4.7.6 为准；HTTP Stop 已切换到与页面 runtime 相同的 Coordinator `recording_stopped` event 收口，本轮时序红测与定向、全量回归均已通过。
+> P4.7.6 修复中。本文早期 RecordingSession 描述如与下文 P4.7.6 收束条款冲突，以 P4.7.6 为准；HTTP Stop 已切换到与页面 runtime 相同的 Coordinator `recording_stopped` event 收口。部署迁移正在补齐历史 AutoMigrate 已创建 runtime 字段但仍含 `NULL` 的 PostgreSQL 升级路径；本轮迁移回归与全量验证通过前不恢复完成状态。
 
 ## 阶段协作要求
 
@@ -372,7 +372,7 @@ P4.7 收口时必须满足：
 - `docs/DEVELOPMENT_PLAN.md` 已更新阶段状态。
 - `docs/CONTRACT_RECORDS.md` 只在审核通过后更新，不在规划阶段提前写入。
 
-## 十二、P4.7.6 录制生命周期收束（已完成）
+## 十二、P4.7.6 录制生命周期收束（修复中）
 
 `RecordingLifecycleService` 是 Start、Sync、Stop、Save、Capture、Cancel 的唯一业务编排入口。HTTP handler 只解析参数、传递身份上下文、映射稳定错误码并序列化响应；HTTP Stop 必须委托 Coordinator，Coordinator 先建立 pending operation、再驱动 scoped runtime Stop，并只经 `recording_stopped` event 分支提交会话 `stopped`。Manager 只管理当前进程中的 runtime lease、receipt 和冻结登录态快照；Recorder 只采集；Playbot 只接收已固定、脱敏的 `recording_source`。
 
@@ -390,9 +390,9 @@ P4.7 收口时必须满足：
 - Start、Stop、Capture 在 runtime side effect 前建立 pending operation。HTTP Stop 与页面/恢复 Stop 共享 Coordinator 的 `recording_stopped` event 收口；Coordinator 是生产路径中唯一调用 Stop 提交 `RecordingSession.stopped` 的入口。Stop final receipt 与 Capture auth snapshot 只有在数据库事务成功后 ACK；数据库故障保持 pending，不提前释放。
 - runtime receipt 具有 `available|claimed|acked|released|expired` 生命周期。claim 绑定完整 `RecordingStorageScope + operation_id + claim_generation`，过期可接管；ACK/Release 只消费仍匹配该三元身份的 receipt，取消或竞争失败释放而非采用 receipt。
 - Coordinator 对 runtime event 使用明确的 `Ack|Release|Retry` disposition，而不按错误码猜测。只有业务事务已提交才 ACK 或 Release；数据库、锁、CAS 可重试和上下文错误一律 Retry。scope mismatch 必须先持久化会话及 pending Start/Stop 的 `runtime_receipt_scope_mismatch` 失败，再 Release；已终态 tombstone 直接 ACK。
-- Start reservation 具有 `reserved|cancelling|running` 状态和可取消 context/done 信号。DB fence 每 10 秒续租；更高 generation 只能取消并等待旧 reserved driver 完成清理，绝不并行执行页面副作用；running target 仅复用并重绑定 fence。
+- Start reservation 具有 `reserved|cancelling|running` 状态和可取消 context/done 信号。DB fence 每 10 秒续租；更高 generation 只能取消并等待旧 reserved driver 完成清理，绝不并行执行页面副作用；running target 仅复用并重绑定 fence。相同 Start operation 重试若初读到过期 DB fence，恢复事务必须在锁住 operation 后复核相同 token/generation 仍过期；中途 heartbeat 续租或 fence 被接管时返回 `recording_operation_in_progress` 并保留 pending/runtime scope。只有锁定行仍为相同过期 fence，才以 `runtime_lease_lost` 持久化结束旧 session/operation，事务提交后释放完整 runtime scope；不得以新 generation 越过旧 reservation，下一次新 intent 才可创建新 Start。启动恢复遇到仍有效的 Start fence 先保留 pending，Coordinator 每秒仅重扫已到期的 pending Start，并在同一持锁复核后收口。
 - pending Stop/Capture 只通过 `RecoverPendingOperation` 恢复；服务启动恢复器与相同 operation 重试必须调用该入口。Stop 在 runtime receipt 丢失时仅当 `IsRecoverableRecordingDraft` 满足结构/事实完整性才收口；未发布 Capture snapshot 在后端重启后终态失败为 `auth_snapshot_unavailable`。
-- `ProjectAuthState` 反向记录 source session 与唯一 snapshot receipt，不在 `RecordingSession` 写资产指针。登录态以单一活动 AES-256-GCM key 加密；AAD 绑定用途、state ID、项目、加密版本与 key ID。部署需显式执行 `backend/storage/migrations/20260724_p476_project_auth_state_ciphertext.sql` 清除旧 `state_json` 明文并标记旧资产 `invalid`，应用启动不会静默清理。
+- `ProjectAuthState` 反向记录 source session 与唯一 snapshot receipt，不在 `RecordingSession` 写资产指针。登录态以单一活动 AES-256-GCM key 加密；AAD 绑定用途、state ID、项目、加密版本与 key ID。运行环境必须通过 `PROJECT_AUTH_STATE_ENCRYPTION_KEY` / `PROJECT_AUTH_STATE_ENCRYPTION_KEY_ID` 或 `[security]` 的同名配置提供独立于 LLM 密钥的 base64 32-byte key 与稳定 key ID；缺失时 Capture 保持 pending 并返回可诊断的基础设施错误，绝不明文保存或复用 LLM 密钥。部署需显式执行 `backend/storage/migrations/20260724_p476_project_auth_state_ciphertext.sql`：先将不具备完整 runtime identity 的旧 active 会话收口为 failed，再回填历史 AutoMigrate 留下的可空 runtime 字段，最后收紧 `NOT NULL` 与 active identity 约束，以避免历史 partial unique index 因多个 NULL identity 同时归一化而冲突；并清除旧 `state_json` 明文、标记旧资产 `invalid`。应用启动不会静默清理或替代该部署迁移。
 
 ### 12.3 Normalizer 与下游边界
 

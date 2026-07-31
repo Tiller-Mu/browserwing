@@ -1,21 +1,33 @@
 import { useEffect } from 'react'
 import { X, CheckCircle, AlertCircle, Info } from 'lucide-react'
 
+export type ToastType = 'success' | 'error' | 'info'
+
 interface ToastProps {
   message: string
-  type?: 'success' | 'error' | 'info'
+  type?: ToastType
   onClose: () => void
   duration?: number
 }
 
-export default function Toast({ message, type = 'info', onClose, duration = 3000 }: ToastProps) {
+// Errors often carry the only visible diagnostic for a failed asynchronous
+// operation. Keep them open until the user explicitly dismisses them; callers
+// can still provide a duration for an intentionally transient error message.
+export function toastAutoDismissDuration(type: ToastType): number | undefined {
+  return type === 'error' ? undefined : 3000
+}
+
+export default function Toast({ message, type = 'info', onClose, duration }: ToastProps) {
+  const autoDismissDuration = duration ?? toastAutoDismissDuration(type)
+
   useEffect(() => {
+    if (autoDismissDuration === undefined) return
     const timer = setTimeout(() => {
       onClose()
-    }, duration)
+    }, autoDismissDuration)
 
     return () => clearTimeout(timer)
-  }, [duration, onClose])
+  }, [autoDismissDuration, onClose])
 
   const getIcon = () => {
     switch (type) {

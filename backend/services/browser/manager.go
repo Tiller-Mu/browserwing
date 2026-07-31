@@ -289,6 +289,7 @@ type RecordingRuntimeEventSink func(RecordingRuntimeEvent)
 type recordingFinalReceipt struct {
 	receiptID        string
 	scope            RecordingStorageScope
+	page             *rod.Page
 	startURL         string
 	actions          []models.ScriptAction
 	downloadedFiles  []models.DownloadedFile
@@ -2156,16 +2157,46 @@ func (m *Manager) stopRecordingWithStorageScope(ctx context.Context, scope Recor
 // required: a delayed claimant must not delete a receipt taken over after TTL.
 func (m *Manager) AcknowledgeFinalRecordingReceipt(scope RecordingStorageScope, receiptID, operationID string, claimGeneration uint64) bool {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	receipt, ok := m.recordingRuntimeRegistryLocked().finalBySession[scope.RecordingSessionID]
 	if !ok || !receipt.scope.matches(scope) || strings.TrimSpace(receiptID) == "" || receipt.receiptID != strings.TrimSpace(receiptID) || strings.TrimSpace(operationID) == "" || receipt.claimOperationID != strings.TrimSpace(operationID) || claimGeneration == 0 || receipt.claimGeneration != claimGeneration {
+		m.mu.Unlock()
 		return false
 	}
+	page := receipt.page
 	receipt.state = recordingReceiptAcked
 	delete(m.recordingRuntimeRegistryLocked().finalBySession, scope.RecordingSessionID)
 	delete(m.recordingRuntimeRegistryLocked().draftBySession, scope.RecordingSessionID)
 	delete(m.recordingRuntimeRegistryLocked().startBySession, scope.RecordingSessionID)
+	m.clearAcknowledgedRecordingPageLocked(page)
+	m.mu.Unlock()
+
+	// The page was created in an isolated context for this exact recording
+	// receipt. Closing it only after the matching receipt ACK means a failed
+	// Stop, a competing owner, or a still-pending database transaction leaves
+	// the recording window available for diagnosis and recovery.
+	if page != nil {
+		if err := page.Close(); err != nil {
+			logger.Warn(context.Background(), "Failed to close acknowledged recording page: %v", err)
+		}
+	}
 	return true
+}
+
+// clearAcknowledgedRecordingPageLocked clears only the frozen page pointer.
+// A later recording owns a different isolated page and must never be cleared
+// by an old receipt acknowledgement. The caller must hold m.mu.
+func (m *Manager) clearAcknowledgedRecordingPageLocked(page *rod.Page) {
+	if page == nil {
+		return
+	}
+	for _, runtime := range m.instances {
+		if runtime != nil && runtime.activePage == page {
+			runtime.activePage = nil
+		}
+	}
+	if m.activePage == page {
+		m.activePage = nil
+	}
 }
 
 // ReleaseFinalRecordingReceipt relinquishes exactly one runtime claim after a
@@ -2543,7 +2574,7 @@ func (m *Manager) publishFinalRecordingReceiptLocked(scope RecordingStorageScope
 		operationID = operationIDs[0]
 	}
 	receiptID := uuid.NewString()
-	receipt := &recordingFinalReceipt{receiptID: receiptID, scope: scope, startURL: startURL, actions: append([]models.ScriptAction(nil), actions...), downloadedFiles: append([]models.DownloadedFile(nil), downloadedFiles...), domSnapshot: append(json.RawMessage(nil), domSnapshot...), syncRevision: syncRevision, state: recordingReceiptAvailable, frozenAt: time.Now().UTC()}
+	receipt := &recordingFinalReceipt{receiptID: receiptID, scope: scope, page: m.activeRecordingPageLocked(scope), startURL: startURL, actions: append([]models.ScriptAction(nil), actions...), downloadedFiles: append([]models.DownloadedFile(nil), downloadedFiles...), domSnapshot: append(json.RawMessage(nil), domSnapshot...), syncRevision: syncRevision, state: recordingReceiptAvailable, frozenAt: time.Now().UTC()}
 	if strings.TrimSpace(operationID) != "" {
 		receipt.state = recordingReceiptClaimed
 		receipt.claimOperationID = strings.TrimSpace(operationID)
@@ -2552,6 +2583,20 @@ func (m *Manager) publishFinalRecordingReceiptLocked(scope RecordingStorageScope
 	}
 	m.recordingRuntimeRegistryLocked().finalBySession[scope.RecordingSessionID] = receipt
 	m.emitRuntimeEventLocked(RecordingRuntimeEvent{ID: deterministicRuntimeEventID("recording_stopped", scope, receipt.syncRevision, receiptID), Kind: "recording_stopped", Scope: scope, ReceiptID: receiptID, OperationID: receipt.claimOperationID, ClaimGeneration: receipt.claimGeneration, SyncRevision: receipt.syncRevision, Actions: append([]models.ScriptAction(nil), actions...), DOMSnapshot: append(json.RawMessage(nil), domSnapshot...)})
+}
+
+// activeRecordingPageLocked snapshots the page that belongs to the current
+// scoped recorder while Stop is freezing its final receipt. The caller must
+// hold m.mu.
+func (m *Manager) activeRecordingPageLocked(scope RecordingStorageScope) *rod.Page {
+	for instanceID, activeScope := range m.recordingRuntimeRegistryLocked().activeByInstance {
+		if activeScope.matches(scope) {
+			if runtime := m.instances[instanceID]; runtime != nil {
+				return runtime.activePage
+			}
+		}
+	}
+	return nil
 }
 
 func (m *Manager) publishAuthSnapshotReceiptLocked(scope RecordingStorageScope, state map[string]any) {
